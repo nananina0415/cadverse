@@ -10,7 +10,7 @@ from ..utils.ReadWriteBuffer import ReadWriteBuffer
 
 # 순환 참조를 피하기 위해 타입 힌트만 임포트
 if TYPE_CHECKING:
-    from main import Server 
+    from server import Server 
 
 # (클래스/타입: PascalCase, 변수/함수: camelCase)
 class SimLoopThread(threading.Thread):
