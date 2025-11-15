@@ -1,8 +1,12 @@
 import json
+import threading
 from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse
-from typing import List
+from typing import List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..utils.ReadWriteBuffer import ReadWriteBuffer
 
 
 class Server:
@@ -12,9 +16,12 @@ class Server:
     - HTTP를 통한 리소스 파일 제공 (메시 데이터 등)
     """
 
-    def __init__(self, resources_dir: str = "./resources"):
+    def __init__(self, output_buffer: 'ReadWriteBuffer', resources_dir: str = "./resources"):
         # FastAPI 앱 생성
         self.app = FastAPI()
+
+        # 출력 버퍼 (심루프에서 업데이트한 상태를 읽어옴)
+        self.output_buffer = output_buffer
 
         # 리소스 파일이 저장된 디렉토리
         self.resources_dir = Path(resources_dir)
@@ -81,7 +88,51 @@ class Server:
             except WebSocketDisconnect:
                 self.active_connections.remove(connection)
 
+    def broadcast_from_buffer(self):
+        """버퍼에서 읽어서 모든 클라이언트에게 브로드캐스트 (동기 함수)"""
+        # 버퍼에서 최신 상태 읽기
+        state = self.output_buffer.readBuff()
+        message = json.dumps(state)
+
+        # 모든 클라이언트에게 전송
+        for connection in self.active_connections[:]:
+            try:
+                # 동기 컨텍스트에서 비동기 전송 (asyncio.run 사용)
+                import asyncio
+                asyncio.create_task(connection.send_text(message))
+            except Exception as e:
+                print(f"브로드캐스트 실패: {e}")
+                if connection in self.active_connections:
+                    self.active_connections.remove(connection)
+
     def run(self, host: str = "0.0.0.0", port: int = 8000):
         """서버 실행"""
         import uvicorn
         uvicorn.run(self.app, host=host, port=port)
+
+
+class ServerThread(threading.Thread):
+    """
+    서버를 별도 스레드에서 실행하는 스레드
+    메인 스레드에서 생명주기를 관리할 수 있도록 함
+    """
+
+    def __init__(self, output_buffer: 'ReadWriteBuffer', resources_dir: str = "./resources",
+                 host: str = "0.0.0.0", port: int = 8000):
+        super().__init__(daemon=True)
+
+        self.output_buffer = output_buffer
+        self.resources_dir = resources_dir
+        self.host = host
+        self.port = port
+        self.server: Optional[Server] = None
+
+    def run(self):
+        """스레드에서 실행될 서버"""
+        try:
+            self.server = Server(self.output_buffer, self.resources_dir)
+            print(f"서버 시작: {self.host}:{self.port}")
+            self.server.run(host=self.host, port=self.port)
+        except Exception as e:
+            print(f"서버 오류 발생: {e}")
+            raise
