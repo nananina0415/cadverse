@@ -5,12 +5,12 @@ from typing import TYPE_CHECKING, Dict, Any
 from dataclasses import asdict
 
 # (models.py의 타입을 사용)
-from types import Vector3, Quaternion, ModelState 
+from types import Vector3, Quaternion, ModelState
+from ..utils.ReadWriteBuffer import ReadWriteBuffer
 
 # 순환 참조를 피하기 위해 타입 힌트만 임포트
 if TYPE_CHECKING:
-    from main import Server
-    import ReadWriteBuffer 
+    from server import Server 
 
 # (클래스/타입: PascalCase, 변수/함수: camelCase)
 class SimLoopThread(threading.Thread):
