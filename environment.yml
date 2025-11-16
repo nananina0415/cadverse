@@ -1,0 +1,27 @@
+name: cadverse
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Python 버전 (PyChrono 호환성)
+  - python=3.11
+
+  # PyChrono - 물리 시뮬레이션 엔진
+  - pychrono=9.0.1
+
+  # 웹 서버 및 통신
+  - fastapi
+  - uvicorn
+  - websockets
+  - requests
+
+  # 데이터 처리
+  - numpy
+  - scipy
+
+  # 개발 도구
+  - pip
+
+  # pip로 설치할 패키지
+  - pip:
+    - python-multipart  # FastAPI 파일 업로드 지원
