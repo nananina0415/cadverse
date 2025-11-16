@@ -11,26 +11,44 @@ from sim_server.server import ServerThread, ServerConfig
 from sim_server.simloop import SimLoopThread
 
 
-def load_server_config(config_path: str = "sim_server/server_config.json") -> ServerConfig:
+def load_server_config(config_path: str = None) -> ServerConfig:
     """
     서버 설정 파일 로드
 
     Args:
-        config_path: 설정 파일 경로
+        config_path: 설정 파일 경로 (None이면 자동 탐색)
 
     Returns:
         ServerConfig 객체
     """
-    config_file = Path(config_path)
+    # 설정 파일 경로 자동 탐색
+    if config_path is None:
+        # main.py 위치 기준
+        script_dir = Path(__file__).parent
+        config_file = script_dir / "server_config.json"
+    else:
+        config_file = Path(config_path)
 
     if not config_file.exists():
-        print(f"설정 파일이 없습니다. 기본값을 사용합니다: {config_path}")
+        print(f"설정 파일이 없습니다. 기본값을 사용합니다: {config_file}")
         return ServerConfig()
 
     try:
-        return ServerConfig.from_json(str(config_file))
+        config = ServerConfig.from_json(str(config_file))
+
+        # resources_dir을 절대 경로로 변환 (상대 경로인 경우)
+        resources_path = Path(config.resources_dir)
+        if not resources_path.is_absolute():
+            # 설정 파일 위치 기준으로 해석
+            resources_path = (config_file.parent / resources_path).resolve()
+            config.resources_dir = str(resources_path)
+            print(f"리소스 디렉토리 절대 경로: {config.resources_dir}")
+
+        return config
     except Exception as e:
         print(f"설정 파일 로드 실패: {e}. 기본값을 사용합니다.")
+        import traceback
+        traceback.print_exc()
         return ServerConfig()
 
 
