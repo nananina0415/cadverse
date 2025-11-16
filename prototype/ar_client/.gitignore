@@ -1,0 +1,10 @@
+Library/
+Temp/
+Logs/
+UserSettings/
+.vscode/
+*.csproj
+*.sln
+*.slnx
+Assets/MobileARTemplateAssets/
+Assets/Samples/

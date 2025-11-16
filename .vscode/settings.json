@@ -1,0 +1,192 @@
+{
+  // prototype/.vscode/settings.json
+  // Conda 환경 사용 버전
+
+  // ============================================================
+  // Python 설정 (Conda 환경)
+  // ============================================================
+
+  // Conda 환경 자동 감지
+  "python.defaultInterpreterPath": "${workspaceFolder}/../.conda/envs/cadverse/bin/python",
+
+  // 또는 시스템 Conda 환경 사용
+  // "python.defaultInterpreterPath": "~/anaconda3/envs/cadverse/bin/python",
+
+  // Windows의 경우:
+  // "python.defaultInterpreterPath": "${workspaceFolder}/../.conda/envs/cadverse/python.exe",
+
+  // 포맷터: Black (저장 시 자동 실행)
+  "python.formatting.provider": "black",
+  "[python]": {
+    "editor.defaultFormatter": "ms-python.black-formatter",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": true
+    }
+  },
+
+  // 린터: Flake8
+  "python.linting.enabled": true,
+  "python.linting.flake8Enabled": true,
+  "python.linting.pylintEnabled": false,
+  "python.linting.flake8Args": ["--max-line-length=100", "--ignore=E203,W503"],
+
+  // 타입 체크
+  "python.analysis.typeCheckingMode": "basic",
+
+  // Conda 활성화
+  "python.terminal.activateEnvironment": true,
+  "python.terminal.activateEnvInCurrentTerminal": true,
+
+  // ============================================================
+  // C# / Unity 설정
+  // ============================================================
+
+  "[csharp]": {
+    "editor.defaultFormatter": "ms-dotnettools.csharp",
+    "editor.formatOnSave": true,
+    "editor.tabSize": 4
+  },
+
+  "unity.projectPath": "${workspaceFolder}/ar_client",
+
+  // ============================================================
+  // 에디터 공통 설정
+  // ============================================================
+
+  "editor.formatOnSave": true,
+  "files.autoSave": "afterDelay",
+  "files.autoSaveDelay": 1000,
+  "editor.renderWhitespace": "boundary",
+  "editor.guides.indentation": true,
+  "editor.guides.bracketPairs": true,
+  "editor.rulers": [100],
+  "files.eol": "\n",
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+
+  // ============================================================
+  // Git 설정
+  // ============================================================
+
+  "git.autofetch": true,
+  "git.confirmSync": false,
+  "git.enableSmartCommit": true,
+
+  // ============================================================
+  // 파일 탐색기 설정
+  // ============================================================
+
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.pyc": true,
+    "**/.pytest_cache": true,
+    "**/.conda": false, // Conda 환경 보이게
+    "ar_client/Library": true,
+    "ar_client/Temp": true,
+    "ar_client/Logs": true,
+    "ar_client/obj": true,
+    "**/*.csproj": true,
+    "**/*.sln": true
+  },
+
+  "search.exclude": {
+    "**/.conda": true,
+    "ar_client/Library": true,
+    "ar_client/Temp": true,
+    "**/*.meta": true
+  },
+
+  // ============================================================
+  // 터미널 설정
+  // ============================================================
+
+  "python.terminal.activateEnvironment": true,
+
+  // ============================================================
+  // 기타 유용한 설정
+  // ============================================================
+
+  "editor.minimap.enabled": true,
+  "editor.minimap.maxColumn": 100,
+  "editor.bracketPairColorization.enabled": true,
+  "editor.stickyScroll.enabled": true,
+  "editor.detectIndentation": true,
+  "editor.tabSize": 4,
+  "editor.quickSuggestions": {
+    "other": true,
+    "comments": false,
+    "strings": false
+  },
+  "editor.quickSuggestionsDelay": 10,
+
+  // ============================================================
+  // 언어별 설정
+  // ============================================================
+
+  "[json]": {
+    "editor.tabSize": 2,
+    "editor.defaultFormatter": "vscode.json-language-features"
+  },
+
+  "[markdown]": {
+    "editor.wordWrap": "on",
+    "editor.quickSuggestions": {
+      "comments": "off",
+      "strings": "off",
+      "other": "off"
+    }
+  },
+
+  "[yaml]": {
+    "editor.tabSize": 2
+  },
+
+  // ============================================================
+  // 확장별 설정
+  // ============================================================
+
+  "gitlens.currentLine.enabled": true,
+  "gitlens.hovers.currentLine.over": "line",
+
+  "better-comments.tags": [
+    {
+      "tag": "!",
+      "color": "#FF2D00",
+      "strikethrough": false,
+      "underline": false,
+      "backgroundColor": "transparent",
+      "bold": false,
+      "italic": false
+    },
+    {
+      "tag": "?",
+      "color": "#3498DB",
+      "strikethrough": false,
+      "underline": false,
+      "backgroundColor": "transparent",
+      "bold": false,
+      "italic": false
+    },
+    {
+      "tag": "todo",
+      "color": "#FF8C00",
+      "strikethrough": false,
+      "underline": false,
+      "backgroundColor": "transparent",
+      "bold": false,
+      "italic": false
+    },
+    {
+      "tag": "*",
+      "color": "#98C379",
+      "strikethrough": false,
+      "underline": false,
+      "backgroundColor": "transparent",
+      "bold": false,
+      "italic": false
+    }
+  ],
+
+  "editorconfig.enable": true
+}

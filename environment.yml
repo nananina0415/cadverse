@@ -1,0 +1,40 @@
+# prototype/environment.yml
+# Conda 환경 정의 파일
+
+name: cadverse
+
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  # Python 버전
+  - python=3.10
+
+  # PyChrono (주요!)
+  - pychrono
+
+  # 웹 서버
+  - fastapi
+  - uvicorn
+  - websockets
+
+  # 개발 도구
+  - black
+  - flake8
+  - isort
+  - mypy
+
+  # 테스트
+  - pytest
+  - pytest-asyncio
+
+  # 유틸리티
+  - python-dotenv
+  - pydantic
+
+  # pip로만 설치 가능한 패키지들
+  - pip
+  - pip:
+    # pip로만 제공되는 패키지 (있다면)
+    # - some-pip-only-package

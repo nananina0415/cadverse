@@ -1,0 +1,45 @@
+{
+  // prototype/.vscode/launch.json
+  // F5 키로 디버그 실행 가능
+
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: 서버 실행",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/sim_server/main.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "Python: 현재 파일",
+      "type": "python",
+      "request": "launch",
+      "program": "${file}",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Python: 테스트 실행",
+      "type": "python",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "tests/",
+        "-v"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Unity: Attach Debugger",
+      "type": "vstuc",
+      "request": "attach"
+    }
+  ]
+}
