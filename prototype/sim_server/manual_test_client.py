@@ -161,10 +161,15 @@ async def test_websocket_monitor():
                     # JSON 파싱 시도
                     try:
                         data = json.loads(message)
-                        print(f"[{message_count}] 수신 (JSON):")
+                        print(f"[{message_count}] ← 수신 (JSON):")
                         print(json.dumps(data, indent=2, ensure_ascii=False))
                     except json.JSONDecodeError:
-                        print(f"[{message_count}] 수신 (TEXT): {message}")
+                        print(f"[{message_count}] ← 수신 (TEXT): {message}")
+
+                    # 서버에 응답 전송
+                    response = f"Hi, CAD! {message_count} times"
+                    await websocket.send(response)
+                    print(f"[{message_count}] → 응답: {response}")
 
                     print("-" * 50)
 
