@@ -1,73 +1,92 @@
 import time
 import threading
-from typing import TYPE_CHECKING, Dict, Any
+import sys
+from pathlib import Path
+from typing import Dict, Any
 
-from ..utils.ReadWriteBuffer import ReadWriteBuffer
+# 상위 디렉토리를 import path에 추가
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# 순환 참조를 피하기 위해 타입 힌트만 임포트
-if TYPE_CHECKING:
-    from server import Server
+from utils.ReadWriteBuffer import ReadWriteBuffer
+
+
+def run_simloop(model_description: Dict[str, Any],
+                output_buffer: ReadWriteBuffer,
+                stop_event: threading.Event):
+    """
+    시뮬레이션 루프 실행 함수
+    모델 상태를 업데이트하며, 버퍼를 통해 서버에 상태를 전달
+
+    Args:
+        model_description: 모델 설명 정보
+        output_buffer: 시뮬레이션 출력 버퍼
+        stop_event: 종료 신호를 위한 이벤트
+    """
+    print("시뮬레이션 루프 시작")
+
+    while not stop_event.is_set():
+        try:
+            # TODO: 입력버퍼 읽어오기
+            # input_data = input_buffer.readBuff()
+
+            # TODO: 입력과 이전상태 -> 다음상태 계산
+            # 여기서 PyChrono 시뮬레이션 스텝 실행
+            # new_state = simulate_step(input_data)
+
+            # 임시: 테스트 데이터 생성
+            test_state = {
+                "model_1": {
+                    "position": {"x": time.time() % 10, "y": 0.0, "z": 0.0},
+                    "rotation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}
+                }
+            }
+
+            # 결과를 출력버퍼에 쓰기 (컨텍스트 매니저 사용)
+            with output_buffer as mutable_buff:
+                # mutable_buff 업데이트
+                mutable_buff.clear()
+                mutable_buff.update(test_state)
+                # with 블록을 벗어나면 자동으로 commit됨
+
+            # 시뮬레이션 주기 (예: 60 FPS = 16.67ms)
+            time.sleep(0.0167)
+
+        except Exception as e:
+            print(f"시뮬레이션 루프 오류: {e}")
+            import traceback
+            traceback.print_exc()
+
+    print("시뮬레이션 루프 종료")
 
 
 class SimLoopThread(threading.Thread):
     """
-    모델 상태를 소유하고 업데이트하며,
-    버퍼를 통해 서버에 상태를 전달하는 스레드.
+    시뮬레이션 루프를 별도 스레드에서 실행하는 스레드
+    run_simloop() 함수를 스레드에서 실행하는 래퍼
     """
 
-    def __init__(self, modelDescriptipon: Dict[str, Any], OutputBuffer: ReadWriteBuffer) -> None:
+    def __init__(self, modelDescriptipon: Dict[str, Any], OutputBuffer: ReadWriteBuffer):
         super().__init__(daemon=True)
 
         self.model_description = modelDescriptipon
         self.output_buffer = OutputBuffer
 
-        # 스레드 실행 플래그
-        self._running = True
+        # 종료 이벤트
+        self._stop_event = threading.Event()
 
-        # TODO: 추후에 입출력버퍼 참조를 직접 받아오는게 아니라 입출력 버퍼에 접근할 수 있는 키를 받아오게끔 해야 함.
-        #       이 키는 싱글톤으로서 프로세스 내에 유일하고 새 시뮬스레드가 만들어질 때 필수적으로 필요하므로
-        #       버퍼에 접근할 수 있는 시뮬스레드가 하나이도록 보장.
-        #       다만 지금은 프로토타입 제작이므로 새 시뮬생성 로직이 없으므로 패스.
+    def run(self):
+        """스레드에서 실행될 시뮬레이션 루프"""
+        try:
+            run_simloop(
+                model_description=self.model_description,
+                output_buffer=self.output_buffer,
+                stop_event=self._stop_event
+            )
+        except Exception as e:
+            print(f"시뮬레이션 스레드 오류: {e}")
+            import traceback
+            traceback.print_exc()
 
-    def run(self) -> None:
-        """스레드에서 실행될 메인 시뮬레이션 루프"""
-
-        print("시뮬레이션 루프 시작")
-
-        while self._running:
-            try:
-                # TODO: 입력버퍼 읽어오기
-                # input_data = self.input_buffer.readBuff()
-
-                # TODO: 입력과 이전상태 -> 다음상태 계산
-                # 여기서 PyChrono 시뮬레이션 스텝 실행
-                # new_state = self.simulate_step(input_data)
-
-                # 임시: 테스트 데이터 생성
-                test_state = {
-                    "model_1": {
-                        "position": {"x": time.time() % 10, "y": 0.0, "z": 0.0},
-                        "rotation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}
-                    }
-                }
-
-                # 결과를 출력버퍼에 쓰기 (컨텍스트 매니저 사용)
-                with self.output_buffer as mutable_buff:
-                    # mutable_buff 업데이트
-                    mutable_buff.clear()
-                    mutable_buff.update(test_state)
-                    # with 블록을 벗어나면 자동으로 commit됨
-
-                # 시뮬레이션 주기 (예: 60 FPS = 16.67ms)
-                time.sleep(0.0167)
-
-            except Exception as e:
-                print(f"시뮬레이션 루프 오류: {e}")
-                import traceback
-                traceback.print_exc()
-
-        print("시뮬레이션 루프 종료")
-
-    def stop(self) -> None:
+    def stop(self):
         """스레드 정지"""
-        self._running = False
+        self._stop_event.set()

@@ -1,71 +1,70 @@
 import json
 import threading
+import sys
 from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse
-from typing import List, Optional, TYPE_CHECKING
+from typing import List, TYPE_CHECKING
+
+# 상위 디렉토리를 import path에 추가
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 if TYPE_CHECKING:
-    from ..utils.ReadWriteBuffer import ReadWriteBuffer
+    from utils.ReadWriteBuffer import ReadWriteBuffer
 
 
-class Server:
+def run_server(output_buffer: 'ReadWriteBuffer',
+               resources_dir: str = "./resources",
+               host: str = "0.0.0.0",
+               port: int = 8000):
     """
-    FastAPI 기반 서버
+    FastAPI 기반 서버 실행 함수
     - WebSocket을 통한 실시간 인터랙션
     - HTTP를 통한 리소스 파일 제공 (메시 데이터 등)
+
+    Args:
+        output_buffer: 시뮬레이션 출력 버퍼
+        resources_dir: 리소스 파일 디렉토리
+        host: 서버 호스트
+        port: 서버 포트
     """
+    # FastAPI 앱 생성
+    app = FastAPI()
 
-    def __init__(self, output_buffer: 'ReadWriteBuffer', resources_dir: str = "./resources"):
-        # FastAPI 앱 생성
-        self.app = FastAPI()
+    # 리소스 파일 디렉토리
+    resources_path = Path(resources_dir)
 
-        # 출력 버퍼 (심루프에서 업데이트한 상태를 읽어옴)
-        self.output_buffer = output_buffer
+    # 현재 연결된 클라이언트 목록
+    active_connections: List[WebSocket] = []
 
-        # 리소스 파일이 저장된 디렉토리
-        self.resources_dir = Path(resources_dir)
+    # HTTP GET: 리소스 파일 제공
+    @app.get("/cadverse/resources/{file_path:path}")
+    async def get_resource(file_path: str):
+        """
+        리소스 파일 제공
+        예: GET /cadverse/resources/meshes/model.obj
+        """
+        full_path = resources_path / file_path
 
-        # 현재 연결된 모든 클라이언트 목록
-        self.active_connections: List[WebSocket] = []
+        # 파일 존재 여부 확인
+        if not full_path.exists() or not full_path.is_file():
+            raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다")
 
-        # 라우트 설정
-        self._setup_routes()
+        # 보안: 지정된 디렉토리 밖의 파일 접근 방지
+        try:
+            full_path.resolve().relative_to(resources_path.resolve())
+        except ValueError:
+            raise HTTPException(status_code=403, detail="접근이 거부되었습니다")
 
-    def _setup_routes(self):
-        """API 엔드포인트 설정"""
+        return FileResponse(full_path)
 
-        # HTTP GET: 리소스 파일 제공 (메시 데이터 등)
-        @self.app.get("/cadverse/resources/{file_path:path}")
-        async def get_resource(file_path: str):
-            """
-            리소스 파일 제공
-            예: GET /cadverse/resources/meshes/model.obj
-            """
-            full_path = self.resources_dir / file_path
-
-            # 파일 존재 여부 확인
-            if not full_path.exists() or not full_path.is_file():
-                raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다")
-
-            # 보안: 지정된 디렉토리 밖의 파일 접근 방지
-            try:
-                full_path.resolve().relative_to(self.resources_dir.resolve())
-            except ValueError:
-                raise HTTPException(status_code=403, detail="접근이 거부되었습니다")
-
-            return FileResponse(full_path)
-
-        # WebSocket: 실시간 인터랙션
-        @self.app.websocket("/cadverse/interaction")
-        async def websocket_endpoint(websocket: WebSocket):
-            await self._handle_websocket(websocket)
-
-    async def _handle_websocket(self, websocket: WebSocket):
+    # WebSocket: 실시간 인터랙션
+    @app.websocket("/cadverse/interaction")
+    async def websocket_endpoint(websocket: WebSocket):
         """WebSocket 연결 처리"""
         # 클라이언트 접속
         await websocket.accept()
-        self.active_connections.append(websocket)
+        active_connections.append(websocket)
 
         try:
             # 연결이 끊길 때까지 메시지 수신
@@ -77,62 +76,43 @@ class Server:
 
         except WebSocketDisconnect:
             # 연결 종료 시 목록에서 제거
-            self.active_connections.remove(websocket)
+            if websocket in active_connections:
+                active_connections.remove(websocket)
             print("클라이언트 연결 종료")
 
-    async def broadcast(self, message: str):
-        """모든 연결된 클라이언트에게 메시지 브로드캐스트"""
-        for connection in self.active_connections[:]:
-            try:
-                await connection.send_text(message)
-            except WebSocketDisconnect:
-                self.active_connections.remove(connection)
-
-    def broadcast_from_buffer(self):
-        """버퍼에서 읽어서 모든 클라이언트에게 브로드캐스트 (동기 함수)"""
-        # 버퍼에서 최신 상태 읽기
-        state = self.output_buffer.readBuff()
-        message = json.dumps(state)
-
-        # 모든 클라이언트에게 전송
-        for connection in self.active_connections[:]:
-            try:
-                # 동기 컨텍스트에서 비동기 전송 (asyncio.run 사용)
-                import asyncio
-                asyncio.create_task(connection.send_text(message))
-            except Exception as e:
-                print(f"브로드캐스트 실패: {e}")
-                if connection in self.active_connections:
-                    self.active_connections.remove(connection)
-
-    def run(self, host: str = "0.0.0.0", port: int = 8000):
-        """서버 실행"""
-        import uvicorn
-        uvicorn.run(self.app, host=host, port=port)
+    # 서버 실행
+    print(f"서버 시작: {host}:{port}")
+    import uvicorn
+    uvicorn.run(app, host=host, port=port)
 
 
 class ServerThread(threading.Thread):
     """
     서버를 별도 스레드에서 실행하는 스레드
-    메인 스레드에서 생명주기를 관리할 수 있도록 함
+    run_server() 함수를 스레드에서 실행하는 간단한 래퍼
     """
 
-    def __init__(self, output_buffer: 'ReadWriteBuffer', resources_dir: str = "./resources",
-                 host: str = "0.0.0.0", port: int = 8000):
+    def __init__(self, output_buffer: 'ReadWriteBuffer',
+                 resources_dir: str = "./resources",
+                 host: str = "0.0.0.0",
+                 port: int = 8000):
         super().__init__(daemon=True)
 
         self.output_buffer = output_buffer
         self.resources_dir = resources_dir
         self.host = host
         self.port = port
-        self.server: Optional[Server] = None
 
     def run(self):
         """스레드에서 실행될 서버"""
         try:
-            self.server = Server(self.output_buffer, self.resources_dir)
-            print(f"서버 시작: {self.host}:{self.port}")
-            self.server.run(host=self.host, port=self.port)
+            run_server(
+                output_buffer=self.output_buffer,
+                resources_dir=self.resources_dir,
+                host=self.host,
+                port=self.port
+            )
         except Exception as e:
             print(f"서버 오류 발생: {e}")
-            raise
+            import traceback
+            traceback.print_exc()
