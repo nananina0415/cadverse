@@ -1,13 +1,56 @@
 import time
 import sys
+import json
 from pathlib import Path
 
 # 상위 디렉토리를 import path에 추가
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.ReadWriteBuffer import ReadWriteBuffer
-from sim_server.server import ServerThread
+from sim_server.server import ServerThread, ServerConfig
 from sim_server.simloop import SimLoopThread
+
+
+def load_server_config(config_path: str = "sim_server/server_config.json") -> ServerConfig:
+    """
+    서버 설정 파일 로드
+
+    Args:
+        config_path: 설정 파일 경로
+
+    Returns:
+        ServerConfig 객체
+    """
+    config_file = Path(config_path)
+
+    if not config_file.exists():
+        print(f"설정 파일이 없습니다. 기본값을 사용합니다: {config_path}")
+        return ServerConfig()
+
+    try:
+        return ServerConfig.from_json(str(config_file))
+    except Exception as e:
+        print(f"설정 파일 로드 실패: {e}. 기본값을 사용합니다.")
+        return ServerConfig()
+
+
+def on_websocket_message(websocket, message, **kwargs):
+    """
+    WebSocket 메시지 수신 시 호출되는 콜백 함수
+
+    Args:
+        websocket: WebSocket 연결 객체
+        message: 수신한 메시지
+        **kwargs: 추가 매개변수 (output_buffer 등)
+    """
+    # 현재는 로그만 출력 (서버에서 이미 출력함)
+    # 향후 여기서 메시지 처리 로직 구현
+    # 예:
+    # output_buffer = kwargs.get('output_buffer')
+    # if output_buffer:
+    #     data = output_buffer.readBuff()
+    #     await websocket.send_text(json.dumps(data))
+    pass
 
 
 def cleanup(server_thread, sim_thread):
@@ -45,10 +88,15 @@ def main():
     """
     메인 스레드: ServerThread와 SimLoopThread를 관리
     - 버퍼를 생성하고 소유
-    - 각 스레드에 버퍼 참조를 전달
+    - 설정 파일에서 서버 설정 로드
+    - 각 스레드에 버퍼와 콜백 전달
     - 스레드가 죽으면 재시작
     - 예외 처리 및 우아한 종료
     """
+
+    # 서버 설정 로드
+    server_config = load_server_config()
+    print(f"서버 설정 로드: {server_config.to_dict()}")
 
     # 입출력 버퍼 생성 (메인이 소유)
     output_buffer = ReadWriteBuffer()
@@ -73,14 +121,14 @@ def main():
                     if server_thread is not None:
                         print("서버 스레드가 종료됨. 재시작 중...")
 
+                    # 서버 스레드 생성 (config와 콜백 전달)
                     server_thread = ServerThread(
-                        output_buffer=output_buffer,
-                        resources_dir="./resources",
-                        host="0.0.0.0",
-                        port=8000
+                        config=server_config,
+                        on_websocket_message=on_websocket_message,
+                        output_buffer=output_buffer  # kwargs로 전달
                     )
                     server_thread.start()
-                    print(f"서버 스레드 시작됨 (http://0.0.0.0:8000)")
+                    print(f"서버 스레드 시작됨 (http://{server_config.host}:{server_config.port})")
 
                 # SimLoopThread 상태 체크 및 재시작
                 if sim_thread is None or not sim_thread.is_alive():
