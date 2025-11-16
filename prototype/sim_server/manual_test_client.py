@@ -46,10 +46,10 @@ def print_menu():
 def test_http_resource():
     """HTTP GET 리소스 파일 테스트"""
     print("\n[HTTP 리소스 테스트]")
-    file_path = input("요청할 파일 경로 (예: meshes/model.obj): ").strip()
+    file_path = input("요청할 파일 경로 (예: base.obj, shaft.obj): ").strip()
 
     if not file_path:
-        file_path = "meshes/model.obj"
+        file_path = "base.obj"
         print(f"기본값 사용: {file_path}")
 
     url = f"{HTTP_BASE_URL}/cadverse/resources/{file_path}"
@@ -59,11 +59,50 @@ def test_http_resource():
         response = requests.get(url, timeout=5)
         print(f"응답 코드: {response.status_code}")
         print(f"Content-Type: {response.headers.get('Content-Type', 'N/A')}")
-        print(f"Content-Length: {response.headers.get('Content-Length', 'N/A')} bytes")
+
+        content_length = response.headers.get('Content-Length', 'N/A')
+        if content_length != 'N/A':
+            size_kb = int(content_length) / 1024
+            print(f"Content-Length: {content_length} bytes ({size_kb:.2f} KB)")
+        else:
+            print(f"Content-Length: {content_length}")
 
         if response.status_code == 200:
             print("\n✅ 성공!")
-            print(f"응답 데이터 (처음 200자):\n{response.text[:200]}")
+
+            # 텍스트 파일인지 확인 (디코딩 시도)
+            try:
+                text_content = response.content.decode('utf-8')
+
+                # 처음 1KB만 추출
+                max_bytes = 1024
+                if len(response.content) > max_bytes:
+                    text_preview = response.content[:max_bytes].decode('utf-8', errors='ignore')
+                    truncated = True
+                else:
+                    text_preview = text_content
+                    truncated = False
+
+                # 줄 단위로 분리
+                lines = text_preview.split('\n')
+
+                # 처음 10줄만 출력
+                print(f"\n응답 데이터 (처음 10줄, 최대 1KB):")
+                print("-" * 50)
+                for i, line in enumerate(lines[:10], 1):
+                    print(f"{i:2d}: {line}")
+
+                # 더 많은 줄이 있으면 표시
+                if len(lines) > 10:
+                    print(f"... (총 {len(lines)}줄 중 10줄 표시)")
+
+                if truncated:
+                    print(f"\n※ 파일이 1KB보다 큽니다. 일부만 표시됨")
+
+            except UnicodeDecodeError:
+                # 바이너리 파일
+                print("\n※ 바이너리 파일입니다. 내용을 표시할 수 없습니다.")
+                print(f"파일 크기: {len(response.content)} bytes")
         else:
             print(f"\n❌ 실패: {response.text}")
     except requests.exceptions.ConnectionError:
