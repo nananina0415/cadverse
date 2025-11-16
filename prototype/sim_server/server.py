@@ -84,15 +84,39 @@ def run_server(config: ServerConfig,
     @app.websocket("/cadverse/interaction")
     async def websocket_endpoint(websocket: WebSocket):
         """WebSocket 연결 처리"""
+        import asyncio
+        import random
+        from datetime import datetime
+
         # 클라이언트 접속
         await websocket.accept()
         active_connections.append(websocket)
+        print("클라이언트 연결됨")
+
+        # 주기적 메시지 전송 태스크
+        async def send_periodic_messages():
+            """1~3초마다 서버에서 메시지 전송"""
+            try:
+                while True:
+                    # 랜덤 대기 (1~3초)
+                    await asyncio.sleep(random.uniform(1, 3))
+
+                    # 서버 시간과 함께 메시지 전송
+                    server_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    message = f"Hello, AR! @ {server_time}"
+                    await websocket.send_text(message)
+                    print(f"→ 서버가 전송: {message}")
+            except Exception as e:
+                print(f"주기적 메시지 전송 종료: {e}")
+
+        # 백그라운드 태스크 시작
+        send_task = asyncio.create_task(send_periodic_messages())
 
         try:
             # 연결이 끊길 때까지 메시지 수신
             while True:
                 data = await websocket.receive_text()
-                print(f"클라이언트로부터 메시지 수신: {data}")
+                print(f"← 클라이언트로부터 수신: {data}")
 
                 # 콜백 함수가 등록되어 있으면 호출
                 if on_websocket_message:
@@ -112,6 +136,13 @@ def run_server(config: ServerConfig,
             if websocket in active_connections:
                 active_connections.remove(websocket)
             print("클라이언트 연결 종료")
+        finally:
+            # 주기적 전송 태스크 취소
+            send_task.cancel()
+            try:
+                await send_task
+            except asyncio.CancelledError:
+                pass
 
     # 서버 실행
     print(f"서버 시작: {config.host}:{config.port}")
