@@ -9,15 +9,20 @@ channels:
 
 dependencies:
   # Python 버전
-  - python=3.10
+  - python=3.11
 
   # PyChrono (주요!)
-  - pychrono
+  - pychrono=9.0.1
 
-  # 웹 서버
+  # 웹 서버 및 통신
   - fastapi
   - uvicorn
   - websockets
+  - requests
+
+  # 데이터 처리
+  - numpy
+  - scipy
 
   # 개발 도구
   - black
@@ -36,5 +41,4 @@ dependencies:
   # pip로만 설치 가능한 패키지들
   - pip
   - pip:
-    # pip로만 제공되는 패키지 (있다면)
-    # - some-pip-only-package
+      - python-multipart # FastAPI 파일 업로드 지원
