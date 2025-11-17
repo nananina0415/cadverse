@@ -25,13 +25,13 @@ SERVER_PORT = 8000
 WS_URL = f"ws://{SERVER_HOST}:{SERVER_PORT}/cadverse/interaction"
 
 
-async def run_client():
+async def runClient():
     """
     WebSocket 클라이언트 실행
     - 서버로부터 "Hello, AR! @ {서버시간}" 수신
     - "Hi, CAD! {메시지카운트} times" 응답
     """
-    message_count = 0
+    messageCount = 0
 
     print(f"CADverse AR 클라이언트 시작")
     print(f"서버 연결 시도: {WS_URL}\n")
@@ -46,17 +46,17 @@ async def run_client():
             while True:
                 try:
                     # 서버로부터 메시지 수신
-                    server_message = await websocket.recv()
-                    message_count += 1
+                    serverMessage = await websocket.recv()
+                    messageCount += 1
 
-                    print(f"[{message_count}] ← 서버: {server_message}")
+                    print(f"[{messageCount}] ← 서버: {serverMessage}")
 
                     # 응답 메시지 생성
-                    response = f"Hi, CAD! {message_count} times"
+                    response = f"Hi, CAD! {messageCount} times"
 
                     # 서버로 응답 전송
                     await websocket.send(response)
-                    print(f"[{message_count}] → 클라이언트: {response}")
+                    print(f"[{messageCount}] → 클라이언트: {response}")
                     print("-" * 60)
 
                 except websockets.exceptions.ConnectionClosed:
@@ -77,13 +77,13 @@ async def run_client():
         import traceback
         traceback.print_exc()
 
-    print(f"\n클라이언트 종료. 총 {message_count}개의 메시지를 수신했습니다.")
+    print(f"\n클라이언트 종료. 총 {messageCount}개의 메시지를 수신했습니다.")
 
 
 def main():
     """메인 함수"""
     try:
-        asyncio.run(run_client())
+        asyncio.run(runClient())
     except KeyboardInterrupt:
         print("\n\nCtrl+C로 종료되었습니다.")
 

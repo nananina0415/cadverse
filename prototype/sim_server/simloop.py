@@ -10,21 +10,21 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.ReadWriteBuffer import ReadWriteBuffer
 
 
-def run_simloop(model_description: Dict[str, Any],
-                output_buffer: ReadWriteBuffer,
-                stop_event: threading.Event):
+def runSimloop(modelDescription: Dict[str, Any],
+               outputBuffer: ReadWriteBuffer,
+               stopEvent: threading.Event):
     """
     시뮬레이션 루프 실행 함수
     모델 상태를 업데이트하며, 버퍼를 통해 서버에 상태를 전달
 
     Args:
-        model_description: 모델 설명 정보
-        output_buffer: 시뮬레이션 출력 버퍼
-        stop_event: 종료 신호를 위한 이벤트
+        modelDescription: 모델 설명 정보
+        outputBuffer: 시뮬레이션 출력 버퍼
+        stopEvent: 종료 신호를 위한 이벤트
     """
     print("시뮬레이션 루프 시작")
 
-    while not stop_event.is_set():
+    while not stopEvent.is_set():
         try:
             # TODO: 입력버퍼 읽어오기
             # input_data = input_buffer.readBuff()
@@ -34,7 +34,7 @@ def run_simloop(model_description: Dict[str, Any],
             # new_state = simulate_step(input_data)
 
             # 임시: 테스트 데이터 생성
-            test_state = {
+            testState = {
                 "model_1": {
                     "position": {"x": time.time() % 10, "y": 0.0, "z": 0.0},
                     "rotation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}
@@ -42,10 +42,10 @@ def run_simloop(model_description: Dict[str, Any],
             }
 
             # 결과를 출력버퍼에 쓰기 (컨텍스트 매니저 사용)
-            with output_buffer as mutable_buff:
-                # mutable_buff 업데이트
-                mutable_buff.clear()
-                mutable_buff.update(test_state)
+            with outputBuffer as mutableBuff:
+                # mutableBuff 업데이트
+                mutableBuff.clear()
+                mutableBuff.update(testState)
                 # with 블록을 벗어나면 자동으로 commit됨
 
             # 시뮬레이션 주기 (예: 60 FPS = 16.67ms)
@@ -62,25 +62,25 @@ def run_simloop(model_description: Dict[str, Any],
 class SimLoopThread(threading.Thread):
     """
     시뮬레이션 루프를 별도 스레드에서 실행하는 스레드
-    run_simloop() 함수를 스레드에서 실행하는 래퍼
+    runSimloop() 함수를 스레드에서 실행하는 래퍼
     """
 
-    def __init__(self, modelDescriptipon: Dict[str, Any], OutputBuffer: ReadWriteBuffer):
+    def __init__(self, modelDescription: Dict[str, Any], outputBuffer: ReadWriteBuffer):
         super().__init__(daemon=True)
 
-        self.model_description = modelDescriptipon
-        self.output_buffer = OutputBuffer
+        self.modelDescription = modelDescription
+        self.outputBuffer = outputBuffer
 
         # 종료 이벤트
-        self._stop_event = threading.Event()
+        self._stopEvent = threading.Event()
 
     def run(self):
         """스레드에서 실행될 시뮬레이션 루프"""
         try:
-            run_simloop(
-                model_description=self.model_description,
-                output_buffer=self.output_buffer,
-                stop_event=self._stop_event
+            runSimloop(
+                modelDescription=self.modelDescription,
+                outputBuffer=self.outputBuffer,
+                stopEvent=self._stopEvent
             )
         except Exception as e:
             print(f"시뮬레이션 스레드 오류: {e}")
@@ -89,4 +89,4 @@ class SimLoopThread(threading.Thread):
 
     def stop(self):
         """스레드 정지"""
-        self._stop_event.set()
+        self._stopEvent.set()
