@@ -19,25 +19,25 @@ class ServerConfig:
     resources_dir: str = "./resources"
 
     @classmethod
-    def from_json(cls, json_path: str) -> 'ServerConfig':
+    def fromJson(cls, jsonPath: str) -> 'ServerConfig':
         """JSON 파일에서 설정 로드"""
-        with open(json_path, 'r', encoding='utf-8') as f:
+        with open(jsonPath, 'r', encoding='utf-8') as f:
             data = json.load(f)
         return cls(**data)
 
     @classmethod
-    def from_dict(cls, data: dict) -> 'ServerConfig':
+    def fromDict(cls, data: dict) -> 'ServerConfig':
         """딕셔너리에서 설정 생성"""
         return cls(**data)
 
-    def to_dict(self) -> dict:
+    def toDict(self) -> dict:
         """딕셔너리로 변환"""
         return asdict(self)
 
 
-def run_server(config: ServerConfig,
-               on_websocket_message: Optional[Callable] = None,
-               **callback_kwargs):
+def runServer(config: ServerConfig,
+              onWebsocketMessage: Optional[Callable] = None,
+              **callbackKwargs):
     """
     FastAPI 기반 서버 실행 함수
     - WebSocket을 통한 실시간 인터랙션
@@ -45,44 +45,44 @@ def run_server(config: ServerConfig,
 
     Args:
         config: 서버 설정 (ServerConfig)
-        on_websocket_message: WebSocket 메시지 수신 시 호출할 콜백 함수
-                             시그니처: callback(websocket, message, **kwargs)
-        **callback_kwargs: 콜백 함수에 전달할 추가 매개변수
-                          예: output_buffer=buffer, input_buffer=buffer 등
+        onWebsocketMessage: WebSocket 메시지 수신 시 호출할 콜백 함수
+                           시그니처: callback(websocket, message, **kwargs)
+        **callbackKwargs: 콜백 함수에 전달할 추가 매개변수
+                         예: outputBuffer=buffer, inputBuffer=buffer 등
     """
     # FastAPI 앱 생성
     app = FastAPI()
 
     # 리소스 파일 디렉토리
-    resources_path = Path(config.resources_dir)
+    resourcesPath = Path(config.resources_dir)
 
     # 현재 연결된 클라이언트 목록
-    active_connections: List[WebSocket] = []
+    activeConnections: List[WebSocket] = []
 
     # HTTP GET: 리소스 파일 제공
     @app.get("/cadverse/resources/{file_path:path}")
-    async def get_resource(file_path: str):
+    async def getResource(filePath: str):
         """
         리소스 파일 제공
         예: GET /cadverse/resources/meshes/model.obj
         """
-        full_path = resources_path / file_path
+        fullPath = resourcesPath / filePath
 
         # 파일 존재 여부 확인
-        if not full_path.exists() or not full_path.is_file():
+        if not fullPath.exists() or not fullPath.is_file():
             raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다")
 
         # 보안: 지정된 디렉토리 밖의 파일 접근 방지
         try:
-            full_path.resolve().relative_to(resources_path.resolve())
+            fullPath.resolve().relative_to(resourcesPath.resolve())
         except ValueError:
             raise HTTPException(status_code=403, detail="접근이 거부되었습니다")
 
-        return FileResponse(full_path)
+        return FileResponse(fullPath)
 
     # WebSocket: 실시간 인터랙션
     @app.websocket("/cadverse/interaction")
-    async def websocket_endpoint(websocket: WebSocket):
+    async def websocketEndpoint(websocket: WebSocket):
         """WebSocket 연결 처리"""
         import asyncio
         import random
@@ -90,11 +90,11 @@ def run_server(config: ServerConfig,
 
         # 클라이언트 접속
         await websocket.accept()
-        active_connections.append(websocket)
+        activeConnections.append(websocket)
         print("클라이언트 연결됨")
 
         # 주기적 메시지 전송 태스크
-        async def send_periodic_messages():
+        async def sendPeriodicMessages():
             """1~3초마다 서버에서 메시지 전송"""
             try:
                 while True:
@@ -102,15 +102,15 @@ def run_server(config: ServerConfig,
                     await asyncio.sleep(random.uniform(1, 3))
 
                     # 서버 시간과 함께 메시지 전송
-                    server_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    message = f"Hello, AR! @ {server_time}"
+                    serverTime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    message = f"Hello, AR! @ {serverTime}"
                     await websocket.send_text(message)
                     print(f"→ 서버가 전송: {message}")
             except Exception as e:
                 print(f"주기적 메시지 전송 종료: {e}")
 
         # 백그라운드 태스크 시작
-        send_task = asyncio.create_task(send_periodic_messages())
+        sendTask = asyncio.create_task(sendPeriodicMessages())
 
         try:
             # 연결이 끊길 때까지 메시지 수신
@@ -119,10 +119,10 @@ def run_server(config: ServerConfig,
                 print(f"← 클라이언트로부터 수신: {data}")
 
                 # 콜백 함수가 등록되어 있으면 호출
-                if on_websocket_message:
+                if onWebsocketMessage:
                     try:
                         # 콜백 함수 호출 (websocket, message, **kwargs)
-                        result = on_websocket_message(websocket, data, **callback_kwargs)
+                        result = onWebsocketMessage(websocket, data, **callbackKwargs)
                         # 비동기 함수인 경우 await
                         if hasattr(result, '__await__'):
                             await result
@@ -133,14 +133,14 @@ def run_server(config: ServerConfig,
 
         except WebSocketDisconnect:
             # 연결 종료 시 목록에서 제거
-            if websocket in active_connections:
-                active_connections.remove(websocket)
+            if websocket in activeConnections:
+                activeConnections.remove(websocket)
             print("클라이언트 연결 종료")
         finally:
             # 주기적 전송 태스크 취소
-            send_task.cancel()
+            sendTask.cancel()
             try:
-                await send_task
+                await sendTask
             except asyncio.CancelledError:
                 pass
 
@@ -154,32 +154,32 @@ def run_server(config: ServerConfig,
 class ServerThread(threading.Thread):
     """
     서버를 별도 스레드에서 실행하는 스레드
-    run_server() 함수를 스레드에서 실행하는 래퍼
+    runServer() 함수를 스레드에서 실행하는 래퍼
     """
 
     def __init__(self,
                  config: ServerConfig,
-                 on_websocket_message: Optional[Callable] = None,
-                 **callback_kwargs):
+                 onWebsocketMessage: Optional[Callable] = None,
+                 **callbackKwargs):
         """
         Args:
             config: 서버 설정
-            on_websocket_message: WebSocket 메시지 콜백
-            **callback_kwargs: 콜백에 전달할 매개변수 (예: output_buffer=buffer)
+            onWebsocketMessage: WebSocket 메시지 콜백
+            **callbackKwargs: 콜백에 전달할 매개변수 (예: outputBuffer=buffer)
         """
         super().__init__(daemon=True)
 
         self.config = config
-        self.on_websocket_message = on_websocket_message
-        self.callback_kwargs = callback_kwargs
+        self.onWebsocketMessage = onWebsocketMessage
+        self.callbackKwargs = callbackKwargs
 
     def run(self):
         """스레드에서 실행될 서버"""
         try:
-            run_server(
+            runServer(
                 config=self.config,
-                on_websocket_message=self.on_websocket_message,
-                **self.callback_kwargs
+                onWebsocketMessage=self.onWebsocketMessage,
+                **self.callbackKwargs
             )
         except Exception as e:
             print(f"서버 오류 발생: {e}")

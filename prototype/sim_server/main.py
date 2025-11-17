@@ -11,37 +11,37 @@ from sim_server.server import ServerThread, ServerConfig
 from sim_server.simloop import SimLoopThread
 
 
-def load_server_config(config_path: str = None) -> ServerConfig:
+def loadServerConfig(configPath: str = None) -> ServerConfig:
     """
     서버 설정 파일 로드
 
     Args:
-        config_path: 설정 파일 경로 (None이면 자동 탐색)
+        configPath: 설정 파일 경로 (None이면 자동 탐색)
 
     Returns:
         ServerConfig 객체
     """
     # 설정 파일 경로 자동 탐색
-    if config_path is None:
+    if configPath is None:
         # main.py 위치 기준
-        script_dir = Path(__file__).parent
-        config_file = script_dir / "server_config.json"
+        scriptDir = Path(__file__).parent
+        configFile = scriptDir / "server_config.json"
     else:
-        config_file = Path(config_path)
+        configFile = Path(configPath)
 
-    if not config_file.exists():
-        print(f"설정 파일이 없습니다. 기본값을 사용합니다: {config_file}")
+    if not configFile.exists():
+        print(f"설정 파일이 없습니다. 기본값을 사용합니다: {configFile}")
         return ServerConfig()
 
     try:
-        config = ServerConfig.from_json(str(config_file))
+        config = ServerConfig.fromJson(str(configFile))
 
         # resources_dir을 절대 경로로 변환 (상대 경로인 경우)
-        resources_path = Path(config.resources_dir)
-        if not resources_path.is_absolute():
+        resourcesPath = Path(config.resources_dir)
+        if not resourcesPath.is_absolute():
             # 설정 파일 위치 기준으로 해석
-            resources_path = (config_file.parent / resources_path).resolve()
-            config.resources_dir = str(resources_path)
+            resourcesPath = (configFile.parent / resourcesPath).resolve()
+            config.resources_dir = str(resourcesPath)
             print(f"리소스 디렉토리 절대 경로: {config.resources_dir}")
 
         return config
@@ -52,26 +52,26 @@ def load_server_config(config_path: str = None) -> ServerConfig:
         return ServerConfig()
 
 
-def on_websocket_message(websocket, message, **kwargs):
+def onWebsocketMessage(websocket, message, **kwargs):
     """
     WebSocket 메시지 수신 시 호출되는 콜백 함수
 
     Args:
         websocket: WebSocket 연결 객체
         message: 수신한 메시지
-        **kwargs: 추가 매개변수 (output_buffer 등)
+        **kwargs: 추가 매개변수 (outputBuffer 등)
     """
     # 현재는 로그만 출력 (서버에서 이미 출력함)
     # 향후 여기서 메시지 처리 로직 구현
     # 예:
-    # output_buffer = kwargs.get('output_buffer')
-    # if output_buffer:
-    #     data = output_buffer.readBuff()
+    # outputBuffer = kwargs.get('outputBuffer')
+    # if outputBuffer:
+    #     data = outputBuffer.readBuff()
     #     await websocket.send_text(json.dumps(data))
     pass
 
 
-def cleanup(server_thread, sim_thread):
+def cleanup(serverThread, simThread):
     """
     프로그램 종료 시 리소스 정리
     - 스레드 안전하게 종료
@@ -80,23 +80,23 @@ def cleanup(server_thread, sim_thread):
     print("\n정리 작업 시작...")
 
     # 시뮬레이션 스레드 중지
-    if sim_thread and sim_thread.is_alive():
+    if simThread and simThread.is_alive():
         print("시뮬레이션 스레드 중지 중...")
-        if hasattr(sim_thread, 'stop'):
-            sim_thread.stop()
-        sim_thread.join(timeout=5)
+        if hasattr(simThread, 'stop'):
+            simThread.stop()
+        simThread.join(timeout=5)
 
-        if sim_thread.is_alive():
+        if simThread.is_alive():
             print("경고: 시뮬레이션 스레드가 5초 내에 종료되지 않음")
 
     # 서버 스레드 중지
-    if server_thread and server_thread.is_alive():
+    if serverThread and serverThread.is_alive():
         print("서버 스레드 중지 중...")
         # 데몬 스레드이므로 메인이 종료되면 자동 종료됨
         # 하지만 명시적으로 정리 시도
-        server_thread.join(timeout=2)
+        serverThread.join(timeout=2)
 
-        if server_thread.is_alive():
+        if serverThread.is_alive():
             print("경고: 서버 스레드가 2초 내에 종료되지 않음 (데몬 스레드)")
 
     print("정리 완료.")
@@ -113,18 +113,18 @@ def main():
     """
 
     # 서버 설정 로드
-    server_config = load_server_config()
-    print(f"서버 설정 로드: {server_config.to_dict()}")
+    serverConfig = loadServerConfig()
+    print(f"서버 설정 로드: {serverConfig.toDict()}")
 
     # 입출력 버퍼 생성 (메인이 소유)
-    output_buffer = ReadWriteBuffer()
+    outputBuffer = ReadWriteBuffer()
 
     # TODO: 실제 모델 description 데이터 로드
-    model_description = {}
+    modelDescription = {}
 
     # 스레드 참조
-    server_thread = None
-    sim_thread = None
+    serverThread = None
+    simThread = None
 
     print("CADverse 시뮬레이션 서버 시작")
 
@@ -135,29 +135,29 @@ def main():
                 # 내부 try: 개별 반복의 예외 처리
 
                 # ServerThread 상태 체크 및 재시작
-                if server_thread is None or not server_thread.is_alive():
-                    if server_thread is not None:
+                if serverThread is None or not serverThread.is_alive():
+                    if serverThread is not None:
                         print("서버 스레드가 종료됨. 재시작 중...")
 
                     # 서버 스레드 생성 (config와 콜백 전달)
-                    server_thread = ServerThread(
-                        config=server_config,
-                        on_websocket_message=on_websocket_message,
-                        output_buffer=output_buffer  # kwargs로 전달
+                    serverThread = ServerThread(
+                        config=serverConfig,
+                        onWebsocketMessage=onWebsocketMessage,
+                        outputBuffer=outputBuffer  # kwargs로 전달
                     )
-                    server_thread.start()
-                    print(f"서버 스레드 시작됨 (http://{server_config.host}:{server_config.port})")
+                    serverThread.start()
+                    print(f"서버 스레드 시작됨 (http://{serverConfig.host}:{serverConfig.port})")
 
                 # SimLoopThread 상태 체크 및 재시작
-                if sim_thread is None or not sim_thread.is_alive():
-                    if sim_thread is not None:
+                if simThread is None or not simThread.is_alive():
+                    if simThread is not None:
                         print("시뮬레이션 스레드가 종료됨. 재시작 중...")
 
-                    sim_thread = SimLoopThread(
-                        modelDescriptipon=model_description,
-                        OutputBuffer=output_buffer
+                    simThread = SimLoopThread(
+                        modelDescription=modelDescription,
+                        outputBuffer=outputBuffer
                     )
-                    sim_thread.start()
+                    simThread.start()
                     print("시뮬레이션 스레드 시작됨")
 
                 # 1초 대기 후 다시 체크
@@ -185,7 +185,7 @@ def main():
 
     finally:
         # 어떤 경우든 정리 작업 수행
-        cleanup(server_thread, sim_thread)
+        cleanup(serverThread, simThread)
 
 
 if __name__ == "__main__":
