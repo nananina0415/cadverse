@@ -1,0 +1,82 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+	<model name="">
+		<link name="base">
+			<self_collide>false</self_collide>
+			<pose>-0.019172666755476468 0.035670005359733345 0.053947812311401916 0.0 -0.0 0.0</pose>
+			<inertial>
+				<pose>0.0 0.0 0.0 0 0 0</pose>
+				<mass>0.5499727599899886</mass>
+				<inertia>
+					<ixx>0.0008379291388991572</ixx>
+					<ixy>2.5328672759172835e-11</ixy>
+					<ixz>-1.80126788320667e-07</ixz>
+					<iyy>0.0024143127774998324</iyy>
+					<iyz>-1.260642333456019e-09</iyz>
+					<izz>0.002085300657936364</izz>
+				</inertia>
+			</inertial>
+			<collision name="base_collision">
+				<geometry>
+					<mesh>
+						<uri>model:///meshes/CAD/base.stl</uri>
+						<scale>0.001 0.001 0.001</scale>
+					</mesh>
+				</geometry>
+			</collision>
+			<visual name="base_visual">
+				<geometry>
+					<mesh>
+						<uri>model:///meshes/CAD/base.stl</uri>
+						<scale>0.001 0.001 0.001</scale>
+					</mesh>
+				</geometry>
+			</visual>
+		</link>
+		<link name="shaft">
+			<self_collide>false</self_collide>
+			<pose>-0.02066100896479136 0.03567001266373968 0.08228449770913322 0.0 -0.0 0.0</pose>
+			<inertial>
+				<pose>0.0 0.0 0.0 0 0 0</pose>
+				<mass>1.089337301880407</mass>
+				<inertia>
+					<ixx>0.00015787972033931512</ixx>
+					<ixy>-1.482735640934152e-11</ixy>
+					<ixz>3.5356524141363367e-07</ixz>
+					<iyy>0.0027977672247346008</iyy>
+					<iyz>9.571707337840963e-11</iyz>
+					<izz>0.002800534679014474</izz>
+				</inertia>
+			</inertial>
+			<collision name="shaft_collision">
+				<geometry>
+					<mesh>
+						<uri>model:///meshes/CAD/shaft.stl</uri>
+						<scale>0.001 0.001 0.001</scale>
+					</mesh>
+				</geometry>
+			</collision>
+			<visual name="shaft_visual">
+				<geometry>
+					<mesh>
+						<uri>model:///meshes/CAD/shaft.stl</uri>
+						<scale>0.001 0.001 0.001</scale>
+					</mesh>
+				</geometry>
+			</visual>
+		</link>
+		<joint name="rot1" type="revolute">
+			<parent>base</parent>
+			<child>shaft</child>
+			<pose>0.06943161461044599 0.01687036893080189 0.013193300033380985 0 0 0</pose>
+			<axis>
+				<xyz>0.9999999999999981 1.5371486682968875e-15 3.1363800445660964e-15</xyz>
+				<limit>
+					<lower>0.0</lower>
+					<upper>0.0</upper>
+				</limit>
+				<use_parent_model_frame>0</use_parent_model_frame>
+			</axis>
+		</joint>
+	</model>
+</sdf>
