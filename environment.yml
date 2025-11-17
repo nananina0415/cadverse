@@ -1,12 +1,17 @@
+# prototype/environment.yml
+# Conda 환경 정의 파일
+
 name: cadverse
+
 channels:
   - conda-forge
   - defaults
+
 dependencies:
-  # Python 버전 (PyChrono 호환성)
+  # Python 버전
   - python=3.11
 
-  # PyChrono - 물리 시뮬레이션 엔진
+  # PyChrono (주요!)
   - pychrono=9.0.1
 
   # 웹 서버 및 통신
@@ -20,8 +25,20 @@ dependencies:
   - scipy
 
   # 개발 도구
-  - pip
+  - black
+  - flake8
+  - isort
+  - mypy
 
-  # pip로 설치할 패키지
+  # 테스트
+  - pytest
+  - pytest-asyncio
+
+  # 유틸리티
+  - python-dotenv
+  - pydantic
+
+  # pip로만 설치 가능한 패키지들
+  - pip
   - pip:
-    - python-multipart  # FastAPI 파일 업로드 지원
+      - python-multipart # FastAPI 파일 업로드 지원
