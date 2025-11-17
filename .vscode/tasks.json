@@ -1,0 +1,89 @@
+{
+  // prototype/.vscode/tasks.json
+  // Ctrl+Shift+B 로 빌드 작업 실행 가능
+
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "서버 실행",
+      "type": "shell",
+      "command": "${workspaceFolder}/venv/bin/python",
+      "args": ["sim_server/main.py"],
+      "windows": {
+        "command": "${workspaceFolder}\\venv\\Scripts\\python.exe"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "테스트 실행",
+      "type": "shell",
+      "command": "${workspaceFolder}/venv/bin/python",
+      "args": ["-m", "pytest", "tests/", "-v"],
+      "windows": {
+        "command": "${workspaceFolder}\\venv\\Scripts\\python.exe"
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Black 포맷",
+      "type": "shell",
+      "command": "${workspaceFolder}/venv/bin/python",
+      "args": ["-m", "black", "sim_server/", "utils/"],
+      "windows": {
+        "command": "${workspaceFolder}\\venv\\Scripts\\python.exe"
+      },
+      "group": "build",
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Flake8 린트",
+      "type": "shell",
+      "command": "${workspaceFolder}/venv/bin/python",
+      "args": [
+        "-m",
+        "flake8",
+        "sim_server/",
+        "utils/",
+        "--max-line-length=100"
+      ],
+      "windows": {
+        "command": "${workspaceFolder}\\venv\\Scripts\\python.exe"
+      },
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "빌드 & 테스트",
+      "type": "shell",
+      "command": "python",
+      "args": ["scripts/build_and_test.py"],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

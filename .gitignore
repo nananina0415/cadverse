@@ -26,7 +26,12 @@ env/
 ENV/
 
 # IDE
-.vscode/
+# VSCode 개인 설정은 제외, 프로젝트 설정만 포함
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/tasks.json
 .idea/
 *.swp
 *.swo

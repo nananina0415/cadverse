@@ -1,0 +1,53 @@
+{
+  // prototype/.vscode/extensions.json
+  // VSCode가 이 확장들을 자동으로 "설치 추천"함
+
+  "recommendations": [
+    // ============================================================
+    // Python 개발 (필수)
+    // ============================================================
+    "ms-python.python", // Python 기본 (필수!)
+    "ms-python.vscode-pylance", // 빠른 IntelliSense
+    "ms-python.black-formatter", // Black 포맷터 (자동 포맷)
+    "ms-python.isort", // Import 정렬
+    "ms-python.flake8", // 린터
+
+    // ============================================================
+    // C# / Unity 개발 (필수)
+    // ============================================================
+    "ms-dotnettools.csharp", // C# 기본
+    "visualstudiotoolsforunity.vstuc", // Unity 지원
+    "kleber-swf.unity-code-snippets", // Unity 코드 스니펫
+
+    // ============================================================
+    // Git 관련
+    // ============================================================
+    "eamodio.gitlens", // Git 히스토리 시각화
+    "mhutchie.git-graph", // Git 그래프
+
+    // ============================================================
+    // 코드 품질 & 협업
+    // ============================================================
+    "editorconfig.editorconfig", // .editorconfig 지원
+    "streetsidesoftware.code-spell-checker", // 철자 검사
+
+    // ============================================================
+    // 유틸리티
+    // ============================================================
+    "aaron-bond.better-comments", // 주석 가독성 향상
+    "oderwat.indent-rainbow", // 들여쓰기 시각화
+    "pkief.material-icon-theme", // 파일 아이콘
+
+    // ============================================================
+    // Markdown (문서 작업)
+    // ============================================================
+    "yzhang.markdown-all-in-one", // Markdown 편집
+    "davidanson.vscode-markdownlint" // Markdown 린트
+  ],
+
+  // 이 확장은 설치하지 말 것 (충돌 가능)
+  "unwantedRecommendations": [
+    "ms-python.pylint", // Flake8과 중복
+    "hookyqr.beautify" // Black과 충돌
+  ]
+}
