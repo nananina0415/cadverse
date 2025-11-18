@@ -291,7 +291,7 @@ def step_sim(handle, dt):
     # 출력 버퍼가 있고 write_outputs가 구현되어 있다면 호출
     if buffer is not None and hasattr(buffer, "write_outputs"):
         try:
-            buffer.write_outputs(states)
+            buffer.write_outputs(frame)
         except Exception as e:
             print("[sim] write_outputs() 호출 중 에러:", e)
 
