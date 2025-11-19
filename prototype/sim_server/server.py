@@ -61,12 +61,12 @@ def runServer(config: ServerConfig,
 
     # HTTP GET: 리소스 파일 제공
     @app.get("/cadverse/resources/{file_path:path}")
-    async def getResource(filePath: str):
+    async def getResource(file_path: str):
         """
         리소스 파일 제공
         예: GET /cadverse/resources/meshes/model.obj
         """
-        fullPath = resourcesPath / filePath
+        fullPath = resourcesPath / file_path
 
         # 파일 존재 여부 확인
         if not fullPath.exists() or not fullPath.is_file():
@@ -99,13 +99,13 @@ def runServer(config: ServerConfig,
             try:
                 while True:
                     # 랜덤 대기 (1~3초)
-                    await asyncio.sleep(random.uniform(1, 3))
+                    await asyncio.sleep(random.uniform(3, 5))
 
                     # 서버 시간과 함께 메시지 전송
                     serverTime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     message = f"Hello, AR! @ {serverTime}"
                     await websocket.send_text(message)
-                    print(f"→ 서버가 전송: {message}")
+                    print(f"-> 서버가 전송: {message}")
             except Exception as e:
                 print(f"주기적 메시지 전송 종료: {e}")
 
@@ -116,7 +116,12 @@ def runServer(config: ServerConfig,
             # 연결이 끊길 때까지 메시지 수신
             while True:
                 data = await websocket.receive_text()
-                print(f"← 클라이언트로부터 수신: {data}")
+                print(f"<- 클라이언트로부터 수신: {data}")
+
+                # 응답 전송 추가
+                response = f"I received \"{data}\""
+                await websocket.send_text(response)
+                print(f"-> 서버가 응답: {response}")
 
                 # 콜백 함수가 등록되어 있으면 호출
                 if onWebsocketMessage:

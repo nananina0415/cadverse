@@ -127,14 +127,14 @@ async def test_websocket_once():
                 print(f"기본값 사용: {message}")
 
             await websocket.send(message)
-            print(f"→ 전송: {message}")
+            print(f"-> 전송: {message}")
 
             # 응답 대기 (타임아웃 5초)
             try:
                 response = await asyncio.wait_for(websocket.recv(), timeout=5.0)
-                print(f"← 수신: {response}")
+                print(f"<- 수신: {response}")
             except asyncio.TimeoutError:
-                print("← (응답 없음 - 타임아웃)")
+                print("<- (응답 없음 - 타임아웃)")
 
             print("\n✅ 테스트 완료")
     except Exception as e:
@@ -161,15 +161,15 @@ async def test_websocket_monitor():
                     # JSON 파싱 시도
                     try:
                         data = json.loads(message)
-                        print(f"[{message_count}] ← 수신 (JSON):")
+                        print(f"[{message_count}] <- 수신 (JSON):")
                         print(json.dumps(data, indent=2, ensure_ascii=False))
                     except json.JSONDecodeError:
-                        print(f"[{message_count}] ← 수신 (TEXT): {message}")
+                        print(f"[{message_count}] <- 수신 (TEXT): {message}")
 
                     # 서버에 응답 전송
                     response = f"Hi, CAD! {message_count} times"
                     await websocket.send(response)
-                    print(f"[{message_count}] → 응답: {response}")
+                    print(f"[{message_count}] -> 응답: {response}")
 
                     print("-" * 50)
 
@@ -197,7 +197,7 @@ async def test_websocket_chat():
             while True:
                 # 사용자 입력 (비동기)
                 message = await asyncio.get_event_loop().run_in_executor(
-                    None, input, "→ 보낼 메시지: "
+                    None, input, "-> 보낼 메시지: "
                 )
 
                 if message.strip().lower() == 'quit':
@@ -212,9 +212,9 @@ async def test_websocket_chat():
                     # 응답 수신 (타임아웃 3초)
                     try:
                         response = await asyncio.wait_for(websocket.recv(), timeout=3.0)
-                        print(f"← 수신: {response}\n")
+                        print(f"<- 수신: {response}\n")
                     except asyncio.TimeoutError:
-                        print("← (응답 없음)\n")
+                        print("<- (응답 없음)\n")
 
     except Exception as e:
         print(f"❌ 오류: {e}")
