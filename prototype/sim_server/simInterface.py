@@ -3,6 +3,8 @@ import simulate
 class Simulator:
     def step():
         ....
+    def clear():
+        # 시뮬레이션 종료 시 호출해야 하는 함수가 있으면 여기서 호출
 
 class SimState:
     ...
