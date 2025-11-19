@@ -7,11 +7,11 @@ from typing import Dict, Any
 # 상위 디렉토리를 import path에 추가
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from utils.ReadWriteBuffer import ReadWriteBuffer
+from prototype.utils.OwnedBuffer import OwnedBuffer
 
 
 def runSimloop(modelDescription: Dict[str, Any],
-               outputBuffer: ReadWriteBuffer,
+               outputBuffer: OwnedBuffer,
                stopEvent: threading.Event):
     """
     시뮬레이션 루프 실행 함수
@@ -65,7 +65,7 @@ class SimLoopThread(threading.Thread):
     runSimloop() 함수를 스레드에서 실행하는 래퍼
     """
 
-    def __init__(self, modelDescription: Dict[str, Any], outputBuffer: ReadWriteBuffer):
+    def __init__(self, modelDescription: Dict[str, Any], outputBuffer: OwnedBuffer):
         super().__init__(daemon=True)
 
         self.modelDescription = modelDescription

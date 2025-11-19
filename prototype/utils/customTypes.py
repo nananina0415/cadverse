@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Protocol
 
 @dataclass(frozen=True)
 class Vector3:
@@ -17,3 +18,6 @@ class Quaternion:
 class ModelState:
     position: Vector3
     rotation: Quaternion
+
+class Indexable(Protocol):
+    def __getitem__(self, key): ...

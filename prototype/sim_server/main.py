@@ -6,7 +6,7 @@ from pathlib import Path
 # 상위 디렉토리를 import path에 추가
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from utils.ReadWriteBuffer import ReadWriteBuffer
+from utils.OwnedBuffer import OwnedBuffer
 from sim_server.server import ServerThread, ServerConfig
 from sim_server.simloop import SimLoopThread
 
@@ -117,7 +117,7 @@ def main():
     print(f"서버 설정 로드: {serverConfig.toDict()}")
 
     # 입출력 버퍼 생성 (메인이 소유)
-    outputBuffer = ReadWriteBuffer()
+    outputBuffer = OwnedBuffer()
 
     # TODO: 실제 모델 description 데이터 로드
     modelDescription = {}
