@@ -1,6 +1,6 @@
 import threading
 import copy
-from utils.customTypes import Indexable
+from sim_server.utils.customTypes import Indexable
 
 class OwnedBuffer:
     def __init__(self, initialBuff: Indexable):
