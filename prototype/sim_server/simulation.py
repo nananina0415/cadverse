@@ -12,8 +12,8 @@ import threading
 from dataclasses import dataclass
 from typing import Callable
 # from simulate import simulate, SimStates, SimDescription
-from utils.OwnedBuffer import OwnedBuffer
-from utils.customTypes import Indexable
+from sim_server.utils.OwnedBuffer import OwnedBuffer
+from sim_server.utils.customTypes import Indexable
 
 @dataclass(frozen=True)
 class SimLoopThreadHandle:

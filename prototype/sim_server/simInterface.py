@@ -1,4 +1,4 @@
-import simulate
+from sim_server import simulate
 
 class Simulator:
     def step(self): ...

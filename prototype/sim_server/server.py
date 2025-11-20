@@ -1,14 +1,11 @@
 import json
 import threading
-import sys
 from pathlib import Path
 from dataclasses import dataclass, asdict
 from typing import List, TYPE_CHECKING, Callable, Optional, Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse
 
-# 상위 디렉토리를 import path에 추가
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 @dataclass

@@ -1,13 +1,8 @@
 import time
 import threading
-import sys
-from pathlib import Path
 from typing import Dict, Any
 
-# 상위 디렉토리를 import path에 추가
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from prototype.utils.OwnedBuffer import OwnedBuffer
+from sim_server.utils.OwnedBuffer import OwnedBuffer
 
 
 def runSimloop(modelDescription: Dict[str, Any],
@@ -41,12 +36,8 @@ def runSimloop(modelDescription: Dict[str, Any],
                 }
             }
 
-            # 결과를 출력버퍼에 쓰기 (컨텍스트 매니저 사용)
-            with outputBuffer as mutableBuff:
-                # mutableBuff 업데이트
-                mutableBuff.clear()
-                mutableBuff.update(testState)
-                # with 블록을 벗어나면 자동으로 commit됨
+            # 결과를 출력버퍼에 쓰기
+            outputBuffer.commit(testState)
 
             # 시뮬레이션 주기 (예: 60 FPS = 16.67ms)
             time.sleep(0.0167)
