@@ -2,7 +2,7 @@ import time
 import threading
 from typing import Dict, Any
 
-from sim_server.utils.OwnedBuffer import OwnedBuffer
+from prototype.sim_server.utils.owned_buffer import OwnedBuffer
 
 
 def runSimloop(modelDescription: Dict[str, Any],

@@ -12,7 +12,7 @@ import threading
 from dataclasses import dataclass
 from typing import Callable
 # from simulate import simulate, SimStates, SimDescription
-from sim_server.utils.OwnedBuffer import OwnedBuffer
+from prototype.sim_server.utils.owned_buffer import OwnedBuffer
 from sim_server.utils.customTypes import Indexable
 
 @dataclass(frozen=True)
@@ -64,4 +64,7 @@ oldSimStart = SimLoopThread(SimDescription.fromJSON("filename"), inputShareBuff.
 oldSimLoopThreadHandle = oldSimStart(stateShareBuff)
 newSimLoopThreadHandle = hotSwapSimLoopThread(oldSimLoopThreadHandle, SimDescription.fromSDF("filename"), inputShareBuff)
 
-
+# TODO: 리팩터링
+# LoopThread(target,args)->Thread
+# simLoopThread = LoopThread(target=simulator.step)
+# simLoopThread.start(oldHandle.release(), inputShareBuff.readonly)
