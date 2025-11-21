@@ -8,3 +8,5 @@ UserSettings/
 *.slnx
 Assets/MobileARTemplateAssets/
 Assets/Samples/
+Build/*
+.utmp/
