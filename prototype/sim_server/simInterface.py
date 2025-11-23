@@ -77,7 +77,7 @@ class Simulator:
 # make_sim
 def make_sim(sim_description: SimDescription) -> Tuple[Simulator, SimState]:
     """
-    simulate.make_sim()을 호출해 파이크로노 시스템을 초기화하고,
+    simulate.make_sim()을 호출해 파이크로노 시스템 초기화하고,
     Simulator 객체로 감싸서 반환
     """
 
