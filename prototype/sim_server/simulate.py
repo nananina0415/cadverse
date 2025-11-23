@@ -1,25 +1,27 @@
 # simulate.py  (시뮬레이터 엔진)
 
+import json
+import math as m
+import os
+import re
+import time
+
 import pychrono as chrono
 import pychrono.irrlicht as chronoirr
 
-import os
-import json
-import re
-import time
-import math as m
-
-#===================================================================================================
+# ===================================================================================================
 # 1. SimHandle 구조 정의
+
 
 class SimHandle:
     def __init__(self, sys, bodies, joints, motors, buffer):
-        self.sys = sys            # PyChrono 시스템
-        self.bodies = bodies      # 생성된 모든 바디
-        self.joints = joints      # 생성된 모든 조인트
-        self.motors = motors      # 생성된 모든 모터
-        self.buffer = buffer      # input/output buffer 핸들
-        self.last_dump_time = 0   # (AR JSON용) 마지막 프레임 저장 시각
+        self.sys = sys  # PyChrono 시스템
+        self.bodies = bodies  # 생성된 모든 바디
+        self.joints = joints  # 생성된 모든 조인트
+        self.motors = motors  # 생성된 모든 모터
+        self.buffer = buffer  # input/output buffer 핸들
+        self.last_dump_time = 0  # (AR JSON용) 마지막 프레임 저장 시각
+
 
 # Class SimHandle(시뮬레이션의 두뇌역할)
 # 여러 값들을 하나로 묶어서 관리
@@ -34,9 +36,10 @@ class SimHandle:
 # self.buffer
 # 입력/츨략 버퍼
 
-#===================================================================================================
+# ===================================================================================================
 # 2. make_sim() : 시뮬레이션 한 세트 초기화
 # Pychrono 시스템을 만들고 필요한 바디/조인트/모터를 준비해서 SimHandle이라는 리모컨 객체로 묶어 반환하는 함수
+
 
 def make_sim(model_meta, buffer_handle):
     # model_meta : json 형태의 메타 정보
@@ -54,6 +57,7 @@ def make_sim(model_meta, buffer_handle):
             "mass": 500,
             "fixed": False,
             "motor_name": "shaft_motor"
+            "offset":[0.0, 0.0, 0.03]
         },
         "base": {
             "name": "base",
@@ -111,7 +115,7 @@ def make_sim(model_meta, buffer_handle):
 
         if asm_type == "shaft_base":
             shaft_meta = asm["shaft"]
-            base_meta  = asm["base"]
+            base_meta = asm["base"]
             motor_speed = asm.get("motor_speed", 5.0)
 
             create_shaft_with_base(
@@ -164,13 +168,16 @@ def make_sim(model_meta, buffer_handle):
         buffer=buffer_handle,
     )
 
-    print(f"[sim] make_sim() 완료 → bodies={len(bodies)}, joints={len(joints)}, motors={len(motors)}")
+    print(
+        f"[sim] make_sim() 완료 → bodies={len(bodies)}, joints={len(joints)}, motors={len(motors)}"
+    )
     return handle
     # 이 handle을 main.py에 받아서 Step_sim(handle,dt), Kill_sim(handle)과 같이 사용
 
 
-#==================================================================================================
+# ==================================================================================================
 # 상태/버퍼/json 관련 헬퍼
+
 
 ## 바디 상태를 dict로 변환
 def body_to_state_dict(body):
@@ -181,8 +188,8 @@ def body_to_state_dict(body):
     AR/버퍼/JSON으로 넘기기 좋은 형태.
     """
 
-    pos = body.GetPos()   # ChVector3d
-    rot = body.GetRot()   # ChQuaterniond (e0, e1, e2, e3)
+    pos = body.GetPos()  # ChVector3d
+    rot = body.GetRot()  # ChQuaterniond (e0, e1, e2, e3)
 
     state = {
         "name": body.GetName(),
@@ -190,6 +197,7 @@ def body_to_state_dict(body):
         "rot": [rot.e0, rot.e1, rot.e2, rot.e3],
     }
     return state
+
 
 ## 한 프레임 전체 덤프 구조 만들기
 def dump_frame(t, bodies):
@@ -207,14 +215,13 @@ def dump_frame(t, bodies):
     ]
     }
     """
-    frame = {
-        "time": float(t),
-        "bodies": [body_to_state_dict(b) for b in bodies]
-    }
+    frame = {"time": float(t), "bodies": [body_to_state_dict(b) for b in bodies]}
     return frame
 
-#==================================================================================================
+
+# ==================================================================================================
 # 3. step_sim() : 시뮬레이션 한 스텝 진행
+
 
 def step_sim(handle, dt):
     """
@@ -230,7 +237,7 @@ def step_sim(handle, dt):
     buffer = handle.buffer
 
     # 1) 입력 읽기 (버퍼가 있고 read_inputs가 있으면 호출)
-    inputs = None  #입력 없음 상태로 시작
+    inputs = None  # 입력 없음 상태로 시작
     if buffer is not None and hasattr(buffer, "read_inputs"):
         try:
             inputs = buffer.read_inputs()
@@ -295,13 +302,15 @@ def step_sim(handle, dt):
         except Exception as e:
             print("[sim] write_outputs() 호출 중 에러:", e)
 
-#==================================================================================================
+
+# ==================================================================================================
 
 # 4. kill_sim() : 시뮬레이션 종료/정리
 #  ㄴ AR JSON 프레임 기록이 있으면 저장
 #  ㄴ 파이크로노 시스템 내부 리소스 해제
 #  ㄴ 바디/조인트/모터 리스트 비워주기
 #  ㄴ 종료 로그 출력
+
 
 def kill_sim(handle):
     """
@@ -326,7 +335,7 @@ def kill_sim(handle):
     # 2) PyChrono 시스템 자체는 C++ 기반이라,
     #    Python 쪽에서는 크게 정리할 게 없음.
     #    필요한 경우 여기서 custom cleanup 가능.
-    handle.sys.Clear()   # 안전하게 모든 Chrono 객체 제거
+    handle.sys.Clear()  # 안전하게 모든 Chrono 객체 제거
 
     # 3) 내부 참조 제거
     #   ㄴSimHandle 내부 목록 삭제
@@ -336,13 +345,15 @@ def kill_sim(handle):
 
     print("[sim] 시뮬레이터 리소스 정리 완료 — kill_sim() 종료")
 
-#===============================================================================================
+
+# ===============================================================================================
 # 헬퍼 함수
 
 
 # 1. 바디 관련 함수들
 
 ## 1) OBJ bounding box → 중심/회전축 자동 검출
+
 
 def read_obj_bounds(path):
     xs, ys, zs = [], [], []
@@ -354,6 +365,7 @@ def read_obj_bounds(path):
                 ys.append(float(y))
                 zs.append(float(z))
     return min(xs), max(xs), min(ys), max(ys), min(zs), max(zs)
+
 
 def detect_axis_and_center(path):
     """
@@ -383,10 +395,10 @@ def detect_axis_and_center(path):
     return center, axis
 
 
-
 ## 2) 기어 파일명에서 module(m)/teeth(z) 파싱 + 피치반지름 계산
 
 import re
+
 
 def parse_module_teeth_from_name(fn):
     """
@@ -402,6 +414,7 @@ def parse_module_teeth_from_name(fn):
 
     return float(m_m.group(1)), int(m_z.group(1))
 
+
 def pitch_radius_from_name(fn, fallback=None):
     """
     피치반지름 r[m] = (module[m] * z) / 2
@@ -412,6 +425,7 @@ def pitch_radius_from_name(fn, fallback=None):
         module_m = module_mm / 1000.0
         return 0.5 * module_m * z
     return fallback
+
 
 ## 3) OBJ 로드하여 ChBodyEasyMesh 생성
 def load_body_from_obj(meta):
@@ -435,10 +449,12 @@ def load_body_from_obj(meta):
 
     return body
 
-#==================================================================================================
+
+# ==================================================================================================
 # 2. 조인트/모터 관련 함수
 
 ## 1) 축을 쿼터니언으로 바꿔주는 헬퍼
+
 
 def quat_from_axis(axis: chrono.ChVector3d):
     """
@@ -524,11 +540,15 @@ def make_gear_link(sys, gearA, gearB, rA, rB):
     sys.AddLink(link)
     return link
 
-#================================================================================================
+
+# ================================================================================================
 # 3.조립헬퍼
 ## 1) 샤프트 + 베이스 + 회전조인트 + 모터
 
-def create_shaft_with_base(sys, shaft_meta, base_meta, motor_speed, bodies, joints, motors):
+
+def create_shaft_with_base(
+    sys, shaft_meta, base_meta, motor_speed, bodies, joints, motors
+):
     """
     샤프트-베이스 한 세트를 조립하는 헬퍼.
 
@@ -561,23 +581,24 @@ def create_shaft_with_base(sys, shaft_meta, base_meta, motor_speed, bodies, join
     # 샤프트 바디 생성
     shaft = load_body_from_obj(shaft_meta)
     shaft.SetFixed(False)  # 샤프트는 회전할 수 있어야 함
+    offset_list = shaft_meta.get("offset", [0.0, 0.0, 0.0])
+    shaft_offset = chrono.ChVector3d(offset_list[0], offset_list[1], offset_list[2])
+    shaft.SetPos(shaft_offset)
     sys.Add(shaft)
     bodies.append(shaft)
 
     # 샤프트 OBJ에서 중심/회전축 자동 검출
     shaft_mesh_path = shaft_meta["mesh"]
-    shaft_center, shaft_axis = detect_axis_and_center(shaft_mesh_path)
-
-    print("[asm] shaft center =", shaft_center)
+    shaft_center_local, shaft_axis = detect_axis_and_center(shaft_mesh_path)
+    shaft_center_world = shaft_center_local + shaft_offset
+    print("[asm] shaft center (local) =", shaft_center_local)
+    print("[asm] shaft offest         =", shaft_offset)
+    print("[asm] shaft center =", shaft_center_world)
     print("[asm] shaft axis   =", shaft_axis)
 
     # 회전 조인트 생성 (샤프트 - 베이스)
     rev = make_revolute(
-        sys=sys,
-        body=shaft,
-        base=base,
-        center=shaft_center,
-        axis=shaft_axis
+        sys=sys, body=shaft, base=base, center=shaft_center_world, axis=shaft_axis
     )
     joints.append(rev)
 
@@ -586,9 +607,9 @@ def create_shaft_with_base(sys, shaft_meta, base_meta, motor_speed, bodies, join
         sys=sys,
         body=shaft,
         base=base,
-        center=shaft_center,
+        center=shaft_center_world,
         axis=shaft_axis,
-        speed=motor_speed
+        speed=motor_speed,
     )
     # 모터 이름을 달아두면 step_sim에서 입력으로 제어 가능
     if hasattr(motor, "SetName"):
@@ -604,9 +625,13 @@ def create_shaft_with_base(sys, shaft_meta, base_meta, motor_speed, bodies, join
         "motor": motor,
     }
 
+
 ## 2) 기어 A/B + 조인트 + 모터 + 기어링크
 
-def create_gear_pair(sys, gearA_meta, gearB_meta, motor_speed, bodies, joints, motors, ground=None):
+
+def create_gear_pair(
+    sys, gearA_meta, gearB_meta, motor_speed, bodies, joints, motors, ground=None
+):
     """
     기어 두 개(gearA, gearB)를 한 세트로 조립하는 헬퍼.
 
@@ -708,4 +733,3 @@ def create_gear_pair(sys, gearA_meta, gearB_meta, motor_speed, bodies, joints, m
         "motor": motor,
         "gear_link": gear_link,
     }
-
