@@ -7,23 +7,14 @@
 # TODO: 예외처리, 에러처리 및 테스트 코드 작성
 # TODO: 문서화
 
-# NOTE:
-#   simulate.py/simInterface.py에서 나오는 SimState(엔진 내부 상태)와
-#   customTypes.ModelState(버퍼/외부 연동용 상태)의 구조가 달라서,
-#   이 파일에서는 simInterface.to_custom_types()를 사용해 상태를 변환한 뒤
-#   OwnedBuffer에 넣도록 변경함.
-
 import copy
 import threading
 from dataclasses import dataclass
 from typing import Callable
+# from simulate import simulate, SimStates, SimDescription
 from prototype.sim_server.utils.owned_buffer import OwnedBuffer
 from sim_server.utils.customTypes import Indexable
-from simInterface import (
-    SimDescription,
-    make_sim,        # (SimDescription) -> (Simulator, SimState)
-    to_custom_types, # SimState -> dict[str, customTypes.ModelState]
-)
+
 @dataclass(frozen=True)
 class SimLoopThreadHandle:
     thread: threading.Thread
@@ -34,11 +25,7 @@ class SimLoopThread:
     def __init__(self,
                  simDescription: SimDescription,
                  readUserInput: Callable[[], Indexable]):
-        # 기존: self.simulator, self.initState = simulate(simDescription)
-        # 변경: simInterface.make_sim() 사용 + initState를 customTypes.ModelState dict로 변환
-        self.simulator, sim_state = make_sim(simDescription)
-        self.initState = to_custom_types(sim_state)
-
+        self.simulator, self.initState = simulate(simDescription)
         self.readUserInput = readUserInput
 
     def __call__(self, stateShareBuff: OwnedBuffer) -> SimLoopThreadHandle:
@@ -47,7 +34,6 @@ class SimLoopThread:
         th = threading.Thread(target=self.simLoop, args=(stateShareBuff,simEndFlag))
         th.start()
         del self.initState
-
         def releaseSimThread():
             simEndFlag.set()
             th.join()
@@ -58,38 +44,4 @@ class SimLoopThread:
         try:
             with stateShareBuff as (commitToPrevState, readPrevState):
                 while not simEndFlag.is_set():
-                    userInput = self.readUserInput()
-
-                    # 기존 설계: self.simulator.step(readPrevState, self.readUserInput)
-                    # 현재 simInterface.Simulator.step은 (prev_state, user_input) 시그니처를 사용하므로,
-                    # prev_state는 아직 사용하지 않고(None), userInput만 전달.
-                    nextSimState = self.simulator.step(
-                        prev_state=None,
-                        user_input=userInput,
-                    )
-
-                    # SimState -> customTypes.ModelState dict 변환 후 버퍼에 커밋
-                    nextState = to_custom_types(nextSimState)
-                    commitToPrevState(nextState)
-        finally:
-            self.simulator.clear()
-
-def hotSwapSimLoopThread(oldHandle, newDescription, inputBuffer):
-    newSim = SimLoopThread(newDescription, inputBuffer.readonly)
-    return newSim(oldHandle.release())
-
-
-# 시뮬 모델 변경 시 변경 사이의 텀을 줄이기 위한 디자인
-# 매개변수는 함수 시작 전에 평가되지만 함수 내부에선
-# 새 시뮬 실행 전에 이런저런 설정을 하는데 시간이 듦
-# 메인 스레드에서 아래와 같은 코드
-stateShareBuff = OwnedBuffer({})
-inputShareBuff = OwnedBuffer({})
-oldSimStart = SimLoopThread(SimDescription.fromJSON("filename"), inputShareBuff.readonly)
-oldSimLoopThreadHandle = oldSimStart(stateShareBuff)
-newSimLoopThreadHandle = hotSwapSimLoopThread(oldSimLoopThreadHandle, SimDescription.fromSDF("filename"), inputShareBuff)
-
-# TODO: 리팩터링
-# LoopThread(target,args)->Thread
-# simLoopThread = LoopThread(target=simulator.step)
-# simLoopThread.start(oldHandle.release(), inputShareBuff.readonly)
+                    nextState = self.simulator.step(readPrevState, self.readUserInput)
