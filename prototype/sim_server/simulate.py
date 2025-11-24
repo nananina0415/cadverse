@@ -179,44 +179,49 @@ def make_sim(model_meta, buffer_handle):
 # 상태/버퍼/json 관련 헬퍼
 
 
-## 바디 상태를 dict로 변환
+## 바디 상태를 dict로 변환 (customTypes.py 스타일)
 def body_to_state_dict(body):
     """
     PyChrono 바디 하나를
-    { "name": str, "pos": [x,y,z], "rot": [e0,e1,e2,e3] }
-    형태의 dict로 변환해주는 헬퍼.
-    AR/버퍼/JSON으로 넘기기 좋은 형태.
+    customTypes.ModelState 구조에 맞게 변환.
+    {
+        "position": { "x":..., "y":..., "z":... },
+        "rotation": { "x":..., "y":..., "z":..., "w":... }
+    }
     """
 
     pos = body.GetPos()  # ChVector3d
     rot = body.GetRot()  # ChQuaterniond (e0, e1, e2, e3)
 
-    state = {
-        "name": body.GetName(),
-        "pos": [pos.x, pos.y, pos.z],
-        "rot": [rot.e0, rot.e1, rot.e2, rot.e3],
+    return {
+        "position": {"x": pos.x, "y": pos.y, "z": pos.z},
+        "rotation": {
+            "x": rot.e1,  # Chrono는 e0=w, e1=x, e2=y, e3=z
+            "y": rot.e2,
+            "z": rot.e3,
+            "w": rot.e0,
+        },
     }
-    return state
 
 
-## 한 프레임 전체 덤프 구조 만들기
+## 한 프레임 전체 덤프 구조 만들기 (models dict 형태로)
 def dump_frame(t, bodies):
     """
-    시간 t에서 여러 바디 상태를 모아서
-    하나의 "프레임" JSON 구조로 만드는 헬퍼.
-
-    반환 예시:
+    시간 t의 프레임을 customTypes 구조로 변환.
     {
-    "time": 0.05,
-    "bodies": [
-        { "name": "shaft", "pos": [...], "rot": [...] },
-        { "name": "gear_A", "pos": [...], "rot": [...] },
-        ...
-    ]
+        "time": 0.05,
+        "models": {
+            "shaft": {...},
+            "gear_A": {...},
+            "gear_B": {...}
+        }
     }
     """
-    frame = {"time": float(t), "bodies": [body_to_state_dict(b) for b in bodies]}
-    return frame
+
+    return {
+        "time": float(t),
+        "models": {b.GetName(): body_to_state_dict(b) for b in bodies},
+    }
 
 
 # ==================================================================================================
