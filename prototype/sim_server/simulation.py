@@ -11,26 +11,6 @@ import copy
 import threading
 from dataclasses import dataclass
 from typing import Callable
-
-from sim_server.utils.customTypes import Indexable
-
-# from simulate import simulate, SimStates, SimDescription
-from prototype.sim_server.utils.owned_buffer import OwnedBuffer
-
-
-# 시뮬관련 코드는 모두 여기로 통합
-# TODO: simulate.py, simloop.py 파일의 내용을 여기에 통합
-# TODO: SimloopThread 재사용 불가
-#       pythonsim = SimloopThread(desc, input)
-#       h1 = sim(buffer1)  # OK
-#       h2 = sim(buffer2)  # 위험! simEndFlag, simulator 공유
-# TODO: 예외처리, 에러처리 및 테스트 코드 작성
-# TODO: 문서화
-
-import copy
-import threading
-from dataclasses import dataclass
-from typing import Callable
 # from simulate import simulate, SimStates, SimDescription
 from prototype.sim_server.utils.owned_buffer import OwnedBuffer
 from sim_server.utils.customTypes import Indexable
@@ -88,4 +68,3 @@ newSimLoopThreadHandle = hotSwapSimLoopThread(oldSimLoopThreadHandle, SimDescrip
 # LoopThread(target,args)->Thread
 # simLoopThread = LoopThread(target=simulator.step)
 # simLoopThread.start(oldHandle.release(), inputShareBuff.readonly)
-
