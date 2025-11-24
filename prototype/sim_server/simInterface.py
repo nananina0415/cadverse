@@ -1,13 +1,13 @@
 # simInterface.py
 
+import json
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-import json
 import simulate  # simulate.py
 
-
 # 1.상태 표현용 클래스
+
 
 @dataclass
 class ModelState:
@@ -26,7 +26,7 @@ class ModelState:
             rot=[rot.e0, rot.e1, rot.e2, rot.e3],
         )
 
-    @classmethod  #dump_frame()에서 만든 dict -> ModelState
+    @classmethod  # dump_frame()에서 만든 dict -> ModelState
     def from_frame_dict(cls, d: Dict[str, Any]) -> "ModelState":
         return cls(
             name=d.get("name", ""),
@@ -42,12 +42,13 @@ class SimState:
 
 # 시뮬레이션 설명
 
+
 @dataclass
 class SimDescription:
     """외부에서 넘겨줄 시뮬레이션 설명 정보"""
 
     model_meta: Dict[str, Any]  # 그대로 dict로 들고 있게 유지
-    dt: float = 1e-3            # 한 스텝 시간 간격
+    dt: float = 1e-3  # 한 스텝 시간 간격
 
     # JSON 문자열에서 만드는 헬퍼
     @classmethod
@@ -65,6 +66,7 @@ class SimDescription:
 
 # 2.Simulator 래퍼 클래스
 
+
 class Simulator:
     """
     내부적으로는 simulate.make_sim / step_sim / kill_sim을 사용하고,
@@ -72,7 +74,7 @@ class Simulator:
     """
 
     def __init__(self, handle: simulate.SimHandle, dt: float = 1e-3):
-        self.handle = handle # simulate.py에서 만든 SimHandle
+        self.handle = handle  # simulate.py에서 만든 SimHandle
         self.dt = dt
 
     def step(
@@ -94,9 +96,7 @@ class Simulator:
 
             if isinstance(frame, dict):
                 body_dicts = frame.get("bodies", [])
-                model_states = [
-                    ModelState.from_frame_dict(d) for d in body_dicts
-                ]
+                model_states = [ModelState.from_frame_dict(d) for d in body_dicts]
                 return SimState(modelStates=model_states)
 
         # 3) 기본 동작: Chrono 바디에서 직접 읽기
@@ -111,9 +111,10 @@ class Simulator:
 
 # make_sim
 
+
 def make_sim(
     sim_description: SimDescription,
-    buffer_handle: Any = None,        # 나중에 버퍼 객체를 넘겨줄 자리
+    buffer_handle: Any = None,  # 나중에 버퍼 객체를 넘겨줄 자리
 ) -> Tuple[Simulator, SimState]:
     """
     simulate.make_sim()을 그대로 호출해서 파이크로노 시스템 초기화 후 handle을 만들고,
@@ -121,8 +122,7 @@ def make_sim(
     """
 
     # 1) SimDescription 안의 model_meta 사용
-    handle = simulate.make_sim(sim_description.model_meta,
-                            buffer_handle=buffer_handle)
+    handle = simulate.make_sim(sim_description.model_meta, buffer_handle=buffer_handle)
 
     # 2) 초기 상태: step 하기 전 위치/회전 읽기
     init_states = [ModelState.from_body(b) for b in handle.bodies]
@@ -134,3 +134,22 @@ def make_sim(
     return simulator, init_state
 
 
+# Chrono 상태를 customTypes.MoedelState 형태로 변환해주는 함수
+
+from sim_server.utils.customTypes import ModelState as CTModelState
+from sim_server.utils.customTypes import Quaternion, Vector3
+
+
+def to_custom_types(sim_state: SimState) -> dict[str, CTModelState]:
+    result = {}
+
+    for m in sim_state.modelStates:
+        pos = m.pos
+        rot = m.rot  # [w, x, y, z]
+
+        result[m.name] = CTModelState(
+            position=Vector3(pos[0], pos[1], pos[2]),
+            rotation=Quaternion(rot[1], rot[2], rot[3], rot[0]),
+        )
+
+    return result
