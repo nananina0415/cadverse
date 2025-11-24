@@ -12,8 +12,9 @@ import threading
 from dataclasses import dataclass
 from typing import Callable
 # from simulate import simulate, SimStates, SimDescription
-from prototype.sim_server.utils.owned_buffer import OwnedBuffer
-from sim_server.utils.customTypes import Indexable
+from utils.owned_buffer import OwnedBuffer
+from utils.customTypes import Indexable
+from utils.loop_thread import LoopThread
 
 @dataclass(frozen=True)
 class SimLoopThreadHandle:
@@ -29,25 +30,28 @@ class SimLoopThread:
         self.readUserInput = readUserInput
 
     def __call__(self, stateShareBuff: OwnedBuffer) -> SimLoopThreadHandle:
-        simEndFlag = threading.Event()
         stateShareBuff.commit(self.initState)
-        th = threading.Thread(target=self.simLoop, args=(stateShareBuff,simEndFlag))
-        th.start()
         del self.initState
+
+        # LoopThread가 반복 호출할 step 함수
+        def simStep():
+            with stateShareBuff as (commitToPrevState, readPrevState):
+                nextState = self.simulator.step(readPrevState, self.readUserInput)
+                commitToPrevState(nextState)
+
+        # LoopThread 사용
+        th = LoopThread(
+            target=simStep,
+            cleanup=self.simulator.clear,
+            daemon=True
+        )
+        th.start()
+
         def releaseSimThread():
-            simEndFlag.set()
-            th.join()
+            th.stop()
+            th.wait_stopped()
             return stateShareBuff
         return SimLoopThreadHandle(th, releaseSimThread)
-
-    def simLoop(self, stateShareBuff, simEndFlag):
-        try:
-            with stateShareBuff as (commitToPrevState, readPrevState):
-                while not simEndFlag.is_set():
-                    nextState = self.simulator.step(readPrevState, self.readUserInput)
-                    commitToPrevState(nextState)
-        finally:
-            self.simulator.clear()
 
 def hotSwapSimLoopThread(oldHandle, newDescription, inputBuffer):
     newSim = SimLoopThread(newDescription, inputBuffer.readonly)

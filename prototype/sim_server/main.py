@@ -3,12 +3,10 @@ import json
 import sys
 from pathlib import Path
 
-# sim_server 디렉토리 안에서도 실행할 수 있도록 상위 디렉토리를 path에 추가
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from prototype.sim_server.utils.owned_buffer import OwnedBuffer
-from sim_server.server import ServerThread, ServerConfig
-from sim_server.simloop import SimLoopThread
+# sim_server 디렉토리 안에서 실행할 때는 상대 import 사용
+from utils.owned_buffer import OwnedBuffer
+from server import ServerThread, ServerConfig
+from simulation import SimLoopThread
 
 
 def loadServerConfig(configPath: str = None) -> ServerConfig:
