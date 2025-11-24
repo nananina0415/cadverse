@@ -132,24 +132,3 @@ def make_sim(
     simulator = Simulator(handle=handle, dt=sim_description.dt)
 
     return simulator, init_state
-
-
-# Chrono 상태를 customTypes.MoedelState 형태로 변환해주는 함수
-
-from sim_server.utils.customTypes import ModelState as CTModelState
-from sim_server.utils.customTypes import Quaternion, Vector3
-
-
-def to_custom_types(sim_state: SimState) -> dict[str, CTModelState]:
-    result = {}
-
-    for m in sim_state.modelStates:
-        pos = m.pos
-        rot = m.rot  # [w, x, y, z]
-
-        result[m.name] = CTModelState(
-            position=Vector3(pos[0], pos[1], pos[2]),
-            rotation=Quaternion(rot[1], rot[2], rot[3], rot[0]),
-        )
-
-    return result
