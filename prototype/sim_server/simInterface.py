@@ -1,35 +1,36 @@
 # simInterface.py
-
+import imp
 import json
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
-
+from pychrono import ChVector3d, ChQuaterniond
 import simulate  # simulate.py
+from utils.read_write_buffer import ReadWriteBuffer
+from utils.uid import newUid
 
 # 1.상태 표현용 클래스
 
-
 @dataclass
-class ModelState:
-    name: str
-    pos: List[float]  # [x, y, z]
-    rot: List[float]  # [e0, e1, e2, e3]
+class PartState:
+    partId: int
+    pos: ChVector3d  # [x, y, z]
+    rot: ChQuaterniond  # [e0, e1, e2, e3]
 
     @classmethod
-    def from_body(cls, body) -> "ModelState":
-        """simulate.py의 ChBody를 ModelState로 변환"""
+    def from_body(cls, body) -> "PartState":
+        """simulate.py의 ChBody에서 위치와 회전을 읽어 ModelState로 변환"""
         pos = body.GetPos()
         rot = body.GetRot()
         return cls(
-            name=body.GetName(),
-            pos=[pos.x, pos.y, pos.z],
-            rot=[rot.e0, rot.e1, rot.e2, rot.e3],
+            partId=body.partId(),
+            pos=pos,
+            rot=rot
         )
 
     @classmethod  # dump_frame()에서 만든 dict -> ModelState
-    def from_frame_dict(cls, d: Dict[str, Any]) -> "ModelState":
+    def from_frame_dict(cls, d: Dict[str, Any]) -> "PartState":
         return cls(
-            name=d.get("name", ""),
+            partId=d.get("partId", newUid()),
             pos=d.get("pos", [0.0, 0.0, 0.0]),
             rot=d.get("rot", [1.0, 0.0, 0.0, 0.0]),
         )
@@ -37,7 +38,7 @@ class ModelState:
 
 @dataclass
 class SimState:
-    modelStates: List[ModelState]
+    modelStates: ReadWriteBuffer[]
 
 
 # 시뮬레이션 설명
@@ -79,8 +80,8 @@ class Simulator:
 
     def step(
         self,
-        prev_state: Optional[SimState] = None,
-        user_input: Optional[Dict[str, Any]] = None,
+        prev_state: SimState,
+        user_input: Dict[str, Any],
     ) -> SimState:
         # 1) simulate.py 쪽으로 한 스텝 요청
         simulate.step_sim(self.handle, self.dt)
@@ -96,12 +97,12 @@ class Simulator:
 
             if isinstance(frame, dict):
                 body_dicts = frame.get("bodies", [])
-                model_states = [ModelState.from_frame_dict(d) for d in body_dicts]
+                model_states = [PartState.from_frame_dict(d) for d in body_dicts]
                 return SimState(modelStates=model_states)
 
         # 3) 기본 동작: Chrono 바디에서 직접 읽기
         bodies = self.handle.bodies
-        model_states = [ModelState.from_body(b) for b in bodies]
+        model_states = [PartState.from_body(b) for b in bodies]
         return SimState(modelStates=model_states)
 
     def clear(self):
@@ -122,7 +123,7 @@ def buildSimulation(
     handle = simulate.make_sim(sim_description.model_meta, buffer_handle=buffer_handle)
 
     # 2) 초기 상태: step 하기 전 위치/회전 읽기
-    init_states = [ModelState.from_body(b) for b in handle.bodies]
+    init_states = [PartState.from_body(b) for b in handle.bodies]
     init_state = SimState(modelStates=init_states)
 
     # 3) Simulator 생성 (dt도 sim_description에서 가져오기)
