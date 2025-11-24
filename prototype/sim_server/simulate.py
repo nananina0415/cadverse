@@ -194,6 +194,7 @@ def body_to_state_dict(body):
     rot = body.GetRot()  # ChQuaterniond (e0, e1, e2, e3)
 
     return {
+        "name": body.GetName(),
         "position": {"x": pos.x, "y": pos.y, "z": pos.z},
         "rotation": {
             "x": rot.e1,  # Chrono는 e0=w, e1=x, e2=y, e3=z
