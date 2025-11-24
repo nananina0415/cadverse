@@ -109,10 +109,7 @@ class Simulator:
         simulate.kill_sim(self.handle)
 
 
-# make_sim
-
-
-def make_sim(
+def buildSimulation(
     sim_description: SimDescription,
     buffer_handle: Any = None,  # 나중에 버퍼 객체를 넘겨줄 자리
 ) -> Tuple[Simulator, SimState]:
