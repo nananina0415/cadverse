@@ -142,34 +142,66 @@ class ServerRunner:
                 raise HTTPException(status_code=403, detail="접근이 거부되었습니다")
             return FileResponse(fullPath)
 
-        # WebSocket: 실시간 인터랙션
+        # WebSocket: 실시간 인터랙션 (단방향 푸시)
         @app.websocket("/cadverse/interaction")
         async def websocketEndpoint(websocket: WebSocket):
             import asyncio
+            import json
 
             await websocket.accept()
-            print("클라이언트 연결됨")
+            print("[ws] 클라이언트 연결됨")
+
+            async def receiveTask():
+                """클라이언트 → 서버: 사용자 입력 수신 (응답 없음)"""
+                try:
+                    while True:
+                        # 클라이언트로부터 메시지 수신
+                        data = await websocket.receive_text()
+                        print(f"[ws] <- 클라이언트: {data}")
+
+                        # 사용자 입력을 버퍼에 커밋 (응답 없음)
+                        user_input = UserInput(data={"message": data})
+                        self.server.userInput.commit([user_input])
+
+                except WebSocketDisconnect:
+                    print("[ws] 클라이언트 연결 종료 (수신)")
+                except Exception as e:
+                    print(f"[ws] 수신 에러: {e}")
+
+            async def sendTask():
+                """서버 → 클라이언트: 모델 상태 푸시 (응답 기다리지 않음)"""
+                try:
+                    while True:
+                        # 모델 상태 읽기
+                        model_states = self.getModelState()
+
+                        # JSON으로 직렬화
+                        states_json = json.dumps([
+                            {
+                                "pos": {"x": s.pos.x, "y": s.pos.y, "z": s.pos.z},
+                                "rot": {"e0": s.rot.e0, "e1": s.rot.e1, "e2": s.rot.e2, "e3": s.rot.e3}
+                            }
+                            for s in model_states
+                        ])
+
+                        # 클라이언트로 전송 (응답 기다리지 않음)
+                        await websocket.send_text(states_json)
+
+                        # 송신 주기 (100ms)
+                        await asyncio.sleep(0.1)
+
+                except WebSocketDisconnect:
+                    print("[ws] 클라이언트 연결 종료 (송신)")
+                except Exception as e:
+                    print(f"[ws] 송신 에러: {e}")
 
             try:
-                while True:
-                    # 클라이언트로부터 메시지 수신
-                    data = await websocket.receive_text()
-                    print(f"<- 클라이언트: {data}")
-
-                    # 사용자 입력을 버퍼에 커밋
-                    user_input = UserInput(data={"message": data})
-                    self.server.userInput.commit([user_input])
-
-                    # 모델 상태 읽기 (최신 상태 가져오기)
-                    model_states = self.getModelState()
-
-                    # 응답 전송 (간단한 확인 메시지)
-                    response = f"Received: {data}, ModelStates: {len(model_states)}"
-                    await websocket.send_text(response)
-                    print(f"-> 서버: {response}")
-
-            except WebSocketDisconnect:
-                print("클라이언트 연결 종료")
+                # 수신과 송신을 동시에 실행
+                await asyncio.gather(receiveTask(), sendTask())
+            except Exception as e:
+                print(f"[ws] WebSocket 에러: {e}")
+            finally:
+                print("[ws] WebSocket 연결 종료")
 
         # uvicorn 서버를 별도 스레드에서 실행
         def runUvicorn():

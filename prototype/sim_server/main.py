@@ -49,25 +49,6 @@ def loadServerConfig(configPath: Optional[str] = None) -> ServerConfig:
         return ServerConfig()
 
 
-def onWebsocketMessage(websocket, message, **kwargs):
-    """
-    WebSocket 메시지 수신 시 호출되는 콜백 함수
-
-    Args:
-        websocket: WebSocket 연결 객체
-        message: 수신한 메시지
-        **kwargs: 추가 매개변수 (outputBuffer 등)
-    """
-    # 현재는 로그만 출력 (서버에서 이미 출력함)
-    # 향후 여기서 메시지 처리 로직 구현
-    # 예:
-    # outputBuffer = kwargs.get('outputBuffer')
-    # if outputBuffer:
-    #     data = outputBuffer.readBuff()
-    #     await websocket.send_text(json.dumps(data))
-    pass
-
-
 def cleanup(serverThread, simThread):
     """
     프로그램 종료 시 리소스 정리
