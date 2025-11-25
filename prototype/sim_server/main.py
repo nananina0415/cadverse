@@ -1,15 +1,14 @@
 import time
-import json
-import sys
 from pathlib import Path
 
-# sim_server 디렉토리 안에서 실행할 때는 상대 import 사용
-from utils.owned_buffer import OwnedBuffer
-from server import ServerThread, ServerConfig
-from simulation import SimLoopThread
+from typing import Optional
+from server_logic import buildServer, ServerRunner
+from sim_logic import buildSimulation, Simulator
+from sim_data_models import SimDescription
+from server_data_models import ServerConfig
+from utils.loop_thread import LoopThread
 
-
-def loadServerConfig(configPath: str = None) -> ServerConfig:
+def loadServerConfig(configPath: Optional[str] = None) -> ServerConfig:
     """
     서버 설정 파일 로드
 
@@ -23,7 +22,7 @@ def loadServerConfig(configPath: str = None) -> ServerConfig:
     if configPath is None:
         # main.py 위치 기준
         scriptDir = Path(__file__).parent
-        configFile = scriptDir / "server_config.json"
+        configFile = scriptDir / "resources/server_config.json"
     else:
         configFile = Path(configPath)
 
@@ -99,6 +98,12 @@ def cleanup(serverThread, simThread):
 
     print("정리 완료.")
 
+def parseCadData()->SimDescription:
+    # 프로토타입이라 존재하는 하드코딩 함수
+    # 원래는 와처 스레드가 SimDescription.fromCadData 로 변환한 값을 반환해야함
+    scriptDir = Path(__file__).parent
+    simContentsPath = scriptDir / "resources/sim_contents.json"
+    return SimDescription.fromJsonFile(str(simContentsPath), dt=1e-3)
 
 def main():
     """
@@ -110,53 +115,77 @@ def main():
     - 예외 처리 및 우아한 종료
     """
 
+    # 작업 디렉토리 확인 (PyChrono 한글 경로 이슈로 인해 sim_server에서만 실행 가능)
+    scriptDir = Path(__file__).parent
+    currentDir = Path.cwd()
+    if scriptDir.resolve() != currentDir.resolve():
+        print(f"[main] 오류: sim_server 디렉토리에서 실행해야 합니다.", flush=True)
+        print(f"[main] 현재 작업 디렉토리: {currentDir}", flush=True)
+        print(f"[main] 필요한 디렉토리: {scriptDir}", flush=True)
+        print(f"[main] 다음 명령어로 실행하세요:", flush=True)
+        print(f"[main]   cd {scriptDir}", flush=True)
+        print(f"[main]   python main.py", flush=True)
+        return
+
     # 서버 설정 로드
+    print("[main] 서버 설정 로드 중...", flush=True)
     serverConfig = loadServerConfig()
-    print(f"서버 설정 로드: {serverConfig.toDict()}")
+    print(f"[main] 서버 설정 로드: {serverConfig.toDict()}", flush=True)
 
-    # 입출력 버퍼 생성 (메인이 소유)
-    outputBuffer = OwnedBuffer({})
+    # 시뮬레이션 설명 정보 로드 (CAD 데이터 파싱 목업)
+    print("[main] CAD 데이터 파싱 중...", flush=True)
+    simDescription = parseCadData()
+    print("[main] CAD 데이터 파싱 완료", flush=True)
 
-    # TODO: 실제 모델 description 데이터 로드
-    modelDescription = {}
+    print("[main] 시뮬레이션 빌드 중...", flush=True)
+    sim = buildSimulation(simDescription) # 버퍼는 sim.modelState 사용
+    print("[main] 시뮬레이션 빌드 완료", flush=True)
+
+    print("[main] 서버 빌드 중...", flush=True)
+    server = buildServer(serverConfig)    # 버퍼는 server.userInput 사용
+    print("[main] 서버 빌드 완료", flush=True)
+    # TODO: Simulation객체 자체가 유효한 시뮬스레드를 판단하는기준.(?) 시뮬레이션 객체는 싱글톤이어야 함.
 
     # 스레드 참조
     serverThread = None
-    simThread = None
+    simLoopThread = None
 
-    print("CADverse 시뮬레이션 서버 시작")
-
+    print("[main] CADverse 시뮬레이션 서버 시작", flush=True)
     try:
         # 메인 루프 (외부 try: KeyboardInterrupt 처리)
         while True:
-            try:
-                # 내부 try: 개별 반복의 예외 처리
+            try: # 내부 try: 개별 반복의 예외 처리
 
                 # ServerThread 상태 체크 및 재시작
                 if serverThread is None or not serverThread.is_alive():
                     if serverThread is not None:
-                        print("서버 스레드가 종료됨. 재시작 중...")
+                        print("[main] 서버 스레드가 종료됨. 재시작 중...", flush=True)
 
                     # 서버 스레드 생성 (config와 콜백 전달)
-                    serverThread = ServerThread(
-                        config=serverConfig,
-                        onWebsocketMessage=onWebsocketMessage,
-                        outputBuffer=outputBuffer  # kwargs로 전달
+                    print("[main] 서버 스레드 생성 중...", flush=True)
+                    serverThread = LoopThread(
+                        initFn = lambda: ServerRunner(server, sim.modelState.getReadAccess(doDeepCopy=True)),
+                        loopFn = lambda runner: runner.runOneCycle(),
+                        clearFn = lambda runner: runner.clear(),
                     )
+                    print("[main] 서버 스레드 시작 중...", flush=True)
                     serverThread.start()
-                    print(f"서버 스레드 시작됨 (http://{serverConfig.host}:{serverConfig.port})")
+                    print(f"[main] 서버 스레드 시작됨 (http://{serverConfig.host}:{serverConfig.port})", flush=True)
 
                 # SimLoopThread 상태 체크 및 재시작
-                if simThread is None or not simThread.is_alive():
-                    if simThread is not None:
-                        print("시뮬레이션 스레드가 종료됨. 재시작 중...")
+                if simLoopThread is None or not simLoopThread.is_alive():
+                    if simLoopThread is not None:
+                        print("[main] 시뮬레이션 스레드가 종료됨. 재시작 중...", flush=True)
 
-                    simThread = SimLoopThread(
-                        modelDescription=modelDescription,
-                        outputBuffer=outputBuffer
+                    print("[main] 시뮬레이션 스레드 생성 중...", flush=True)
+                    simLoopThread = LoopThread(
+                        initFn = lambda: Simulator(sim, server.userInput.getReadAccess(doDeepCopy=False)),
+                        loopFn = lambda simulator: simulator.step(),
+                        clearFn = lambda simulator: simulator.clear(),
                     )
-                    simThread.start()
-                    print("시뮬레이션 스레드 시작됨")
+                    print("[main] 시뮬레이션 스레드 시작 중...", flush=True)
+                    simLoopThread.start()
+                    print("[main] 시뮬레이션 스레드 시작됨", flush=True)
 
                 # 1초 대기 후 다시 체크
                 time.sleep(1)
@@ -183,7 +212,7 @@ def main():
 
     finally:
         # 어떤 경우든 정리 작업 수행
-        cleanup(serverThread, simThread)
+        cleanup(serverThread, simLoopThread)
 
 
 if __name__ == "__main__":
