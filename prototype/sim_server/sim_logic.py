@@ -1,3 +1,5 @@
+# 본 개발에서는 외부에서 불러사용하는 sim_interface or sim_public 과 캡슐화된내부구현 sim_logic or sim_private or sim_impl 을 분리
+
 import math as m
 import os
 from pathlib import Path
