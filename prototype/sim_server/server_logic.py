@@ -7,6 +7,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse
 from server_data_models import ServerConfig, Server, UserInput
 from sim_data_models import PartState
+from server_client_interface import ModelStateMessage, UserInputMessage
 from utils.read_write_buffer import ReadWriteBuffer
 
 
@@ -146,7 +147,6 @@ class ServerRunner:
         @app.websocket("/cadverse/interaction")
         async def websocketEndpoint(websocket: WebSocket):
             import asyncio
-            import json
 
             await websocket.accept()
             print("[ws] 클라이언트 연결됨")
@@ -159,8 +159,11 @@ class ServerRunner:
                         data = await websocket.receive_text()
                         print(f"[ws] <- 클라이언트: {data}")
 
+                        # DTO로 파싱
+                        user_input_msg = UserInputMessage.fromJson(data)
+
                         # 사용자 입력을 버퍼에 커밋 (응답 없음)
-                        user_input = UserInput(data={"message": data})
+                        user_input = UserInput(data=user_input_msg.data)
                         self.server.userInput.commit([user_input])
 
                 except WebSocketDisconnect:
@@ -170,22 +173,26 @@ class ServerRunner:
 
             async def sendTask():
                 """서버 → 클라이언트: 모델 상태 푸시 (응답 기다리지 않음)"""
+                send_count = 0
                 try:
                     while True:
                         # 모델 상태 읽기
                         model_states = self.getModelState()
 
-                        # JSON으로 직렬화
-                        states_json = json.dumps([
-                            {
-                                "pos": {"x": s.pos.x, "y": s.pos.y, "z": s.pos.z},
-                                "rot": {"e0": s.rot.e0, "e1": s.rot.e1, "e2": s.rot.e2, "e3": s.rot.e3}
-                            }
-                            for s in model_states
-                        ])
+                        # DTO로 변환 후 JSON 직렬화
+                        message = ModelStateMessage.fromPartStates(model_states)
+                        states_json = message.toJson()
 
                         # 클라이언트로 전송 (응답 기다리지 않음)
                         await websocket.send_text(states_json)
+
+                        # 100번마다 상태 로그 출력
+                        send_count += 1
+                        if send_count % 100 == 0:
+                            # 첫 번째 파트의 위치만 출력
+                            if model_states:
+                                pos = model_states[0].pos
+                                print(f"[ws] 송신 #{send_count}: parts={len(model_states)}, pos=({pos.x:.3f}, {pos.y:.3f}, {pos.z:.3f})", flush=True)
 
                         # 송신 주기 (100ms)
                         await asyncio.sleep(0.1)

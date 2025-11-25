@@ -1,5 +1,12 @@
+import sys
 import time
 from pathlib import Path
+
+# prototype 폴더를 sys.path에 추가 (server_client_interface.py 임포트를 위해)
+_script_dir = Path(__file__).parent
+_prototype_dir = _script_dir.parent
+if str(_prototype_dir) not in sys.path:
+    sys.path.insert(0, str(_prototype_dir))
 
 from typing import Optional
 from server_logic import buildServer, ServerRunner
@@ -145,7 +152,7 @@ def main():
                     # 서버 스레드 생성 (config와 콜백 전달)
                     print("[main] 서버 스레드 생성 중...", flush=True)
                     serverThread = LoopThread(
-                        initFn = lambda: ServerRunner(server, sim.modelState.getReadAccess(doDeepCopy=True)),
+                        initFn = lambda: ServerRunner(server, sim.modelState.getReadAccess(doDeepCopy=False)),
                         loopFn = lambda runner: runner.runOneCycle(),
                         clearFn = lambda runner: runner.clear(),
                     )

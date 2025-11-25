@@ -36,6 +36,7 @@ class Simulator:
         """
         self.simulation = simulation
         self.getUserInput = getUserInput
+        self.step_count = 0
 
     def step(self):
         """
@@ -51,6 +52,15 @@ class Simulator:
         bodies = self.simulation.simHandle.bodies
         new_states = [PartState.fromBody(b) for b in bodies]
         self.simulation.modelState.commit(new_states)
+
+        # 1000 스텝마다 로그 출력 (버퍼 커밋 상태 포함)
+        self.step_count += 1
+        if self.step_count % 1000 == 0:
+            sim_time = self.simulation.simHandle.sys.GetChTime()
+            # 첫 번째 바디의 위치 확인
+            if new_states:
+                pos = new_states[0].pos
+                print(f"[sim] Step {self.step_count}, Time: {sim_time:.3f}s, 버퍼 커밋: {len(new_states)} parts, pos=({pos.x:.3f}, {pos.y:.3f}, {pos.z:.3f})", flush=True)
 
     def clear(self):
         """시뮬레이터 정리 (Chrono 리소스 해제)"""
