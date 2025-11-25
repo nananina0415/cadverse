@@ -28,7 +28,8 @@ def showQrCode(serverAddress: str):
     try:
         import qrcode
         from qrcode.constants import ERROR_CORRECT_L
-        from PIL import ImageTk
+        from PIL import Image
+        import PIL.ImageTk as ImageTk
         import tkinter as tk
     except ImportError:
         print("QR 코드 표시를 위해 다음 패키지가 필요합니다:")
@@ -53,8 +54,8 @@ def showQrCode(serverAddress: str):
     root = tk.Tk()
     root.title("CADverse 서버 QR 코드")
 
-    # 이미지를 PhotoImage로 변환
-    photo = ImageTk.PhotoImage(img)
+    # 이미지를 PhotoImage로 변환 (PIL Image로 명시적 변환)
+    photo = ImageTk.PhotoImage(img.convert('RGB'))  # type: ignore
 
     # 라벨에 이미지 표시
     label = tk.Label(root, image=photo)

@@ -1,7 +1,7 @@
 import math as m
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Callable
 import pychrono as chrono
 
 from sim_data_models import PartState, SimDescription, Simulation
