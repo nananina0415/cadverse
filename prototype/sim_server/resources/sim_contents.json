@@ -1,0 +1,22 @@
+{
+  "assemblies": [
+    {
+      "type": "shaft_base",
+      "shaft": {
+        "name": "shaft",
+        "mesh": "shaft.obj",
+        "mass": 500,
+        "fixed": false,
+        "motor_name": "shaft_motor",
+        "offset": [0.0, 0.0, 0.03]
+      },
+      "base": {
+        "name": "base",
+        "mesh": "base.obj",
+        "mass": 1000,
+        "fixed": true
+      },
+      "motor_speed": 5.0
+    }
+  ]
+}
