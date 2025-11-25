@@ -62,29 +62,30 @@ def cleanup(serverThread, simThread):
     - 스레드 안전하게 종료
     - 리소스 해제
     """
-    print("\n정리 작업 시작...")
+    print("\n정리 작업 시작...", flush=True)
 
     # 시뮬레이션 스레드 중지
     if simThread and simThread.is_alive():
-        print("시뮬레이션 스레드 중지 중...")
+        print("시뮬레이션 스레드 중지 중...", flush=True)
         if hasattr(simThread, 'stop'):
             simThread.stop()
-        simThread.join(timeout=5)
+        simThread.join(timeout=3)
 
         if simThread.is_alive():
-            print("경고: 시뮬레이션 스레드가 5초 내에 종료되지 않음")
+            print("경고: 시뮬레이션 스레드가 3초 내에 종료되지 않음", flush=True)
 
     # 서버 스레드 중지
     if serverThread and serverThread.is_alive():
-        print("서버 스레드 중지 중...")
-        # 데몬 스레드이므로 메인이 종료되면 자동 종료됨
-        # 하지만 명시적으로 정리 시도
+        print("서버 스레드 중지 중...", flush=True)
+        # stop() 호출 (이전에 누락되어 있었음)
+        if hasattr(serverThread, 'stop'):
+            serverThread.stop()
         serverThread.join(timeout=2)
 
         if serverThread.is_alive():
-            print("경고: 서버 스레드가 2초 내에 종료되지 않음 (데몬 스레드)")
+            print("경고: 서버 스레드가 2초 내에 종료되지 않음", flush=True)
 
-    print("정리 완료.")
+    print("정리 완료.", flush=True)
 
 def parseCadData()->SimDescription:
     # 프로토타입이라 존재하는 하드코딩 함수
@@ -155,6 +156,7 @@ def main():
                         initFn = lambda: ServerRunner(server, sim.modelState.getReadAccess(doDeepCopy=False)),
                         loopFn = lambda runner: runner.runOneCycle(),
                         clearFn = lambda runner: runner.clear(),
+                        daemon=True  # 데몬 스레드로 설정하여 메인 종료 시 자동 종료
                     )
                     print("[main] 서버 스레드 시작 중...", flush=True)
                     serverThread.start()
@@ -170,6 +172,7 @@ def main():
                         initFn = lambda: Simulator(sim, server.userInput.getReadAccess(doDeepCopy=False)),
                         loopFn = lambda simulator: simulator.step(),
                         clearFn = lambda simulator: simulator.clear(),
+                        daemon=True  # 데몬 스레드로 설정하여 메인 종료 시 자동 종료
                     )
                     print("[main] 시뮬레이션 스레드 시작 중...", flush=True)
                     simLoopThread.start()
@@ -201,6 +204,11 @@ def main():
     finally:
         # 어떤 경우든 정리 작업 수행
         cleanup(serverThread, simLoopThread)
+
+        # 강제 종료 (모든 정리 작업 후)
+        print("[main] 프로그램 종료", flush=True)
+        import sys
+        sys.exit(0)
 
 
 if __name__ == "__main__":
