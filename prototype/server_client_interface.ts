@@ -30,7 +30,7 @@ namespace MessageType {
   }
   namespace ClientToServer {
     type InteractByScreen =
-      | {
+      {
           type: "TouchStart";
           payload: {
             targetPartIndex: PartIndex;
@@ -38,7 +38,7 @@ namespace MessageType {
             fingerPoint: GlobalPosition;
             z_direction: GlobalDirection;
           };
-        }
+      }
       | {
           type: "Touching";
           payload: {
