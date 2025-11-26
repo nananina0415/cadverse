@@ -57,6 +57,17 @@ ModelState: TypeAlias = ReadWriteBuffer[PartState]
 
 
 @dataclass
+class UserInput:
+    """
+    시뮬레이션이 받을 수 있는 사용자 입력 타입
+    - point: 기준점 위치 (ChVector3d)
+    - direction: 방향 단위벡터 (ChVector3d)
+    """
+    point: ChVector3d
+    direction: ChVector3d
+
+
+@dataclass
 class Simulation:
     """
     시뮬레이션 상태 컨테이너

@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Dict
 from utils.read_write_buffer import ReadWriteBuffer
+from sim_data_models import UserInput
 
 
 @dataclass
@@ -28,12 +29,6 @@ class ServerConfig:
             'port': self.port,
             'resources_dir': self.resources_dir
         }
-
-
-@dataclass
-class UserInput:
-    """사용자 입력 데이터"""
-    data: Dict[str, Any]
 
 
 @dataclass

@@ -5,10 +5,11 @@ from pathlib import Path
 from typing import List, Callable
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse
-from server_data_models import ServerConfig, Server, UserInput
-from sim_data_models import PartState
-from server_client_interface import ModelStateMessage, UserInputMessage
+from server_data_models import ServerConfig, Server
+from sim_data_models import PartState, UserInput
+from message_dto import ModelStateMessage, UserInputMessage
 from utils.read_write_buffer import ReadWriteBuffer
+from pychrono import ChVector3d
 
 
 def getLocalIpAddress() -> str:
@@ -163,8 +164,20 @@ class ServerRunner:
                         # DTO로 파싱
                         user_input_msg = UserInputMessage.fromJson(data)
 
+                        # ChVector3d로 변환
+                        point = ChVector3d(
+                            user_input_msg.point["x"],
+                            user_input_msg.point["y"],
+                            user_input_msg.point["z"]
+                        )
+                        direction = ChVector3d(
+                            user_input_msg.direction["x"],
+                            user_input_msg.direction["y"],
+                            user_input_msg.direction["z"]
+                        )
+
                         # 사용자 입력을 버퍼에 커밋 (응답 없음)
-                        user_input = UserInput(data=user_input_msg.data)
+                        user_input = UserInput(point=point, direction=direction)
                         self.server.userInput.commit([user_input])
 
                 except WebSocketDisconnect:
