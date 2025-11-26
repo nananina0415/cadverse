@@ -5,9 +5,8 @@ from pathlib import Path
 from typing import List, Callable
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse
-from server_data_models import ServerConfig, Server
+from server_data_models import ServerConfig, Server, ModelStateMessage, UserInputMessage
 from sim_data_models import PartState, UserInput
-from message_dto import ModelStateMessage, UserInputMessage
 from utils.read_write_buffer import ReadWriteBuffer
 from pychrono import ChVector3d
 
