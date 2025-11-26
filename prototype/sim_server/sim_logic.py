@@ -284,3 +284,89 @@ def buildSimulation(sim_description: SimDescription) -> Simulation:
     print(f"[sim] buildSimulation() 완료 → bodies={len(bodies)}, joints={len(joints)}, motors={len(motors)}")
 
     return simulation
+
+# 유저입력을 다루는부분
+# AI가 생성한걸 확인없이 가져온거라 참고용으로만 봐주세요.
+import pychrono as chrono
+import math
+
+class RailInteractionManager:
+    def __init__(self, system):
+        self.system = system
+
+        # 구성 요소들
+        self.ray_body = None      # 카메라 따라다니는 바디 (Gun)
+        self.bead = None          # 레일 위 구슬 (Bullet)
+        self.rail_joint = None    # 레일 구속 (Prismatic)
+        self.depth_spring = None  # 깊이 유지 스프링 (거리 고정용)
+        self.drag_link = None     # 모델 당기는 링크
+
+    def start_interaction(self, target_id, action_local_pos, cam_pos, cam_dir, init_distance):
+        # 1. Ray Body 생성 (카메라 위치/각도 동기화용)
+        self.ray_body = chrono.ChBody()
+        self.ray_body.SetFixed(False) # 움직여야 하므로 Fixed False
+        self.ray_body.SetBodyFixed(True) # 대신 물리엔진이 못 건드리고 우리가 강제 이동(Kinematic)
+        self.system.Add(self.ray_body)
+
+        # Ray Body 위치/자세 초기화 (Z축이 카메라 정면이 되도록)
+        # Chrono의 기본 Z축을 cam_dir로 맞추는 회전 행렬 계산 필요 (여기서는 간단히 pos만 세팅한다고 가정)
+        self.update_ray_body_transform(cam_pos, cam_dir)
+
+        # 2. Bead (구슬) 생성
+        self.bead = chrono.ChBody()
+        self.bead.SetMass(0.01) # 가볍게
+        self.bead.SetPos(cam_pos + cam_dir * init_distance) # 초기 위치는 거리 d 만큼 앞
+        self.system.Add(self.bead)
+
+        # 3. Rail Joint (Prismatic) 생성: RayBody <-> Bead
+        # Z축(진행방향)으로만 움직이게 구속
+        self.rail_joint = chrono.ChLinkLockPrismatic()
+        self.rail_joint.Initialize(self.ray_body, self.bead, chrono.ChCoordsysd(cam_pos, self.ray_body.GetRot()))
+        self.system.Add(self.rail_joint)
+
+        # 4. [나중을 위한 포석] Depth Spring (거리 유지용)
+        # 지금은 거리를 고정하지만, 나중엔 이 스프링에 힘을 가해 깊이를 조절함
+        self.depth_spring = chrono.ChLinkTSDA()
+        self.depth_spring.Initialize(self.ray_body, self.bead, False, chrono.ChVector3d(0,0,0), chrono.ChVector3d(0,0,0))
+        self.depth_spring.SetSpringCoefficient(10000) # 거리 유지 (짱짱하게)
+        self.depth_spring.SetDampingCoefficient(100)
+        self.depth_spring.SetRestLength(init_distance) # 초기 거리 유지
+        self.system.Add(self.depth_spring)
+
+        # 5. Drag Link (실제 모델 연결)
+        target_body = self.system.SearchBody(target_id)
+        self.drag_link = chrono.ChLinkTSDA()
+        self.drag_link.Initialize(target_body, self.bead, True, action_local_pos, chrono.ChVector3d(0,0,0)) # Bead 중심에 연결
+        self.drag_link.SetSpringCoefficient(50000) # 모델을 강하게 당김
+        self.drag_link.SetDampingCoefficient(500)
+        self.drag_link.SetRestLength(0)
+        self.system.Add(self.drag_link)
+
+    def update_interaction(self, cam_pos, cam_dir):
+        # 매 프레임: 카메라(RayBody)만 옮기면 레일, 구슬, 링크가 싹 다 따라옴
+        self.update_ray_body_transform(cam_pos, cam_dir)
+
+        # (나중에 깊이 보정 로직이 들어갈 자리)
+        # depth_input = get_user_depth_input()
+        # self.depth_spring.SetRestLength(self.initial_dist + depth_input * scale)
+
+    def end_interaction(self):
+        # 정리
+        self.system.Remove(self.drag_link)
+        self.system.Remove(self.depth_spring)
+        self.system.Remove(self.rail_joint)
+        self.system.Remove(self.bead)
+        self.system.Remove(self.ray_body)
+
+    def update_ray_body_transform(self, pos, dir):
+        # 카메라 좌표계로 RayBody 강제 이동
+        # Dir 벡터를 Rotation Quaternion으로 변환하는 로직 포함
+        z_axis = dir.GetNormalized()
+        x_axis = chrono.ChVector3d(1,0,0) # 임시
+        if abs(z_axis.x) > 0.9: x_axis = chrono.ChVector3d(0,1,0)
+        y_axis = (z_axis % x_axis).GetNormalized()
+        x_axis = (y_axis % z_axis).GetNormalized()
+
+        rot_matrix = chrono.ChMatrix33d(x_axis, y_axis, z_axis)
+        self.ray_body.SetPos(pos)
+        self.ray_body.SetRot(rot_matrix.Get_A_quaternion())
