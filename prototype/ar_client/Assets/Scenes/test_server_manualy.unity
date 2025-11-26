@@ -2250,7 +2250,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: be4f78a1f2acfd84da8839d46491e454, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::TestServerManualy
-  serverHost: localhost
+  serverHost: 192.168.219.100
   serverPort: 8000
   statusText: {fileID: 294696725}
   messagesText: {fileID: 1881325244}
