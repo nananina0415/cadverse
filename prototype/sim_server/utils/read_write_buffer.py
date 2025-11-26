@@ -7,7 +7,7 @@ T = TypeVar('T')
 
 class ReadWriteBuffer(Generic[T]):
     """
-    모든 타입 T에 대해 작동하는 스레드 안전한 배치 스트리밍 버퍼
+    읽기 권한을 발행하여 생산자-소비자 패턴을 구현할 수 있는 리스트 버퍼
     """
     def __init__(self, initialData: Optional[List[T]] = None):
         self._buff: List[T] = initialData if initialData is not None else []
