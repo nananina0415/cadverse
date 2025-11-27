@@ -3,7 +3,7 @@
 import math as m
 import os
 from pathlib import Path
-from typing import List, Callable
+from typing import List, Callable, Optional, Any, Dict
 import pychrono as chrono
 
 from sim_data_models import PartState, SimDescription, Simulation
@@ -39,6 +39,8 @@ class Simulator:
         self.simulation = simulation
         self.getUserInput = getUserInput
         self.step_count = 0
+        # AR 드래그 상태
+        self.interaction_state = AssemblyInteractionState()
 
     def step(self):
         """
@@ -370,3 +372,201 @@ class RailInteractionManager:
         rot_matrix = chrono.ChMatrix33d(x_axis, y_axis, z_axis)
         self.ray_body.SetPos(pos)
         self.ray_body.SetRot(rot_matrix.Get_A_quaternion())
+
+#    - AR 인터랙션: 각 모델을 한 덩어리로 드래그/회전
+#    - getUserInput() 이 반환하는 이벤트 리스트를 받아서
+#    - 각 바디에 rigid transform을 적용하는 헬퍼
+
+class AssemblyInteractionState:
+    """
+    베이스+샤프트 한 세트를 드래그할 때 사용할 내부 상태.
+    - active: 현재 드래그 중인지
+    - start_finger: 드래그 시작 시 손가락 위치 (world)
+    - base_pos0 / shaft_pos0: 드래그 시작 시점의 위치
+    - base_rot0 / shaft_rot0: 드래그 시작 시점의 회전
+    - center0: assembly 중심 (간단히 base, shaft 위치 평균으로 사용)
+    """
+
+    def __init__(self):
+        self.active: bool = False
+        self.start_finger: Optional[chrono.ChVector3d] = None
+
+        self.base_pos0: Optional[chrono.ChVector3d] = None
+        self.base_rot0: Optional[chrono.ChQuaterniond] = None
+
+        self.shaft_pos0: Optional[chrono.ChVector3d] = None
+        self.shaft_rot0: Optional[chrono.ChQuaterniond] = None
+
+        self.center0: Optional[chrono.ChVector3d] = None
+
+
+def _to_vec3(d: Optional[Dict[str, Any]]) -> chrono.ChVector3d:
+    """{"x":..., "y":..., "z":...} 딕셔너리를 ChVector3d로 변환"""
+    if not d:
+        return chrono.ChVector3d(0, 0, 0)
+    return chrono.ChVector3d(
+        float(d.get("x", 0.0)),
+        float(d.get("y", 0.0)),
+        float(d.get("z", 0.0)),
+    )
+
+
+def _find_body_by_name(handle: SimHandle, name: str):
+    """SimHandle.bodies에서 이름으로 ChBody 검색"""
+    for b in handle.bodies:
+        if hasattr(b, "GetName") and b.GetName() == name:
+            return b
+    return None
+
+
+def apply_ar_interaction(
+    handle: SimHandle,
+    interaction: AssemblyInteractionState,
+    events: List[Dict[str, Any]],
+):
+    """
+    AR 입력(InteractByScreen 스타일 이벤트들)을 받아
+    base + shaft 두 바디를 함께 이동/회전시킨다.
+
+    전제:
+      - getUserInput() 이 반환하는 각 이벤트는 다음 형태라고 가정:
+        {
+          "type": "TouchStart" | "Touching" | "TouchEnd",
+          "payload": {
+              "targetPartName": "shaft" or "base" (선택, 없으면 기본 "shaft"),
+              "fingerPoint": { "x":..., "y":..., "z":... },
+              ...
+          }
+        }
+      - 실제 JSON(TS 타입)은 sim_interface 층에서 이 포맷으로 변환 후 넘겨준다.
+    """
+    if not events:
+        return
+
+    # 일단 가장 마지막 이벤트만 반영 (한 스텝에 여러 개 들어와도 마지막 상태 기준으로)
+    event = events[-1]
+    etype = event.get("type")
+    payload = event.get("payload") or {}
+
+    # base / shaft 찾기 (이름은 meta에서 지정한 이름 사용)
+    base = _find_body_by_name(handle, "base")
+    shaft = _find_body_by_name(handle, "shaft")
+
+    if base is None or shaft is None:
+        # 아직 조립이 안 되어 있거나 이름이 다르면 아무것도 안 함
+        return
+
+    # ========= TouchStart =========
+    if etype == "TouchStart":
+        # (필요하면 targetPartName으로 어떤 assembly를 조작할지 나눌 수도 있음)
+        finger = _to_vec3(payload.get("fingerPoint"))
+
+        interaction.active = True
+        interaction.start_finger = finger
+
+        interaction.base_pos0 = base.GetPos()
+        interaction.base_rot0 = base.GetRot()
+        interaction.shaft_pos0 = shaft.GetPos()
+        interaction.shaft_rot0 = shaft.GetRot()
+
+        # assembly 중심 (base, shaft 위치 평균)
+        bp = interaction.base_pos0
+        sp = interaction.shaft_pos0
+        cx = 0.5 * (bp.x + sp.x)
+        cy = 0.5 * (bp.y + sp.y)
+        cz = 0.5 * (bp.z + sp.z)
+        interaction.center0 = chrono.ChVector3d(cx, cy, cz)
+
+        # 드래그 시작 시 속도/각속도도 한번 0으로 초기화해두면 깔끔
+        zero = chrono.ChVector3d(0, 0, 0)
+        for body in (base, shaft):
+            body.SetPos_dt(zero)
+            body.SetPos_dtdt(zero)
+            body.SetWvel_loc(zero)
+            body.SetWacc_loc(zero)
+            body.Empty_forces_accumulators()
+
+        return
+
+    # ========= Touching =========
+    if etype == "Touching":
+        if not interaction.active:
+            return
+
+        finger = _to_vec3(payload.get("fingerPoint"))
+        start_finger = interaction.start_finger or chrono.ChVector3d(0, 0, 0)
+
+        base_pos0 = interaction.base_pos0 or base.GetPos()
+        shaft_pos0 = interaction.shaft_pos0 or shaft.GetPos()
+        center0 = interaction.center0 or chrono.ChVector3d(0, 0, 0)
+
+        # 1) 손가락 이동량 → translation
+        delta = chrono.ChVector3d(
+            finger.x - start_finger.x,
+            finger.y - start_finger.y,
+            finger.z - start_finger.z,
+        )
+
+        # 2) 손가락의 x 이동량을 assembly의 z축 회전으로 매핑 (간단한 프로토타입)
+        dx = finger.x - start_finger.x
+        scale = 5.0  # 1m → 약 5rad 회전 (튜닝 가능)
+        angle = scale * dx
+
+        c = m.cos(angle)
+        s = m.sin(angle)
+
+        def rigid_transform(pos0: chrono.ChVector3d) -> chrono.ChVector3d:
+            # center0 기준 로컬 좌표
+            rx = pos0.x - center0.x
+            ry = pos0.y - center0.y
+            rz = pos0.z - center0.z
+            # z축 회전
+            x1 = c * rx - s * ry
+            y1 = s * rx + c * ry
+            z1 = rz
+            # 다시 center0로 되돌리고, translation(delta) 적용
+            return chrono.ChVector3d(
+                center0.x + x1 + delta.x,
+                center0.y + y1 + delta.y,
+                center0.z + z1 + delta.z,
+            )
+
+        # 위치
+        new_base_pos = rigid_transform(base_pos0)
+        new_shaft_pos = rigid_transform(shaft_pos0)
+        base.SetPos(new_base_pos)
+        shaft.SetPos(new_shaft_pos)
+
+        # 회전 (여기서는 그냥 z축 회전 쿼터니언을 곱해주는 단순 버전)
+        try:
+            q_delta = chrono.QuatFromAngleZ(angle)
+        except AttributeError:
+            q_delta = chrono.QUNIT
+
+        base.SetRot(q_delta * (interaction.base_rot0 or base.GetRot()))
+        shaft.SetRot(q_delta * (interaction.shaft_rot0 or shaft.GetRot()))
+
+        return
+
+    # ========= TouchEnd =========
+    if etype == "TouchEnd":
+        if interaction.active:
+            # 드래그 끝나는 순간, 그 포즈에서 "딱" 멈추도록 속도/각속도 0으로
+            zero = chrono.ChVector3d(0, 0, 0)
+            for body in (base, shaft):
+                body.SetPos_dt(zero)
+                body.SetPos_dtdt(zero)
+                body.SetWvel_loc(zero)
+                body.SetWacc_loc(zero)
+                body.Empty_forces_accumulators()
+
+        # 상태 초기화
+        interaction.active = False
+        interaction.start_finger = None
+        interaction.base_pos0 = None
+        interaction.base_rot0 = None
+        interaction.shaft_pos0 = None
+        interaction.shaft_rot0 = None
+        interaction.center0 = None
+
+        return
