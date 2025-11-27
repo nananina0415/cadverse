@@ -2,46 +2,35 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 
-/// <summary>
-/// 클라이언트 측 메시지 DTO (Data Transfer Object)
-/// server_client_interface.json 스키마 구현
-/// </summary>
-namespace CADverse.Network
+namespace CADverse.Communication
 {
+    /// <summary>
+    /// 서버 통신 데이터 모델
+    /// server_client_interface.json 스키마 구현
+    /// </summary>
+
     [Serializable]
-    public class Position
+    public class PartState
     {
-        public float x;
-        public float y;
-        public float z;
+        public Vector3 pos;
+        public QuaternionDTO rot;
 
-        public Position(float x, float y, float z)
+        public Quaternion GetQuaternion()
         {
-            this.x = x;
-            this.y = y;
-            this.z = z;
-        }
-
-        public Vector3 ToVector3()
-        {
-            return new Vector3(x, y, z);
-        }
-
-        public static Position FromVector3(Vector3 v)
-        {
-            return new Position(v.x, v.y, v.z);
+            // PyChrono 쿼터니언 (e0=w, e1=x, e2=y, e3=z) → Unity Quaternion (x, y, z, w)
+            return new Quaternion(rot.e1, rot.e2, rot.e3, rot.e0);
         }
     }
 
     [Serializable]
-    public class Rotation
+    public class QuaternionDTO
     {
-        public float e0;
-        public float e1;
-        public float e2;
-        public float e3;
+        public float e0; // w
+        public float e1; // x
+        public float e2; // y
+        public float e3; // z
 
-        public Rotation(float e0, float e1, float e2, float e3)
+        public QuaternionDTO(float e0, float e1, float e2, float e3)
         {
             this.e0 = e0;
             this.e1 = e1;
@@ -49,35 +38,22 @@ namespace CADverse.Network
             this.e3 = e3;
         }
 
-        public Quaternion ToQuaternion()
+        public static QuaternionDTO FromQuaternion(Quaternion q)
         {
-            return new Quaternion(e1, e2, e3, e0);
+            return new QuaternionDTO(q.w, q.x, q.y, q.z);
         }
-
-        public static Rotation FromQuaternion(Quaternion q)
-        {
-            return new Rotation(q.w, q.x, q.y, q.z);
-        }
-    }
-
-    [Serializable]
-    public class PartState
-    {
-        public Position pos;
-        public Rotation rot;
     }
 
     /// <summary>
     /// 서버 → 클라이언트: 모델 상태 메시지 (배열 형태)
     /// </summary>
-    [Serializable]
     public class ModelStateMessage
     {
         public List<PartState> parts;
 
         public static ModelStateMessage FromJson(string json)
         {
-            // JSON 배열을 직접 파싱
+            // JSON 배열을 파싱
             var partStates = JsonHelper.FromJson<PartState>(json);
             return new ModelStateMessage { parts = new List<PartState>(partStates) };
         }
@@ -89,13 +65,13 @@ namespace CADverse.Network
     [Serializable]
     public class UserInputMessage
     {
-        public Position point;
-        public Position direction;
+        public Vector3 point;
+        public Vector3 direction;
 
         public UserInputMessage(Vector3 point, Vector3 direction)
         {
-            this.point = Position.FromVector3(point);
-            this.direction = Position.FromVector3(direction);
+            this.point = point;
+            this.direction = direction;
         }
 
         public string ToJson()

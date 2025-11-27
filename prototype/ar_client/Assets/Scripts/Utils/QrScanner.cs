@@ -14,11 +14,13 @@ using ZXing;
 using ZXing.Common;
 #endif
 
-/// <summary>
-/// 단발성 QR 스캔을 담당하는 유틸리티. 카메라 권한 확보 → 프레임 캡처 → QR 해석까지 관리한다.
-/// 실제 디코더는 ZXing 등을 Scripting Define Symbol(CADVERSE_ENABLE_ZXING)로 활성화했을 때 동작한다.
-/// </summary>
-public sealed class QrScanner : MonoBehaviour
+namespace CADverse.Utils
+{
+    /// <summary>
+    /// 단발성 QR 스캔을 담당하는 유틸리티. 카메라 권한 확보 → 프레임 캡처 → QR 해석까지 관리한다.
+    /// 실제 디코더는 ZXing 등을 Scripting Define Symbol(CADVERSE_ENABLE_ZXING)로 활성화했을 때 동작한다.
+    /// </summary>
+    public sealed class QrScanner : MonoBehaviour
 {
     [Header("AR Camera Dependency")]
     [SerializeField] private ARCameraManager cameraManager;
@@ -230,19 +232,20 @@ public sealed class QrScanner : MonoBehaviour
         _scanCancellation = null;
         _scanCompletion = null;
     }
-}
+    }
 
-internal static class TaskCompletionSourceExtensions
-{
-    public static bool TrySetCanceledIfRequested<T>(this TaskCompletionSource<T> tcs, CancellationToken token)
+    internal static class TaskCompletionSourceExtensions
     {
-        if (token.IsCancellationRequested)
+        public static bool TrySetCanceledIfRequested<T>(this TaskCompletionSource<T> tcs, CancellationToken token)
         {
-            tcs.TrySetCanceled(token);
-            return true;
-        }
+            if (token.IsCancellationRequested)
+            {
+                tcs.TrySetCanceled(token);
+                return true;
+            }
 
-        return false;
+            return false;
+        }
     }
 }
 
