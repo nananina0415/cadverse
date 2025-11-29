@@ -3,9 +3,9 @@
 import math as m
 import os
 from pathlib import Path
-from typing import List, Callable, Optional, Any, Dict
-import pychrono as chrono
+from typing import Any, Callable, Dict, List, Optional
 
+import pychrono as chrono
 from sim_data_models import PartState, SimDescription, Simulation
 from utils.read_write_buffer import ReadWriteBuffer
 
@@ -15,6 +15,7 @@ RESOURCES_DIR = Path(__file__).parent / "resources"
 
 class SimHandle:
     """PyChrono 시뮬레이션의 핸들 (시스템, 바디, 조인트, 모터 등)"""
+
     def __init__(self, sys, bodies, joints, motors, buffer):
         self.sys = sys
         self.bodies = bodies
@@ -30,7 +31,7 @@ class Simulator:
     - step() 호출 시 자동으로 simulation.modelState에 결과 커밋
     """
 
-    def __init__(self, simulation: Simulation, getUserInput: 'Callable[[], List]'):
+    def __init__(self, simulation: Simulation, getUserInput: "Callable[[], List]"):
         """
         Args:
             simulation: Simulation 객체 (상태 컨테이너)
@@ -57,14 +58,7 @@ class Simulator:
         new_states = [PartState.fromBody(b) for b in bodies]
         self.simulation.modelState.commit(new_states)
 
-        # 1000 스텝마다 로그 출력 (버퍼 커밋 상태 포함)
         self.step_count += 1
-        if self.step_count % 1000 == 0:
-            sim_time = self.simulation.simHandle.sys.GetChTime()
-            # 첫 번째 바디의 위치 확인
-            if new_states:
-                pos = new_states[0].pos
-                print(f"[sim] Step {self.step_count}, Time: {sim_time:.3f}s, 버퍼 커밋: {len(new_states)} parts, pos=({pos.x:.3f}, {pos.y:.3f}, {pos.z:.3f})", flush=True)
 
     def clear(self):
         """시뮬레이터 정리 (Chrono 리소스 해제)"""
@@ -77,8 +71,8 @@ class Simulator:
         print("[sim] 시뮬레이터 리소스 정리 완료")
 
 
-
 # 헬퍼 함수들
+
 
 def _load_body_from_obj(meta):
     """OBJ 파일에서 ChBody 생성"""
@@ -186,7 +180,9 @@ def _make_rotation_motor(sys, body, base, center, axis, speed):
     return motor
 
 
-def _create_shaft_with_base(sys, shaft_meta, base_meta, motor_speed, bodies, joints, motors):
+def _create_shaft_with_base(
+    sys, shaft_meta, base_meta, motor_speed, bodies, joints, motors
+):
     """샤프트-베이스 조립"""
     # 베이스 생성
     base = _load_body_from_obj(base_meta)
@@ -213,13 +209,14 @@ def _create_shaft_with_base(sys, shaft_meta, base_meta, motor_speed, bodies, joi
     joints.append(rev)
 
     # 모터 생성
-    motor = _make_rotation_motor(sys, shaft, base, shaft_center_world, shaft_axis, motor_speed)
+    motor = _make_rotation_motor(
+        sys, shaft, base, shaft_center_world, shaft_axis, motor_speed
+    )
     if hasattr(motor, "SetName"):
         motor.SetName(shaft_meta.get("motor_name", "shaft_motor"))
     motors.append(motor)
 
     print(f"[sim] 샤프트-베이스 조립 완료 (speed = {motor_speed} rad/s)")
-
 
 
 def buildSimulation(sim_description: SimDescription) -> Simulation:
@@ -278,36 +275,43 @@ def buildSimulation(sim_description: SimDescription) -> Simulation:
 
     # 5) Simulation 객체 생성
     simulation = Simulation(
-        modelState=model_state_buffer,
-        simHandle=sim_handle,
-        dt=sim_description.dt
+        modelState=model_state_buffer, simHandle=sim_handle, dt=sim_description.dt
     )
 
-    print(f"[sim] buildSimulation() 완료 → bodies={len(bodies)}, joints={len(joints)}, motors={len(motors)}")
+    print(
+        f"[sim] buildSimulation() 완료 → bodies={len(bodies)}, joints={len(joints)}, motors={len(motors)}"
+    )
 
     return simulation
+
+
+import math
 
 # 유저입력을 다루는부분
 # AI가 생성한걸 확인없이 가져온거라 참고용으로만 봐주세요.
 import pychrono as chrono
-import math
+
 
 class RailInteractionManager:
     def __init__(self, system):
         self.system = system
 
         # 구성 요소들
-        self.ray_body = None      # 카메라 따라다니는 바디 (Gun)
-        self.bead = None          # 레일 위 구슬 (Bullet)
-        self.rail_joint = None    # 레일 구속 (Prismatic)
+        self.ray_body = None  # 카메라 따라다니는 바디 (Gun)
+        self.bead = None  # 레일 위 구슬 (Bullet)
+        self.rail_joint = None  # 레일 구속 (Prismatic)
         self.depth_spring = None  # 깊이 유지 스프링 (거리 고정용)
-        self.drag_link = None     # 모델 당기는 링크
+        self.drag_link = None  # 모델 당기는 링크
 
-    def start_interaction(self, target_id, action_local_pos, cam_pos, cam_dir, init_distance):
+    def start_interaction(
+        self, target_id, action_local_pos, cam_pos, cam_dir, init_distance
+    ):
         # 1. Ray Body 생성 (카메라 위치/각도 동기화용)
         self.ray_body = chrono.ChBody()
-        self.ray_body.SetFixed(False) # 움직여야 하므로 Fixed False
-        self.ray_body.SetBodyFixed(True) # 대신 물리엔진이 못 건드리고 우리가 강제 이동(Kinematic)
+        self.ray_body.SetFixed(False)  # 움직여야 하므로 Fixed False
+        self.ray_body.SetBodyFixed(
+            True
+        )  # 대신 물리엔진이 못 건드리고 우리가 강제 이동(Kinematic)
         self.system.Add(self.ray_body)
 
         # Ray Body 위치/자세 초기화 (Z축이 카메라 정면이 되도록)
@@ -316,30 +320,44 @@ class RailInteractionManager:
 
         # 2. Bead (구슬) 생성
         self.bead = chrono.ChBody()
-        self.bead.SetMass(0.01) # 가볍게
-        self.bead.SetPos(cam_pos + cam_dir * init_distance) # 초기 위치는 거리 d 만큼 앞
+        self.bead.SetMass(0.01)  # 가볍게
+        self.bead.SetPos(
+            cam_pos + cam_dir * init_distance
+        )  # 초기 위치는 거리 d 만큼 앞
         self.system.Add(self.bead)
 
         # 3. Rail Joint (Prismatic) 생성: RayBody <-> Bead
         # Z축(진행방향)으로만 움직이게 구속
         self.rail_joint = chrono.ChLinkLockPrismatic()
-        self.rail_joint.Initialize(self.ray_body, self.bead, chrono.ChCoordsysd(cam_pos, self.ray_body.GetRot()))
+        self.rail_joint.Initialize(
+            self.ray_body,
+            self.bead,
+            chrono.ChCoordsysd(cam_pos, self.ray_body.GetRot()),
+        )
         self.system.Add(self.rail_joint)
 
         # 4. [나중을 위한 포석] Depth Spring (거리 유지용)
         # 지금은 거리를 고정하지만, 나중엔 이 스프링에 힘을 가해 깊이를 조절함
         self.depth_spring = chrono.ChLinkTSDA()
-        self.depth_spring.Initialize(self.ray_body, self.bead, False, chrono.ChVector3d(0,0,0), chrono.ChVector3d(0,0,0))
-        self.depth_spring.SetSpringCoefficient(10000) # 거리 유지 (짱짱하게)
+        self.depth_spring.Initialize(
+            self.ray_body,
+            self.bead,
+            False,
+            chrono.ChVector3d(0, 0, 0),
+            chrono.ChVector3d(0, 0, 0),
+        )
+        self.depth_spring.SetSpringCoefficient(10000)  # 거리 유지 (짱짱하게)
         self.depth_spring.SetDampingCoefficient(100)
-        self.depth_spring.SetRestLength(init_distance) # 초기 거리 유지
+        self.depth_spring.SetRestLength(init_distance)  # 초기 거리 유지
         self.system.Add(self.depth_spring)
 
         # 5. Drag Link (실제 모델 연결)
         target_body = self.system.SearchBody(target_id)
         self.drag_link = chrono.ChLinkTSDA()
-        self.drag_link.Initialize(target_body, self.bead, True, action_local_pos, chrono.ChVector3d(0,0,0)) # Bead 중심에 연결
-        self.drag_link.SetSpringCoefficient(50000) # 모델을 강하게 당김
+        self.drag_link.Initialize(
+            target_body, self.bead, True, action_local_pos, chrono.ChVector3d(0, 0, 0)
+        )  # Bead 중심에 연결
+        self.drag_link.SetSpringCoefficient(50000)  # 모델을 강하게 당김
         self.drag_link.SetDampingCoefficient(500)
         self.drag_link.SetRestLength(0)
         self.system.Add(self.drag_link)
@@ -364,8 +382,9 @@ class RailInteractionManager:
         # 카메라 좌표계로 RayBody 강제 이동
         # Dir 벡터를 Rotation Quaternion으로 변환하는 로직 포함
         z_axis = dir.GetNormalized()
-        x_axis = chrono.ChVector3d(1,0,0) # 임시
-        if abs(z_axis.x) > 0.9: x_axis = chrono.ChVector3d(0,1,0)
+        x_axis = chrono.ChVector3d(1, 0, 0)  # 임시
+        if abs(z_axis.x) > 0.9:
+            x_axis = chrono.ChVector3d(0, 1, 0)
         y_axis = (z_axis % x_axis).GetNormalized()
         x_axis = (y_axis % z_axis).GetNormalized()
 
@@ -373,9 +392,11 @@ class RailInteractionManager:
         self.ray_body.SetPos(pos)
         self.ray_body.SetRot(rot_matrix.Get_A_quaternion())
 
+
 #    - AR 인터랙션: 각 모델을 한 덩어리로 드래그/회전
 #    - getUserInput() 이 반환하는 이벤트 리스트를 받아서
 #    - 각 바디에 rigid transform을 적용하는 헬퍼
+
 
 class AssemblyInteractionState:
     """

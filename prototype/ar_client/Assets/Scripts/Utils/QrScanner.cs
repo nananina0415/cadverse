@@ -9,7 +9,6 @@ using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
 
 #if CADVERSE_ENABLE_ZXING
-using System.Collections.Generic;
 using ZXing;
 using ZXing.Common;
 #endif
@@ -39,10 +38,6 @@ namespace CADverse.Utils
     private CancellationTokenSource _scanCancellation;
     private Texture2D _previewTexture;
 
-#if CADVERSE_ENABLE_ZXING
-    private IBarcodeReader _barcodeReader;
-#endif
-
     public bool IsScanning => _scanCompletion != null && !_scanCompletion.Task.IsCompleted;
 
     private void Awake()
@@ -51,20 +46,6 @@ namespace CADverse.Utils
         {
             cameraManager = FindFirstObjectByType<ARCameraManager>();
         }
-
-#if CADVERSE_ENABLE_ZXING
-        _barcodeReader = new BarcodeReader
-        {
-            AutoRotate = true,
-            TryInverted = true,
-            Options = new DecodingOptions
-            {
-                PossibleFormats = new List<BarcodeFormat> { BarcodeFormat.QR_CODE },
-                TryHarder = true,
-                ReturnCodabarStartEnd = false
-            }
-        };
-#endif
     }
 
     /// <summary>
@@ -213,8 +194,28 @@ namespace CADverse.Utils
         byte[] managedBuffer = new byte[buffer.Length];
         buffer.CopyTo(managedBuffer);
 
-        var result = _barcodeReader.Decode(managedBuffer, width, height, RGBLuminanceSource.BitmapFormat.Gray8);
-        return result?.Text;
+        // Create luminance source from grayscale image data
+        var luminanceSource = new RGBLuminanceSource(managedBuffer, width, height, RGBLuminanceSource.BitmapFormat.Gray8);
+        var binarizer = new HybridBinarizer(luminanceSource);
+        var binaryBitmap = new BinaryBitmap(binarizer);
+
+        // Use MultiFormatReader directly
+        var reader = new MultiFormatReader();
+        var hints = new System.Collections.Generic.Dictionary<DecodeHintType, object>
+        {
+            { DecodeHintType.POSSIBLE_FORMATS, new System.Collections.Generic.List<BarcodeFormat> { BarcodeFormat.QR_CODE } },
+            { DecodeHintType.TRY_HARDER, true }
+        };
+
+        try
+        {
+            var result = reader.decode(binaryBitmap, hints);
+            return result?.Text;
+        }
+        catch
+        {
+            return null;
+        }
 #else
 #if UNITY_EDITOR
         if (allowEditorMock && !string.IsNullOrEmpty(editorMockPayload))

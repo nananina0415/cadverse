@@ -210,7 +210,7 @@ namespace CADverse.Communication
                 throw new InvalidOperationException("HttpConnection이 초기화되지 않았습니다.");
             }
 
-            string modelPath = "/models/model.obj";
+            string modelPath = "/cadverse/resources/base.obj";
             Debug.Log($"[SimServer] 모델 다운로드 시작: {modelPath}");
 
             string objText = await _httpConnection.GetTextAsync(modelPath);
@@ -268,7 +268,7 @@ namespace CADverse.Communication
         private void CreateConnections(string host, int port)
         {
             string httpUrl = $"http://{host}:{port}";
-            string wsUrl = $"ws://{host}:{port}/ws";
+            string wsUrl = $"ws://{host}:{port}/cadverse/interaction";
 
             _httpConnection?.Dispose();
             _wsConnection?.Dispose();

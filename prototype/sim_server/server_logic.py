@@ -1,14 +1,15 @@
-import threading
 import socket
+import threading
 import time
 from pathlib import Path
-from typing import List, Callable
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from typing import Callable, List
+
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
-from server_data_models import ServerConfig, Server, ModelStateMessage, UserInputMessage
+from pychrono import ChVector3d
+from server_data_models import ModelStateMessage, Server, ServerConfig, UserInputMessage
 from sim_data_models import PartState, UserInput
 from utils.read_write_buffer import ReadWriteBuffer
-from pychrono import ChVector3d
 
 
 def getLocalIpAddress() -> str:
@@ -26,11 +27,12 @@ def getLocalIpAddress() -> str:
 def showQrCode(serverAddress: str):
     """QR 코드를 생성하고 GUI 창에 표시합니다."""
     try:
-        import qrcode
-        from qrcode.constants import ERROR_CORRECT_L
-        from PIL import Image
-        import PIL.ImageTk as ImageTk
         import tkinter as tk
+
+        import PIL.ImageTk as ImageTk
+        import qrcode
+        from PIL import Image
+        from qrcode.constants import ERROR_CORRECT_L
     except ImportError:
         print("QR 코드 표시를 위해 다음 패키지가 필요합니다:")
         print("  pip install qrcode[pil]")
@@ -55,7 +57,7 @@ def showQrCode(serverAddress: str):
     root.title("CADverse 서버 QR 코드")
 
     # 이미지를 PhotoImage로 변환 (PIL Image로 명시적 변환)
-    photo = ImageTk.PhotoImage(img.convert('RGB'))  # type: ignore
+    photo = ImageTk.PhotoImage(img.convert("RGB"))  # type: ignore
 
     # 라벨에 이미지 표시
     label = tk.Label(root, image=photo)
@@ -89,10 +91,7 @@ def buildServer(config: ServerConfig) -> Server:
     user_input_buffer = ReadWriteBuffer[UserInput]()
 
     # Server 객체 생성
-    server = Server(
-        config=config,
-        userInput=user_input_buffer
-    )
+    server = Server(config=config, userInput=user_input_buffer)
 
     return server
 
@@ -106,7 +105,7 @@ class ServerRunner:
     - runOneCycle() 호출 시 주기적 작업 수행
     """
 
-    def __init__(self, server: Server, getModelState: 'Callable[[], List[PartState]]'):
+    def __init__(self, server: Server, getModelState: "Callable[[], List[PartState]]"):
         """
         Args:
             server: Server 객체 (상태 컨테이너)
@@ -123,7 +122,9 @@ class ServerRunner:
         # QR 코드 표시
         localIp = getLocalIpAddress()
         serverAddress = f"{localIp}:{server.config.port}/cadverse"
-        qrThread = threading.Thread(target=showQrCode, args=(serverAddress,), daemon=True)
+        qrThread = threading.Thread(
+            target=showQrCode, args=(serverAddress,), daemon=True
+        )
         qrThread.start()
 
     def _startUvicornServer(self):
@@ -137,11 +138,18 @@ class ServerRunner:
         async def getResource(file_path: str):
             fullPath = resourcesPath / file_path
             if not fullPath.exists() or not fullPath.is_file():
+                print(f"[HTTP] 리소스 요청 실패 (404): {file_path}", flush=True)
                 raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다")
             try:
                 fullPath.resolve().relative_to(resourcesPath.resolve())
             except ValueError:
+                print(f"[HTTP] 리소스 접근 거부 (403): {file_path}", flush=True)
                 raise HTTPException(status_code=403, detail="접근이 거부되었습니다")
+
+            print(
+                f"[HTTP] 리소스 전송 성공: {file_path} ({fullPath.stat().st_size} bytes)",
+                flush=True,
+            )
             return FileResponse(fullPath)
 
         # WebSocket: 실시간 인터랙션 (단방향 푸시)
@@ -150,7 +158,10 @@ class ServerRunner:
             import asyncio
 
             await websocket.accept()
-            print("[ws] 클라이언트 연결됨")
+
+            # 클라이언트 연결 시 플래그 설정 (시뮬레이션 시작 트리거)
+            self.server.hasClientConnected = True
+            print("[ws] 클라이언트 연결됨 - 시뮬레이션 시작 준비", flush=True)
 
             async def receiveTask():
                 """클라이언트 → 서버: 사용자 입력 수신 (응답 없음)"""
@@ -167,12 +178,12 @@ class ServerRunner:
                         point = ChVector3d(
                             user_input_msg.point["x"],
                             user_input_msg.point["y"],
-                            user_input_msg.point["z"]
+                            user_input_msg.point["z"],
                         )
                         direction = ChVector3d(
                             user_input_msg.direction["x"],
                             user_input_msg.direction["y"],
-                            user_input_msg.direction["z"]
+                            user_input_msg.direction["z"],
                         )
 
                         # 사용자 입력을 버퍼에 커밋 (응답 없음)
@@ -186,7 +197,6 @@ class ServerRunner:
 
             async def sendTask():
                 """서버 → 클라이언트: 모델 상태 푸시 (응답 기다리지 않음)"""
-                send_count = 0
                 try:
                     while True:
                         # 모델 상태 읽기
@@ -198,14 +208,6 @@ class ServerRunner:
 
                         # 클라이언트로 전송 (응답 기다리지 않음)
                         await websocket.send_text(states_json)
-
-                        # 100번마다 상태 로그 출력
-                        send_count += 1
-                        if send_count % 100 == 0:
-                            # 첫 번째 파트의 위치만 출력
-                            if model_states:
-                                pos = model_states[0].pos
-                                print(f"[ws] 송신 #{send_count}: parts={len(model_states)}, pos=({pos.x:.3f}, {pos.y:.3f}, {pos.z:.3f})", flush=True)
 
                         # 송신 주기 (100ms)
                         await asyncio.sleep(0.1)
@@ -226,6 +228,7 @@ class ServerRunner:
         # uvicorn 서버를 별도 스레드에서 실행
         def runUvicorn():
             import uvicorn
+
             print(f"서버 시작: {config.host}:{config.port}")
             print(f"리소스 디렉토리: {config.resources_dir}")
             uvicorn.run(app, host=config.host, port=config.port, log_level="warning")

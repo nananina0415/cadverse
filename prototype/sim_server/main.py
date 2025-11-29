@@ -140,6 +140,8 @@ def main():
     simLoopThread = None
 
     print("[main] CADverse 시뮬레이션 서버 시작", flush=True)
+    print("[main] 클라이언트 연결 대기 중... (연결되면 시뮬레이션이 시작됩니다)", flush=True)
+
     try:
         # 메인 루프 (외부 try: KeyboardInterrupt 처리)
         while True:
@@ -162,21 +164,24 @@ def main():
                     serverThread.start()
                     print(f"[main] 서버 스레드 시작됨 (http://{serverConfig.host}:{serverConfig.port})", flush=True)
 
-                # SimLoopThread 상태 체크 및 재시작
-                if simLoopThread is None or not simLoopThread.is_alive():
-                    if simLoopThread is not None:
-                        print("[main] 시뮬레이션 스레드가 종료됨. 재시작 중...", flush=True)
+                # SimLoopThread 상태 체크 및 시작 (클라이언트 연결 시에만)
+                if server.hasClientConnected:  # 클라이언트가 연결된 경우에만 시뮬레이션 시작
+                    if simLoopThread is None or not simLoopThread.is_alive():
+                        if simLoopThread is not None:
+                            print("[main] 시뮬레이션 스레드가 종료됨. 재시작 중...", flush=True)
+                        else:
+                            print("[main] 클라이언트 연결 감지! 시뮬레이션을 시작합니다...", flush=True)
 
-                    print("[main] 시뮬레이션 스레드 생성 중...", flush=True)
-                    simLoopThread = LoopThread(
-                        initFn = lambda: Simulator(sim, server.userInput.getReadAccess(doDeepCopy=False)),
-                        loopFn = lambda simulator: simulator.step(),
-                        clearFn = lambda simulator: simulator.clear(),
-                        daemon=True  # 데몬 스레드로 설정하여 메인 종료 시 자동 종료
-                    )
-                    print("[main] 시뮬레이션 스레드 시작 중...", flush=True)
-                    simLoopThread.start()
-                    print("[main] 시뮬레이션 스레드 시작됨", flush=True)
+                        print("[main] 시뮬레이션 스레드 생성 중...", flush=True)
+                        simLoopThread = LoopThread(
+                            initFn = lambda: Simulator(sim, server.userInput.getReadAccess(doDeepCopy=False)),
+                            loopFn = lambda simulator: simulator.step(),
+                            clearFn = lambda simulator: simulator.clear(),
+                            daemon=True  # 데몬 스레드로 설정하여 메인 종료 시 자동 종료
+                        )
+                        print("[main] 시뮬레이션 스레드 시작 중...", flush=True)
+                        simLoopThread.start()
+                        print("[main] 시뮬레이션 스레드 시작됨", flush=True)
 
                 # 1초 대기 후 다시 체크
                 time.sleep(1)
