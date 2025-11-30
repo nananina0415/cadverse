@@ -4,6 +4,7 @@
 name: cadverse
 
 channels:
+  - projectchrono
   - conda-forge
   - defaults
 
