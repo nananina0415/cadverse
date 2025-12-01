@@ -248,6 +248,11 @@ namespace CADverse.Communication
                         partObj.transform.localRotation = Quaternion.identity;
                         partObj.transform.localScale = Vector3.one; // CompositeModel의 0.001 scale 상속받음
 
+                        // MeshCollider 추가 (레이캐스트용)
+                        MeshCollider collider = partObj.AddComponent<MeshCollider>();
+                        collider.convex = false;  // 정밀한 충돌 감지
+                        Debug.Log($"[SimServer] '{partInfo.name}' MeshCollider 추가 완료");
+
                         // Wrapper에 오프셋 적용 (이미 보정된 값)
                         if (partInfo.offset != null && partInfo.offset.Length == 3)
                         {
