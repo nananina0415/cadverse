@@ -7,7 +7,7 @@ from typing import Callable, List
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pychrono import ChVector3d
-from server_data_models import ModelStateMessage, Server, ServerConfig, UserInputMessage
+from server_data_models import ModelStateMessage, Server, ServerConfig
 from sim_data_models import PartState, UserInput
 from utils.read_write_buffer import ReadWriteBuffer
 
@@ -105,16 +105,27 @@ class ServerRunner:
     - runOneCycle() 호출 시 주기적 작업 수행
     """
 
-    def __init__(self, server: Server, getModelState: "Callable[[], List[PartState]]"):
+    def __init__(
+        self, server: Server, getModelState: "Callable[[], List[PartState]]", simulation
+    ):
         """
         Args:
             server: Server 객체 (상태 컨테이너)
             getModelState: 모델 상태를 읽는 함수 (getReadAccess()의 반환값)
+            simulation: Simulation 객체 (힘 계산용)
         """
         self.server = server
         self.getModelState = getModelState
+        self.simulation = simulation
         self.uvicorn_server = None
         self.server_thread = None
+
+        # 터치 상태 추적
+        self.touch_state = {
+            "active": False,
+            "part_index": -1,
+            "action_point_local": None,  # ChVector3d
+        }
 
         # FastAPI 앱 생성 및 서버 시작
         self._startUvicornServer()
@@ -156,6 +167,7 @@ class ServerRunner:
         @app.websocket("/cadverse/interaction")
         async def websocketEndpoint(websocket: WebSocket):
             import asyncio
+            import json
 
             await websocket.accept()
 
@@ -169,26 +181,77 @@ class ServerRunner:
                     while True:
                         # 클라이언트로부터 메시지 수신
                         data = await websocket.receive_text()
-                        print(f"[ws] <- 클라이언트: {data}")
 
-                        # DTO로 파싱
-                        user_input_msg = UserInputMessage.fromJson(data)
+                        # JSON 파싱하여 타입 확인
+                        msg = json.loads(data)
+                        msg_type = msg.get("type")
 
-                        # ChVector3d로 변환
-                        point = ChVector3d(
-                            user_input_msg.point["x"],
-                            user_input_msg.point["y"],
-                            user_input_msg.point["z"],
-                        )
-                        direction = ChVector3d(
-                            user_input_msg.direction["x"],
-                            user_input_msg.direction["y"],
-                            user_input_msg.direction["z"],
-                        )
+                        # TouchStart 메시지 처리
+                        if msg_type == "TouchStart":
+                            payload = msg.get("payload", {})
+                            part_idx = payload.get("targetPartIndex", -1)
+                            action_pt = payload.get("actionPoint", {})
 
-                        # 사용자 입력을 버퍼에 커밋 (응답 없음)
-                        user_input = UserInput(point=point, direction=direction)
-                        self.server.userInput.commit([user_input])
+                            # 터치 상태 저장
+                            self.touch_state = {
+                                "active": True,
+                                "part_index": part_idx,
+                                "action_point_local": ChVector3d(
+                                    action_pt.get("x", 0),
+                                    action_pt.get("y", 0),
+                                    action_pt.get("z", 0),
+                                ),
+                            }
+
+                            print(
+                                f"[TouchStart] Part #{part_idx} | "
+                                f"ActionPoint: ({action_pt.get('x', 0):.3f}, "
+                                f"{action_pt.get('y', 0):.3f}, "
+                                f"{action_pt.get('z', 0):.3f})"
+                            )
+                            continue
+
+                        # Touching 메시지 처리 - 힘 벡터 계산
+                        if msg_type == "Touching":
+                            if not self.touch_state["active"]:
+                                continue
+
+                            payload = msg.get("payload", {})
+                            finger_pt_dict = payload.get("fingerPoint", {})
+                            finger_pt_global = ChVector3d(
+                                finger_pt_dict.get("x", 0),
+                                finger_pt_dict.get("y", 0),
+                                finger_pt_dict.get("z", 0),
+                            )
+
+                            # 부품 ChBody 가져오기
+                            part_idx = self.touch_state["part_index"]
+                            bodies = self.simulation.simHandle.bodies
+                            if part_idx < 0 or part_idx >= len(bodies):
+                                continue
+
+                            body = bodies[part_idx]
+
+                            # 글로벌 → 로컬 변환
+                            finger_pt_local = body.TransformPointParentToLocal(
+                                finger_pt_global
+                            )
+
+                            # 힘 벡터 = fingerPoint(로컬) - actionPoint(로컬)
+                            action_pt = self.touch_state["action_point_local"]
+                            force_vector = finger_pt_local - action_pt
+
+                            print(
+                                f"[Force] ({force_vector.x:.3f}, "
+                                f"{force_vector.y:.3f}, {force_vector.z:.3f})"
+                            )
+                            continue
+
+                        # TouchEnd 메시지 처리
+                        if msg_type == "TouchEnd":
+                            self.touch_state["active"] = False
+                            print("[TouchEnd] 터치 종료")
+                            continue
 
                 except WebSocketDisconnect:
                     print("[ws] 클라이언트 연결 종료 (수신)")

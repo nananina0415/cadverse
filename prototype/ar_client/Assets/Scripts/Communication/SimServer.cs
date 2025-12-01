@@ -201,6 +201,28 @@ namespace CADverse.Communication
         }
 
         /// <summary>
+        /// 원시 JSON 문자열을 서버로 전송한다.
+        /// </summary>
+        public async void SendRawMessage(string json)
+        {
+            if (!IsConnected)
+            {
+                Debug.LogWarning("[SimServer] 서버 연결되지 않음");
+                return;
+            }
+
+            try
+            {
+                await _wsConnection.SendTextAsync(json);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[SimServer] 메시지 전송 실패: {ex.Message}");
+                OnError?.Invoke(ex.Message);
+            }
+        }
+
+        /// <summary>
         /// 서버로부터 sim_contents.json을 다운로드하고 모든 파트를 로드하여 CompositeModel을 반환한다.
         /// </summary>
         public async System.Threading.Tasks.Task<CompositeModel> LoadModel()

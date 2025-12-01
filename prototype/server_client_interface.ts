@@ -29,6 +29,15 @@ namespace MessageType {
     }[];
   }
   namespace ClientToServer {
+    // AR 카메라 포즈 전송
+    type CameraPose = {
+      type: "CameraPose";
+      payload: {
+        position: GlobalPosition;
+        rotation: Orientation; // 쿼터니언 (w, x, y, z)
+      };
+    };
+
     type InteractByScreen =
       {
           type: "TouchStart";

@@ -41,7 +41,6 @@ class Simulator:
         self.getUserInput = getUserInput
         self.step_count = 0
 
-
     def step(self):
         """
         시뮬레이션 한 스텝 실행
@@ -243,9 +242,15 @@ def buildSimulation(sim_description: SimDescription) -> Simulation:
         print(f"[sim] assembly 처리: type = {asm_type}")
 
         if asm_type == "shaft_base":
-            shaft_meta = asm["shaft"]
-            base_meta = asm["base"]
+            # parts 배열에서 shaft와 base 찾기
+            parts = asm.get("parts", [])
+            shaft_meta = next((p for p in parts if p.get("name") == "shaft"), None)
+            base_meta = next((p for p in parts if p.get("name") == "base"), None)
             motor_speed = asm.get("motor_speed", 5.0)
+
+            if shaft_meta is None or base_meta is None:
+                print(f"[sim] 경고: shaft 또는 base를 찾을 수 없음")
+                continue
 
             _create_shaft_with_base(
                 sys=sys,

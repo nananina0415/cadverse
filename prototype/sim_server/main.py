@@ -155,7 +155,7 @@ def main():
                     # 서버 스레드 생성 (config와 콜백 전달)
                     print("[main] 서버 스레드 생성 중...", flush=True)
                     serverThread = LoopThread(
-                        initFn = lambda: ServerRunner(server, sim.modelState.getReadAccess(doDeepCopy=False)),
+                        initFn = lambda: ServerRunner(server, sim.modelState.getReadAccess(doDeepCopy=False), sim),
                         loopFn = lambda runner: runner.runOneCycle(),
                         clearFn = lambda runner: runner.clear(),
                         daemon=True  # 데몬 스레드로 설정하여 메인 종료 시 자동 종료
