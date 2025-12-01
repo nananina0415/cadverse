@@ -46,8 +46,8 @@ namespace CADverse.Communication
                         float.TryParse(parts[2], out float y) &&
                         float.TryParse(parts[3], out float z))
                     {
-                        // OBJ는 Y-up, Unity도 Y-up이지만 Z축 방향이 반대일 수 있음
-                        vertices.Add(new Vector3(x, y, z));
+                        // OBJ는 밀리미터 단위 → 미터 단위로 변환
+                        vertices.Add(new Vector3(x * 0.001f, y * 0.001f, z * 0.001f));
                     }
                 }
                 // 면 정보 (f v1 v2 v3 또는 f v1/vt1/vn1 v2/vt2/vn2 v3/vt3/vn3)

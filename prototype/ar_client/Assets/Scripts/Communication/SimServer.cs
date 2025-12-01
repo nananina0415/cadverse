@@ -201,7 +201,7 @@ namespace CADverse.Communication
         }
 
         /// <summary>
-        /// 서버로부터 모델을 다운로드하고 CompositeModel을 반환한다.
+        /// 서버로부터 sim_contents.json을 다운로드하고 모든 파트를 로드하여 CompositeModel을 반환한다.
         /// </summary>
         public async System.Threading.Tasks.Task<CompositeModel> LoadModel()
         {
@@ -210,20 +210,77 @@ namespace CADverse.Communication
                 throw new InvalidOperationException("HttpConnection이 초기화되지 않았습니다.");
             }
 
-            string modelPath = "/cadverse/resources/base.obj";
-            Debug.Log($"[SimServer] 모델 다운로드 시작: {modelPath}");
+            // 1. sim_contents.json 다운로드
+            string jsonPath = "/cadverse/resources/sim_contents.json";
+            Debug.Log($"[SimServer] JSON 다운로드 시작: {jsonPath}");
 
-            string objText = await _httpConnection.GetTextAsync(modelPath);
-            Debug.Log($"[SimServer] 모델 다운로드 완료: {objText.Length} bytes");
+            string jsonText = await _httpConnection.GetTextAsync(jsonPath);
+            Debug.Log($"[SimServer] JSON 다운로드 완료: {jsonText.Length} bytes");
 
-            GameObject modelObject = ObjCommunication.ParseToGameObject(objText, "SimModel");
-            Debug.Log($"[SimServer] OBJ 파싱 완료");
+            // 2. JSON 파싱
+            var simContents = SimContents.FromJson(jsonText);
+            Debug.Log($"[SimServer] Assemblies 수: {simContents.assemblies.Count}");
 
+            // 3. CompositeModel 생성
             CompositeModel compositeModel = new GameObject("CompositeModel").AddComponent<CompositeModel>();
-            compositeModel.AddPart(modelObject);
 
-            Debug.Log($"[SimServer] CompositeModel 생성 완료");
+            // 4. 각 assembly의 모든 파트 로드
+            foreach (var assembly in simContents.assemblies)
+            {
+                Debug.Log($"[SimServer] Assembly '{assembly.type}' 파트 수: {assembly.parts.Count}");
+
+                foreach (var partInfo in assembly.parts)
+                {
+                    if (partInfo != null && !string.IsNullOrEmpty(partInfo.mesh))
+                    {
+                        // OBJ 파일 로드
+                        GameObject partObj = await LoadObjPart(partInfo.mesh, partInfo.name);
+
+                        // Wrapper 생성 (오프셋용, scale 영향 안받음)
+                        GameObject partWrapper = new GameObject($"{partInfo.name}_wrapper");
+
+                        // Wrapper를 CompositeModel에 추가
+                        compositeModel.AddPart(partWrapper);
+
+                        // 실제 메쉬를 Wrapper의 자식으로 (scale 적용)
+                        partObj.transform.SetParent(partWrapper.transform, false);
+                        partObj.transform.localPosition = Vector3.zero;
+                        partObj.transform.localRotation = Quaternion.identity;
+                        partObj.transform.localScale = Vector3.one; // CompositeModel의 0.001 scale 상속받음
+
+                        // Wrapper에 오프셋 적용 (이미 보정된 값)
+                        if (partInfo.offset != null && partInfo.offset.Length == 3)
+                        {
+                            partWrapper.transform.localPosition = new Vector3(
+                                partInfo.offset[0],
+                                partInfo.offset[1],
+                                partInfo.offset[2]
+                            );
+                            Debug.Log($"[SimServer] '{partInfo.name}' offset 적용: localPos = {partWrapper.transform.localPosition}");
+                        }
+
+                        Debug.Log($"[SimServer] '{partInfo.name}' 로드 완료, wrapper localPos: {partWrapper.transform.localPosition}");
+                    }
+                }
+            }
+
+            Debug.Log($"[SimServer] CompositeModel 생성 완료 - 총 {compositeModel.GetPartCount()} 파트");
             return compositeModel;
+        }
+
+        /// <summary>
+        /// 단일 OBJ 파일을 다운로드하고 GameObject로 파싱
+        /// </summary>
+        private async System.Threading.Tasks.Task<GameObject> LoadObjPart(string meshFilename, string partName)
+        {
+            string objPath = $"/cadverse/resources/{meshFilename}";
+            Debug.Log($"[SimServer] OBJ 다운로드 시작: {objPath}");
+
+            string objText = await _httpConnection.GetTextAsync(objPath);
+            Debug.Log($"[SimServer] OBJ 다운로드 완료: {meshFilename} ({objText.Length} bytes)");
+
+            GameObject partObject = ObjCommunication.ParseToGameObject(objText, partName);
+            return partObject;
         }
 
         /// <summary>
@@ -390,5 +447,38 @@ namespace CADverse.Communication
         {
             Disconnect();
         }
+    }
+
+    /// <summary>
+    /// sim_contents.json 파싱용 데이터 구조
+    /// </summary>
+    [Serializable]
+    public class SimContents
+    {
+        public List<Assembly> assemblies = new List<Assembly>();
+
+        public static SimContents FromJson(string json)
+        {
+            return JsonUtility.FromJson<SimContents>(json);
+        }
+    }
+
+    [Serializable]
+    public class Assembly
+    {
+        public string type;
+        public List<PartInfo> parts = new List<PartInfo>();
+        public float motor_speed;
+    }
+
+    [Serializable]
+    public class PartInfo
+    {
+        public string name;
+        public string mesh;
+        public float mass;
+        public bool fixed_;
+        public string motor_name;
+        public float[] offset;
     }
 }

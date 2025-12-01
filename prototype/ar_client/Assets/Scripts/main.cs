@@ -8,7 +8,7 @@ using UnityEngine.InputSystem.EnhancedTouch;
 using CADverse.Communication;
 using CADverse.Utils;
 
-// AR Foundation - 좌표 변환 (x,z,y) 고정
+// AR Foundation - 정적 모델 로딩
 public class Main : MonoBehaviour
 {
     [Header("Server")]
@@ -42,7 +42,7 @@ public class Main : MonoBehaviour
         {
             AndroidToast.Show("화면을 터치하여 QR 스캔 시작", true);
         }
-        else
+       else
         {
             var qrScanner = FindFirstObjectByType<CADverse.Utils.QrScanner>();
             if (qrScanner != null) qrScanner.enabled = false;
@@ -57,12 +57,13 @@ public class Main : MonoBehaviour
         try
         {
             _loadedModel = await simServer.LoadModel();
-            AndroidToast.Show($"✅ 모델 로드 완료!\n바닥을 터치하세요", true);
+            AndroidToast.Show($"✅ 모델 로드 완료!\\n바닥을 터치하세요", true);
             InitializeModel();
         }
         catch (Exception ex)
         {
             Debug.LogError($"[Main] 모델 로드 실패: {ex.Message}");
+            AndroidToast.Show($"❌ 모델 로드 실패", true);
         }
     }
 
@@ -103,34 +104,10 @@ public class Main : MonoBehaviour
             return;
         }
 
-        if (_loadedModel != null && simServer.IsConnected)
-        {
-            UpdateModelState();
-        }
-
+        // 바닥 터치 시 모델 배치
         if (!_isModelPlaced && _loadedModel != null && hasTouch)
         {
             PlaceModelOnPlane(touchPosition);
-        }
-        else if (_isModelPlaced && hasTouch)
-        {
-            SendUserInputToServer(touchPosition);
-        }
-    }
-
-    private void UpdateModelState()
-    {
-        var states = simServer.GetLatestModelState();
-
-        for (int i = 0; i < states.Count && i < _loadedModel.GetPartCount(); i++)
-        {
-            GameObject part = _loadedModel.GetPart(i);
-            if (part != null)
-            {
-                // Position은 그대로 사용
-                part.transform.localPosition = states[i].pos;
-                part.transform.localRotation = states[i].GetQuaternion();
-            }
         }
     }
 
@@ -138,24 +115,30 @@ public class Main : MonoBehaviour
     {
         if (_loadedModel == null) return;
 
+        // 모든 파트(wrapper)에 Material 설정
         for (int i = 0; i < _loadedModel.GetPartCount(); i++)
         {
-            GameObject part = _loadedModel.GetPart(i);
-            if (part == null) continue;
+            GameObject partWrapper = _loadedModel.GetPart(i);
+            if (partWrapper == null) continue;
 
-            MeshRenderer renderer = part.GetComponent<MeshRenderer>();
-            if (renderer != null)
+            // Wrapper의 첫 번째 자식(실제 메쉬)에 Material 설정
+            if (partWrapper.transform.childCount > 0)
             {
-                renderer.enabled = true;
-                if (renderer.material == null)
+                GameObject partMesh = partWrapper.transform.GetChild(0).gameObject;
+                MeshRenderer renderer = partMesh.GetComponent<MeshRenderer>();
+                if (renderer != null)
                 {
-                    renderer.material = new Material(Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("UI/Default"));
+                    renderer.enabled = true;
+                    if (renderer.material == null)
+                    {
+                        renderer.material = new Material(Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("UI/Default"));
+                    }
+                    renderer.material.color = new Color(1f, 0f, 0f, 1f); // 빨강
                 }
-                renderer.material.color = new Color(1f, 0f, 0f, 1f);
             }
         }
 
-        _loadedModel.transform.localScale = Vector3.one * 0.001f;
+        _loadedModel.transform.localScale = Vector3.one;  // OBJ에서 이미 미터 변환됨
         _loadedModel.gameObject.SetActive(false); // 숨김
     }
 
@@ -184,29 +167,17 @@ public class Main : MonoBehaviour
             // X축 -90도 회전으로 좌표계 변환 (x,z,y)
             _loadedModel.transform.localRotation = Quaternion.Euler(-90, 0, 0);
 
-            _loadedModel.gameObject.SetActive(true);
+            _loadedModel.gameObject.SetActive(true); // 표시
 
             _isModelPlaced = true;
 
             AndroidToast.Show($"✅ 모델 배치 완료!", true);
-            Debug.Log($"[Main] 모델 배치: {hitPose.position}");
+            Debug.Log($"[Main] 모델 배치: {hitPose.position}, 파트 수: {_loadedModel.GetPartCount()}");
         }
         else
         {
             AndroidToast.Show("바닥을 찾을 수 없습니다", false);
             Debug.LogWarning("[Main] AR Plane 감지 실패");
-        }
-    }
-
-    private void SendUserInputToServer(Vector2 touchPosition)
-    {
-        if (_loadedModel == null) return;
-
-        Ray ray = arCamera.ScreenPointToRay(touchPosition);
-        if (Physics.Raycast(ray, out RaycastHit hit))
-        {
-            simServer.SendUserInput(hit.point, ray.direction.normalized);
-            Debug.Log($"[Main] User input: {hit.point}");
         }
     }
 
