@@ -395,3 +395,211 @@ class RailInteractionManager:
         rot_matrix = chrono.ChMatrix33d(x_axis, y_axis, z_axis)
         self.ray_body.SetPos(pos)
         self.ray_body.SetRot(rot_matrix.Get_A_quaternion())
+
+
+# ============================================================
+#  AR Touch → Torque 기반 1-DOF Shaft Rotation Controller
+#  (AR 드래그를 토크로 변환하여 축 방향 회전 구현)
+#
+#  사용 흐름:
+#   1. buildSimulation 후:
+#        sim.simHandle.drag_controller = ShaftDragController(sim.simHandle)
+#
+#   2. 서버 WebSocket 이벤트 수신 시:
+#        drag_controller.set_event(ws_event_dict)
+#
+#   3. 시뮬 step() 내부에서 매 tick 호출:
+#        drag_controller.step(dt)
+# ============================================================
+
+
+def _vec_from_dict(d: Optional[Dict[str, float]]) -> chrono.ChVector3d:
+    if not d:
+        return chrono.ChVector3d(0, 0, 0)
+    return chrono.ChVector3d(
+        float(d.get("x", 0.0)),
+        float(d.get("y", 0.0)),
+        float(d.get("z", 0.0)),
+    )
+
+
+def _vec_length(v: chrono.ChVector3d) -> float:
+    return (v.x * v.x + v.y * v.y + v.z * v.z) ** 0.5
+
+
+def _vec_normalize(v: chrono.ChVector3d) -> chrono.ChVector3d:
+    L = _vec_length(v)
+    if L < 1e-12:
+        return chrono.ChVector3d(0, 0, 0)
+    return chrono.ChVector3d(v.x / L, v.y / L, v.z / L)
+
+
+def _vec_add(a: chrono.ChVector3d, b: chrono.ChVector3d) -> chrono.ChVector3d:
+    return chrono.ChVector3d(a.x + b.x, a.y + b.y, a.z + b.z)
+
+
+def _vec_sub(a: chrono.ChVector3d, b: chrono.ChVector3d) -> chrono.ChVector3d:
+    return chrono.ChVector3d(a.x - b.x, a.y - b.y, a.z - b.z)
+
+
+def _vec_scale(v: chrono.ChVector3d, s: float) -> chrono.ChVector3d:
+    return chrono.ChVector3d(v.x * s, v.y * s, v.z * s)
+
+
+def _vec_cross(a: chrono.ChVector3d, b: chrono.ChVector3d) -> chrono.ChVector3d:
+    return chrono.ChVector3d(
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x,
+    )
+
+
+def _vec_dot(a: chrono.ChVector3d, b: chrono.ChVector3d) -> float:
+    return a.x * b.x + a.y * b.y + a.z * b.z
+
+
+def _get_angvel(body: chrono.ChBody) -> chrono.ChVector3d:
+    """가능하면 parent 기준 각속도를 읽는다."""
+    if hasattr(body, "GetAngVelParent"):
+        return body.GetAngVelParent()
+    elif hasattr(body, "GetAngVelLocal"):
+        return body.GetAngVelLocal()
+    return chrono.ChVector3d(0, 0, 0)
+
+
+def _set_angvel(body: chrono.ChBody, w: chrono.ChVector3d):
+    """가능하면 parent 기준 각속도를 쓴다."""
+    if hasattr(body, "SetAngVelParent"):
+        body.SetAngVelParent(w)
+    elif hasattr(body, "SetAngVelLocal"):
+        body.SetAngVelLocal(w)
+
+
+def _clear_forces(body: chrono.ChBody):
+    """이 바디에 누적된 외력/토크만 비움"""
+    if hasattr(body, "EmptyAccumulators"):
+        body.EmptyAccumulators()
+
+
+def _apply_torque(body: chrono.ChBody, t: chrono.ChVector3d):
+    """버전에 따라 AccumulateTorque / AddTorque 중 되는 걸 사용"""
+    if hasattr(body, "AccumulateTorque"):
+        try:
+            body.AccumulateTorque(t, False)
+        except TypeError:
+            body.AccumulateTorque(t)
+    elif hasattr(body, "AddTorque"):
+        body.AddTorque(t)
+
+
+# ============================================================
+#  Shaft Drag Controller Class
+# ============================================================
+# ㄴ현재 단순한 1-DOF용 로직, 이 부분을 교체하여 다양한 자유도 컨트롤러 구현 가능
+class ShaftDragController:
+    """
+    하나의 회전 샤프트에 대해
+    - TouchStart / Touching / TouchEnd 이벤트를 받아
+    - 토크 적용 + 축 방향 각속도 감쇠를 수행하는 컨트롤러.
+
+    전제:
+      - sim_handle 안에 다음 정보가 존재한다고 가정한다.
+        * sim_handle.sys              : ChSystemNSC
+        * sim_handle.bodies[1]        : shaft 바디 (또는 별도 참조를 쓰도록 수정 가능)
+        * sim_handle.shaft_center_world : 샤프트 중심 (ChVector3d)
+        * sim_handle.shaft_axis_world   : 샤프트 축 (ChVector3d)
+      - 아직 실제 코드에서는 이 필드를 추가/연결하지 않았으므로
+        이 컨트롤러를 사용하기 전 그 부분을 먼저 세팅해야 한다.
+    """
+
+    DRAG_TORQUE = 0.005   # 드래그 시 주는 토크 크기
+    DAMP_FREE = 8.0       # 손 뗀 후 감쇠 강도 (값 키우면 더 빨리 멈춤)
+    DAMP_DRAG = 1.5       # 드래그 중 감쇠 강도 (너무 크면 잘 안 도는 느낌)
+    VEL_EPS = 5e-3        # 이 이하 각속도면 그냥 0으로 스냅 (떨림 제거용)
+
+    def __init__(self, sim_handle: Any):
+        self.handle = sim_handle
+        self.active: bool = False
+        self.start_finger: Optional[chrono.ChVector3d] = None
+        self.event: Optional[Dict[str, Any]] = None
+
+    def set_event(self, event: Optional[Dict[str, Any]]):
+        """
+        서버(WebSocket)에서 받은 InteractByScreen 이벤트를 그대로 넘겨주면 됨.
+        event 예:
+          {
+            "type": "TouchStart" | "Touching" | "TouchEnd",
+            "payload": { ... }
+          }
+        """
+        self.event = event
+
+    def step(self, dt: float):
+        """
+        매 시뮬레이션 스텝마다 호출:
+        - 마지막으로 set_event()로 등록된 이벤트를 해석해서
+          토크를 적용하고 축 방향 각속도에 감쇠를 걸어준다.
+        - 샤프트 하나만 1자유도 회전하는 것을 상정.
+        """
+        ev = self.event
+        # 임시: bodies[1]이 shaft라고 가정 (필요 시 명시 참조로 변경 가능)
+        shaft = self.handle.bodies[1]
+        axis = _vec_normalize(self.handle.shaft_axis_world)
+        center = self.handle.shaft_center_world
+
+        # 1) 이번 프레임 시작 시 외력/토크 비우기 (중복 누적 방지)
+        _clear_forces(shaft)
+
+        # 2) 터치 이벤트 → 토크 생성
+        if not ev:
+            self.active = False
+        else:
+            et = ev.get("type")
+            payload = ev.get("payload", {})
+
+            if et == "TouchStart":
+                self.active = True
+                self.start_finger = _vec_from_dict(payload.get("fingerPoint"))
+                # 필요하면 여기서 속도 초기화 가능
+                # _set_angvel(shaft, chrono.ChVector3d(0, 0, 0))
+
+            elif et == "TouchEnd":
+                self.active = False
+
+            elif et == "Touching" and self.active and self.start_finger is not None:
+                finger = _vec_from_dict(payload.get("fingerPoint"))
+                v0 = _vec_sub(self.start_finger, center)
+                v1 = _vec_sub(finger, center)
+
+                if _vec_length(v0) >= 1e-6 and _vec_length(v1) >= 1e-6:
+                    v0n = _vec_normalize(v0)
+                    v1n = _vec_normalize(v1)
+
+                    arc_axis = _vec_cross(v0n, v1n)
+                    arc_axis_n = _vec_normalize(arc_axis)
+
+                    if _vec_length(arc_axis_n) >= 1e-6:
+                        # 드래그 축과 샤프트 축의 방향성 비교 → 부호 결정
+                        sign = 1.0 if _vec_dot(arc_axis_n, axis) >= 0.0 else -1.0
+                        torque_world = _vec_scale(axis, sign * self.DRAG_TORQUE)
+                        _apply_torque(shaft, torque_world)
+
+        # 3) 축 방향 각속도 감쇠
+        w = _get_angvel(shaft)
+        w_along = _vec_dot(w, axis)
+
+        dragging_now = (
+            ev is not None
+            and ev.get("type") == "Touching"
+            and self.active
+        )
+        lam = self.DAMP_DRAG if dragging_now else self.DAMP_FREE
+
+        if abs(w_along) < self.VEL_EPS:
+            w_along_new = 0.0
+        else:
+            # exp 감쇠: 더 안정적이고 덜 튐
+            w_along_new = w_along * m.exp(-lam * dt)
+
+        w_new = _vec_scale(axis, w_along_new)
+        _set_angvel(shaft, w_new)
