@@ -203,16 +203,11 @@ public class Main : MonoBehaviour
 
             // 위치와 회전 업데이트
             part.transform.localPosition = new Vector3(
-                state.position.x,
-                state.position.y,
-                state.position.z
+                state.pos.x,
+                state.pos.y,
+                state.pos.z
             );
-            part.transform.localRotation = new Quaternion(
-                state.rotation.x,
-                state.rotation.y,
-                state.rotation.z,
-                state.rotation.w
-            );
+            part.transform.localRotation = state.GetQuaternion();
         }
     }
 
