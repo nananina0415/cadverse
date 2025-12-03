@@ -243,12 +243,12 @@ def _create_shaft_with_base(
     joints.append(rev)
 
     # 모터 생성
-    motor = _make_rotation_motor(
-        sys, shaft, base, shaft_center_world, shaft_axis, motor_speed
-    )
-    if hasattr(motor, "SetName"):
-        motor.SetName(shaft_meta.get("motor_name", "shaft_motor"))
-    motors.append(motor)
+    #motor = _make_rotation_motor(
+    #    sys, shaft, base, shaft_center_world, shaft_axis, motor_speed
+    #)
+    #if hasattr(motor, "SetName"):
+    #    motor.SetName(shaft_meta.get("motor_name", "shaft_motor"))
+    #motors.append(motor)
 
     print(f"[sim] 샤프트-베이스 조립 완료 (speed = {motor_speed} rad/s)")
     # AR 드래그 컨트롤러에서 쓸 샤프트 정보 리턴
@@ -607,15 +607,18 @@ class ShaftDragController:
         - 샤프트 하나만 1자유도 회전하는 것을 상정.
         """
         ev = self.event
-
-        # shaft 바디 찾기:
-        #  - 가능하면 sim_handle.shaft_body 사용
-        #  - 없으면 bodies[1] (기존 가정)로 fallback
-        if getattr(self.handle, "shaft_body", None) is not None:
-            shaft = self.handle.shaft_body
+        # 축/중심도 sim_handle에 세팅된 값을 사용 (없으면 샤프트 현재 상태 기준)
+        if getattr(self.handle, "shaft_axis_world", None) is not None:
+            axis_vec = self.handle.shaft_axis_world
         else:
-            # bodies가 2개 이상이라는 기존 가정 유지
-            shaft = self.handle.bodies[1]
+            # 샤프트의 현재 회전 상태에서 z축을 축으로 보는 등, 임시 기본축
+            axis_vec = chrono.ChVector3d(0, 0, 1)
+
+        if getattr(self.handle, "shaft_center_world", None) is not None:
+            center = self.handle.shaft_center_world
+        else:
+            center = shaft.GetPos()
+
 
         # 축/중심도 sim_handle에 세팅된 값을 사용 (없으면 기본값)
         axis_vec = self.handle.shaft_axis_world or chrono.ChVector3d(0, 0, 1)
