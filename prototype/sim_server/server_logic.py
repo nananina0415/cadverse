@@ -259,21 +259,32 @@ class ServerRunner:
                     print(f"[ws] 수신 에러: {e}")
 
             async def sendTask():
-                """서버 → 클라이언트: 모델 상태 푸시 (응답 기다리지 않음)"""
+                """서버 → 클라이언트: 모델 상태 푸시 (sim_time 변경 시에만)"""
+                last_sent_time = -1.0  # 마지막 전송한 sim_time
+
                 try:
                     while True:
-                        # 모델 상태 읽기
-                        model_states = self.getModelState()
+                        # 현재 sim_time 확인
+                        current_time = self.simulation.sim_time
 
-                        # DTO로 변환 후 JSON 직렬화
-                        message = ModelStateMessage.fromPartStates(model_states)
-                        states_json = message.toJson()
+                        # sim_time이 변경되었을 때만 전송
+                        if current_time != last_sent_time:
+                            # 모델 상태 읽기
+                            model_states = self.getModelState()
 
-                        # 클라이언트로 전송 (응답 기다리지 않음)
-                        await websocket.send_text(states_json)
+                            # DTO로 변환 후 JSON 직렬화 (sim_time 포함)
+                            message = ModelStateMessage.fromPartStates(
+                                model_states, current_time
+                            )
+                            states_json = message.toJson()
 
-                        # 송신 주기 (100ms)
-                        await asyncio.sleep(0.1)
+                            # 클라이언트로 전송
+                            await websocket.send_text(states_json)
+
+                            last_sent_time = current_time
+
+                        # 10ms마다 체크 (너무 자주 체크하지 않도록)
+                        await asyncio.sleep(0.01)
 
                 except WebSocketDisconnect:
                     print("[ws] 클라이언트 연결 종료 (송신)")

@@ -37,6 +37,7 @@ public class Main : MonoBehaviour
         simServer.OnConnected += HandleServerConnected;
         simServer.OnDisconnected += HandleServerDisconnected;
         simServer.OnError += HandleServerError;
+        simServer.OnModelStateUpdated += HandleModelStateUpdated;
 
         if (useQrScan)
         {
@@ -75,6 +76,15 @@ public class Main : MonoBehaviour
     private void HandleServerError(string error)
     {
         Debug.LogError("[Main] Server error: " + error);
+    }
+
+    private void HandleModelStateUpdated()
+    {
+        // 모델이 배치된 상태에서만 업데이트
+        if (_isModelPlaced && _loadedModel != null)
+        {
+            UpdateModelFromServer();
+        }
     }
 
     void Update()
@@ -178,6 +188,31 @@ public class Main : MonoBehaviour
         {
             AndroidToast.Show("바닥을 찾을 수 없습니다", false);
             Debug.LogWarning("[Main] AR Plane 감지 실패");
+        }
+    }
+
+
+    public void UpdateModelFromServer()
+    {
+        var states = simServer.GetLatestModelState();
+
+        for (int i = 0; i < states.Count && i < _loadedModel.GetPartCount(); i++)
+        {
+            var part = _loadedModel.GetPart(i);
+            var state = states[i];
+
+            // 위치와 회전 업데이트
+            part.transform.localPosition = new Vector3(
+                state.position.x,
+                state.position.y,
+                state.position.z
+            );
+            part.transform.localRotation = new Quaternion(
+                state.rotation.x,
+                state.rotation.y,
+                state.rotation.z,
+                state.rotation.w
+            );
         }
     }
 

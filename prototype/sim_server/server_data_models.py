@@ -103,16 +103,22 @@ class PartStateDTO:
 class ModelStateMessage:
     """서버 → 클라이언트: 모델 상태 메시지"""
 
+    sim_time: float
     parts: List[PartStateDTO]
 
     def toJson(self) -> str:
         """JSON 문자열로 직렬화"""
-        return json.dumps([p.toDict() for p in self.parts])
+        return json.dumps(
+            {"sim_time": self.sim_time, "parts": [p.toDict() for p in self.parts]}
+        )
 
     @classmethod
-    def fromPartStates(cls, part_states: List) -> "ModelStateMessage":
+    def fromPartStates(cls, part_states: List, sim_time: float) -> "ModelStateMessage":
         """PartState 리스트로부터 메시지 생성"""
-        return cls(parts=[PartStateDTO.fromPartState(ps) for ps in part_states])
+        return cls(
+            sim_time=sim_time,
+            parts=[PartStateDTO.fromPartState(ps) for ps in part_states],
+        )
 
 
 @dataclass

@@ -5,13 +5,15 @@ import json
 import struct
 from dataclasses import dataclass
 from typing import Any, Dict, TypeAlias
-from pychrono import ChVector3d, ChQuaterniond
+
+from pychrono import ChQuaterniond, ChVector3d
 from utils.read_write_buffer import ReadWriteBuffer
 
 
 @dataclass
 class SimDescription:
     """외부에서 넘겨줄 시뮬레이션 설명 정보"""
+
     model_meta: Dict[str, Any]  # 그대로 dict로 들고 있게 유지
     dt: float = 1e-3  # 한 스텝 시간 간격
 
@@ -32,6 +34,7 @@ class SimDescription:
 @dataclass
 class PartState:
     """개별 파트의 위치와 회전 상태"""
+
     # partId: int -> 버퍼의 인덱스로 사용
     pos: ChVector3d  # [x, y, z]
     rot: ChQuaterniond  # [e0, e1, e2, e3]
@@ -39,10 +42,7 @@ class PartState:
     @classmethod
     def fromBody(cls, body) -> "PartState":
         """simulate.py의 ChBody에서 위치와 회전을 읽어 PartState로 변환"""
-        return cls(
-            pos=body.GetPos(),
-            rot=body.GetRot()
-        )
+        return cls(pos=body.GetPos(), rot=body.GetRot())
 
     @classmethod
     def fromFrameDict(cls, d: Dict[str, Any]) -> "PartState":
@@ -63,6 +63,7 @@ class UserInput:
     - point: 기준점 위치 (ChVector3d)
     - direction: 방향 단위벡터 (ChVector3d)
     """
+
     point: ChVector3d
     direction: ChVector3d
 
@@ -75,9 +76,8 @@ class Simulation:
     - simHandle: Chrono 시뮬레이션 핸들
     - dt: 시뮬레이션 타임스텝
     """
+
     modelState: ModelState
     simHandle: Any  # simulate.SimHandle
     dt: float
-
-
-
+    sim_time: float

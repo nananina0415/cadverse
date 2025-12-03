@@ -45,17 +45,30 @@ namespace CADverse.Communication
     }
 
     /// <summary>
-    /// 서버 → 클라이언트: 모델 상태 메시지 (배열 형태)
+    /// 서버 → 클라이언트: 모델 상태 메시지
     /// </summary>
+    [Serializable]
     public class ModelStateMessage
     {
+        public float sim_time;
         public List<PartState> parts;
 
         public static ModelStateMessage FromJson(string json)
         {
-            // JSON 배열을 파싱
-            var partStates = JsonHelper.FromJson<PartState>(json);
-            return new ModelStateMessage { parts = new List<PartState>(partStates) };
+            // JSON 객체 파싱 (새 형식: {"sim_time": ..., "parts": [...]})
+            var message = JsonUtility.FromJson<ModelStateMessageDTO>(json);
+            return new ModelStateMessage
+            {
+                sim_time = message.sim_time,
+                parts = new List<PartState>(message.parts)
+            };
+        }
+
+        [Serializable]
+        private class ModelStateMessageDTO
+        {
+            public float sim_time;
+            public PartState[] parts;
         }
     }
 

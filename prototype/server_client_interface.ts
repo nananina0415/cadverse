@@ -24,23 +24,16 @@ namespace MessageType {
 
   namespace ServerToClient {
     type CompositeModelState = {
+      sim_time: number;
       pos: GlobalPosition;
       rot: Orientation;
     }[];
   }
   namespace ClientToServer {
-    // AR 카메라 포즈 전송
-    type CameraPose = {
-      type: "CameraPose";
-      payload: {
-        position: GlobalPosition;
-        rotation: Orientation; // 쿼터니언 (w, x, y, z)
-      };
-    };
-
     type InteractByScreen =
       {
           type: "TouchStart";
+          // sim_time: number;
           payload: {
             targetPartIndex: PartIndex;
             actionPoint: LocalPosition;
@@ -50,6 +43,7 @@ namespace MessageType {
       }
       | {
           type: "Touching";
+          // sim_time: number;
           payload: {
             fingerPoint: GlobalPosition;
             z_direction: GlobalDirection;
@@ -57,6 +51,7 @@ namespace MessageType {
         }
       | {
           type: "TouchEnd";
+          // sim_time: number;
           payload: {};
         };
   }

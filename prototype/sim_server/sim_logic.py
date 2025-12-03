@@ -47,6 +47,7 @@ class Simulator:
         1. 사용자 입력 읽기 (향후 구현)
         2. Chrono 시뮬레이션 스텝 실행
         3. 결과를 simulation.modelState에 커밋
+        4. sim_time 갱신
         """
         # Chrono 시뮬레이션 한 스텝 실행
         self.simulation.simHandle.sys.DoStepDynamics(self.simulation.dt)
@@ -55,6 +56,9 @@ class Simulator:
         bodies = self.simulation.simHandle.bodies
         new_states = [PartState.fromBody(b) for b in bodies]
         self.simulation.modelState.commit(new_states)
+
+        # 시뮬레이션 시간 갱신
+        self.simulation.sim_time += self.simulation.dt
 
         self.step_count += 1
 
@@ -279,7 +283,10 @@ def buildSimulation(sim_description: SimDescription) -> Simulation:
 
     # 5) Simulation 객체 생성
     simulation = Simulation(
-        modelState=model_state_buffer, simHandle=sim_handle, dt=sim_description.dt
+        modelState=model_state_buffer,
+        simHandle=sim_handle,
+        dt=sim_description.dt,
+        sim_time=0.0,
     )
 
     print(
@@ -512,10 +519,10 @@ class ShaftDragController:
         이 컨트롤러를 사용하기 전 그 부분을 먼저 세팅해야 한다.
     """
 
-    DRAG_TORQUE = 0.005   # 드래그 시 주는 토크 크기
-    DAMP_FREE = 8.0       # 손 뗀 후 감쇠 강도 (값 키우면 더 빨리 멈춤)
-    DAMP_DRAG = 1.5       # 드래그 중 감쇠 강도 (너무 크면 잘 안 도는 느낌)
-    VEL_EPS = 5e-3        # 이 이하 각속도면 그냥 0으로 스냅 (떨림 제거용)
+    DRAG_TORQUE = 0.005  # 드래그 시 주는 토크 크기
+    DAMP_FREE = 8.0  # 손 뗀 후 감쇠 강도 (값 키우면 더 빨리 멈춤)
+    DAMP_DRAG = 1.5  # 드래그 중 감쇠 강도 (너무 크면 잘 안 도는 느낌)
+    VEL_EPS = 5e-3  # 이 이하 각속도면 그냥 0으로 스냅 (떨림 제거용)
 
     def __init__(self, sim_handle: Any):
         self.handle = sim_handle
@@ -588,11 +595,7 @@ class ShaftDragController:
         w = _get_angvel(shaft)
         w_along = _vec_dot(w, axis)
 
-        dragging_now = (
-            ev is not None
-            and ev.get("type") == "Touching"
-            and self.active
-        )
+        dragging_now = ev is not None and ev.get("type") == "Touching" and self.active
         lam = self.DAMP_DRAG if dragging_now else self.DAMP_FREE
 
         if abs(w_along) < self.VEL_EPS:

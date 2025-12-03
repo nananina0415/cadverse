@@ -24,6 +24,7 @@ namespace CADverse.Communication
         private readonly object _stateLock = new object();
         private bool _shouldReconnect = true;
         private Coroutine _reconnectCoroutine;
+        private float _lastSimTime = -1f;  // 마지막 수신한 sim_time
 
         [Header("QR Scanner")]
         [SerializeField] private QrScanner qrScanner;
