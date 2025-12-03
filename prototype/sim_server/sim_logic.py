@@ -23,6 +23,13 @@ class SimHandle:
         self.motors = motors
         self.buffer = buffer
 
+        # --- AR 드래그용 추가 필드들 ---
+        self.shaft_body: Optional[chrono.ChBody] = None
+        self.shaft_center_world: Optional[chrono.ChVector3d] = None
+        self.shaft_axis_world: Optional[chrono.ChVector3d] = None
+        self.drag_controller: Optional["ShaftDragController"] = None
+
+
 
 class Simulator:
     """
@@ -44,19 +51,26 @@ class Simulator:
     def step(self):
         """
         시뮬레이션 한 스텝 실행
-        1. 사용자 입력 읽기 (향후 구현)
+        1. (선택) AR 드래그 컨트롤러 실행 → 토크/각속도 갱신
         2. Chrono 시뮬레이션 스텝 실행
         3. 결과를 simulation.modelState에 커밋
         """
-        # Chrono 시뮬레이션 한 스텝 실행
-        self.simulation.simHandle.sys.DoStepDynamics(self.simulation.dt)
+        handle = self.simulation.simHandle
 
-        # 결과를 읽어서 modelState에 커밋
-        bodies = self.simulation.simHandle.bodies
+        # 1) AR 드래그 컨트롤러가 있으면 먼저 한 스텝 실행
+        if getattr(handle, "drag_controller", None) is not None:
+            handle.drag_controller.step(self.simulation.dt)
+
+        # 2) Chrono 시뮬레이션 한 스텝 실행
+        handle.sys.DoStepDynamics(self.simulation.dt)
+
+        # 3) 결과를 읽어서 modelState에 커밋
+        bodies = handle.bodies
         new_states = [PartState.fromBody(b) for b in bodies]
         self.simulation.modelState.commit(new_states)
 
         self.step_count += 1
+
 
     def clear(self):
         """시뮬레이터 정리 (Chrono 리소스 해제)"""
@@ -215,6 +229,13 @@ def _create_shaft_with_base(
     motors.append(motor)
 
     print(f"[sim] 샤프트-베이스 조립 완료 (speed = {motor_speed} rad/s)")
+        # AR 드래그 컨트롤러에서 쓸 샤프트 정보 리턴
+    return {
+        "base": base,
+        "shaft": shaft,
+        "shaft_center_world": shaft_center_world,
+        "shaft_axis_world": shaft_axis,
+    }
 
 
 def buildSimulation(sim_description: SimDescription) -> Simulation:
@@ -231,6 +252,9 @@ def buildSimulation(sim_description: SimDescription) -> Simulation:
     bodies = []
     joints = []
     motors = []
+
+    # AR 드래그용으로 대표 샤프트 한 개만 추적
+    primary_shaft_info = None
 
     # 2) assemblies 기반 조립
     model_meta = sim_description.model_meta
@@ -252,7 +276,7 @@ def buildSimulation(sim_description: SimDescription) -> Simulation:
                 print(f"[sim] 경고: shaft 또는 base를 찾을 수 없음")
                 continue
 
-            _create_shaft_with_base(
+            info = _create_shaft_with_base(
                 sys=sys,
                 shaft_meta=shaft_meta,
                 base_meta=base_meta,
@@ -261,6 +285,11 @@ def buildSimulation(sim_description: SimDescription) -> Simulation:
                 joints=joints,
                 motors=motors,
             )
+
+            # 첫 번째 shaft_base 세트를 AR 드래그 타겟으로 사용
+            if primary_shaft_info is None:
+                primary_shaft_info = info
+
         else:
             print(f"[sim] 알 수 없는 assembly type: {asm_type}")
 
@@ -272,6 +301,19 @@ def buildSimulation(sim_description: SimDescription) -> Simulation:
         motors=motors,
         buffer=None,
     )
+
+    # 3-1) 샤프트 정보 / 드래그 컨트롤러 세팅
+    if primary_shaft_info is not None:
+        sim_handle.shaft_body = primary_shaft_info["shaft"]
+        sim_handle.shaft_center_world = primary_shaft_info["shaft_center_world"]
+        sim_handle.shaft_axis_world = primary_shaft_info["shaft_axis_world"]
+
+        # AR 드래그 컨트롤러 인스턴스 생성
+        sim_handle.drag_controller = ShaftDragController(sim_handle)
+        print("[sim] ShaftDragController 초기화 완료")
+    else:
+        print("[sim] 경고: shaft_base 어셈블리를 찾지 못해 드래그 컨트롤러를 설정하지 못했습니다.")
+
 
     # 4) 초기 상태 생성
     init_states = [PartState.fromBody(b) for b in bodies]
