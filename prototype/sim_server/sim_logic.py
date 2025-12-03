@@ -51,20 +51,39 @@ class Simulator:
     def step(self):
         """
         시뮬레이션 한 스텝 실행
-        1. (선택) AR 드래그 컨트롤러 실행 → 토크/각속도 갱신
-        2. Chrono 시뮬레이션 스텝 실행
-        3. 결과를 simulation.modelState에 커밋
+        1. userInput 버퍼에서 최신 AR 이벤트를 읽어옴
+        2. (선택) AR 드래그 컨트롤러에 이벤트 전달 → 토크/각속도 갱신
+        3. Chrono 시뮬레이션 스텝 실행
+        4. 결과를 simulation.modelState에 커밋
         """
         handle = self.simulation.simHandle
+        dt = self.simulation.dt
 
-        # 1) AR 드래그 컨트롤러가 있으면 먼저 한 스텝 실행
-        if getattr(handle, "drag_controller", None) is not None:
-            handle.drag_controller.step(self.simulation.dt)
+        # 1) userInput 버퍼에서 최신 AR 이벤트 읽기
+        event = None
+        try:
+            if self.getUserInput is not None:
+                inputs = self.getUserInput()  # ReadWriteBuffer.getReadAccess() 결과
+            else:
+                inputs = []
+        except Exception as e:
+            print(f"[sim] getUserInput() 호출 중 에러: {e}")
+            inputs = []
 
-        # 2) Chrono 시뮬레이션 한 스텝 실행
-        handle.sys.DoStepDynamics(self.simulation.dt)
+        if inputs:
+            # userInput 버퍼에는 "최근 이벤트 1개"만 넣는다고 가정하고 마지막 것 사용
+            event = inputs[-1]
 
-        # 3) 결과를 읽어서 modelState에 커밋
+        # 2) AR 드래그 컨트롤러가 있으면 이벤트를 전달하고 한 스텝 실행
+        drag = getattr(handle, "drag_controller", None)
+        if drag is not None:
+            drag.set_event(event)
+            drag.step(dt)
+
+        # 3) Chrono 시뮬레이션 한 스텝 실행
+        handle.sys.DoStepDynamics(dt)
+
+        # 4) 결과를 읽어서 modelState에 커밋
         bodies = handle.bodies
         new_states = [PartState.fromBody(b) for b in bodies]
         self.simulation.modelState.commit(new_states)
@@ -229,7 +248,7 @@ def _create_shaft_with_base(
     motors.append(motor)
 
     print(f"[sim] 샤프트-베이스 조립 완료 (speed = {motor_speed} rad/s)")
-        # AR 드래그 컨트롤러에서 쓸 샤프트 정보 리턴
+    # AR 드래그 컨트롤러에서 쓸 샤프트 정보 리턴
     return {
         "base": base,
         "shaft": shaft,
@@ -331,11 +350,9 @@ def buildSimulation(sim_description: SimDescription) -> Simulation:
     return simulation
 
 
-import math
 
 # 유저입력을 다루는부분
 # AI가 생성한걸 확인없이 가져온거라 참고용으로만 봐주세요.
-import pychrono as chrono
 
 
 class RailInteractionManager:
@@ -584,10 +601,21 @@ class ShaftDragController:
         - 샤프트 하나만 1자유도 회전하는 것을 상정.
         """
         ev = self.event
-        # 임시: bodies[1]이 shaft라고 가정 (필요 시 명시 참조로 변경 가능)
-        shaft = self.handle.bodies[1]
-        axis = _vec_normalize(self.handle.shaft_axis_world)
-        center = self.handle.shaft_center_world
+
+        # shaft 바디 찾기:
+        #  - 가능하면 sim_handle.shaft_body 사용
+        #  - 없으면 bodies[1] (기존 가정)로 fallback
+        if getattr(self.handle, "shaft_body", None) is not None:
+            shaft = self.handle.shaft_body
+        else:
+            # bodies가 2개 이상이라는 기존 가정 유지
+            shaft = self.handle.bodies[1]
+
+        # 축/중심도 sim_handle에 세팅된 값을 사용 (없으면 기본값)
+        axis_vec = self.handle.shaft_axis_world or chrono.ChVector3d(0, 0, 1)
+        center = self.handle.shaft_center_world or chrono.ChVector3d(0, 0, 0)
+        axis = _vec_normalize(axis_vec)
+
 
         # 1) 이번 프레임 시작 시 외력/토크 비우기 (중복 누적 방지)
         _clear_forces(shaft)
