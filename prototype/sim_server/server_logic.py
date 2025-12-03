@@ -189,9 +189,9 @@ class ServerRunner:
                         #    - ReadWriteBuffer는 타입 제약이 없으니 dict 그대로 넣어도 됨.
                         #    - 시뮬 쪽에서는 "최근 이벤트 1개만 쓴다"는 가정으로 마지막 것만 사용.
                         try:
-                        self.server.userInput.commit([msg])
+                            self.server.userInput.commit([msg])
                         except Exception as e:
-                        print(f"[ws] userInput 버퍼 commit 에러: {e}")
+                            print(f"[ws] userInput 버퍼 commit 에러: {e}")
 
                         # TouchStart 메시지 처리
                         if msg_type == "TouchStart":
