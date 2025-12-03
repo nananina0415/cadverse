@@ -2,7 +2,7 @@ import socket
 import threading
 import time
 from pathlib import Path
-from typing import Callable, List, Dict, Any
+from typing import Any, Callable, Dict, List
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -80,21 +80,14 @@ def showQrCode(serverAddress: str):
 def buildServer(config: ServerConfig) -> Server:
     """
     ServerConfig로부터 Server 객체 생성
-
-    Args:
-        config: 서버 설정
-
-    Returns:
-        Server: 초기화된 서버 객체
     """
-    # UserInput 버퍼 생성
-    user_input_buffer = ReadWriteBuffer[UserInput]()
+    # AR 이벤트(dict) 버퍼 생성
+    user_input_buffer = ReadWriteBuffer[Dict[str, Any]]()
 
     # Server 객체 생성
     server = Server(config=config, userInput=user_input_buffer)
 
     return server
-
 
 class ServerRunner:
     """

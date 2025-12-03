@@ -38,12 +38,13 @@ class Server:
     """
     서버 상태 컨테이너
     - config: 서버 설정
-    - userInput: 사용자 입력 버퍼
+    - userInput: AR 이벤트(dict) 버퍼
     - hasClientConnected: 클라이언트 연결 여부 (시뮬레이션 시작 트리거)
     """
 
     config: ServerConfig
-    userInput: ReadWriteBuffer[UserInput]
+    # WebSocket에서 받은 InteractByScreen 이벤트(dict)를 담는 버퍼
+    userInput: ReadWriteBuffer[Dict[str, Any]]
     hasClientConnected: bool = False
 
 

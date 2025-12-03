@@ -23,36 +23,42 @@ namespace MessageType {
   type PartIndex = number;
 
   namespace ServerToClient {
-    type CompositeModelState = {
-      sim_time: number;
+    // 서버에서 보내는 각 파트 상태
+    export type PartState = {
       pos: GlobalPosition;
       rot: Orientation;
-    }[];
+    };
+
+    // 서버에서 보내는 전체 메시지 구조
+    export type ModelStateMessage = {
+      sim_time: number;
+      parts: PartState[];
+    };
   }
   namespace ClientToServer {
     type InteractByScreen =
       {
-          type: "TouchStart";
-          // sim_time: number;
-          payload: {
-            targetPartIndex: PartIndex;
-            actionPoint: LocalPosition;
-            fingerPoint: GlobalPosition;
-            z_direction: GlobalDirection;
-          };
+        type: "TouchStart";
+        // sim_time: number;
+        payload: {
+          targetPartIndex: PartIndex;
+          actionPoint: LocalPosition;
+          fingerPoint: GlobalPosition;
+          z_direction: GlobalDirection;
+        };
       }
       | {
-          type: "Touching";
-          // sim_time: number;
-          payload: {
-            fingerPoint: GlobalPosition;
-            z_direction: GlobalDirection;
-          };
-        }
-      | {
-          type: "TouchEnd";
-          // sim_time: number;
-          payload: {};
+        type: "Touching";
+        // sim_time: number;
+        payload: {
+          fingerPoint: GlobalPosition;
+          z_direction: GlobalDirection;
         };
+      }
+      | {
+        type: "TouchEnd";
+        // sim_time: number;
+        payload: {};
+      };
   }
 }

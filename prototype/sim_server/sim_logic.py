@@ -30,7 +30,6 @@ class SimHandle:
         self.drag_controller: Optional["ShaftDragController"] = None
 
 
-
 class Simulator:
     """
     시뮬레이션 실행 엔진
@@ -92,7 +91,6 @@ class Simulator:
         self.simulation.sim_time += self.simulation.dt
 
         self.step_count += 1
-
 
     def clear(self):
         """시뮬레이터 정리 (Chrono 리소스 해제)"""
@@ -218,37 +216,47 @@ def _create_shaft_with_base(
     sys, shaft_meta, base_meta, motor_speed, bodies, joints, motors
 ):
     """샤프트-베이스 조립"""
-    # 베이스 생성
-    base = _load_body_from_obj(base_meta)
-    base.SetFixed(True)
-    sys.Add(base)
-    bodies.append(base)
 
     # 샤프트 생성
     shaft = _load_body_from_obj(shaft_meta)
     shaft.SetFixed(False)
+
     offset_list = shaft_meta.get("offset", [0.0, 0.0, 0.0])
     shaft_offset = chrono.ChVector3d(offset_list[0], offset_list[1], offset_list[2])
-    shaft.SetPos(shaft_offset)
+    shaft.SetPos(shaft_offset)  # 샤프트 기준 위치
     sys.Add(shaft)
-    bodies.append(shaft)
+    bodies.append(shaft)  # index 0 → shaft
+
+    # 베이스 생성
+    base = _load_body_from_obj(base_meta)
+    base.SetFixed(True)
+    sys.Add(base)
+    bodies.append(base)  # index 1 → base
 
     # 중심/축 검출
     shaft_mesh_path = shaft_meta["mesh"]
-    shaft_center_local, shaft_axis = _detect_axis_and_center(shaft_mesh_path)
-    shaft_center_world = shaft_center_local + shaft_offset
 
-    # 조인트 생성
+    # OBJ에서는 "어느 축으로 긴지"만 뽑아서 회전축 방향으로 사용
+    _, shaft_axis = _detect_axis_and_center(shaft_mesh_path)
+
+    # 필요하면 축을 정규화 (안 해도 큰 문제는 없지만 안전하게)
+    shaft_axis = _vec_normalize(shaft_axis)
+
+    # ✅ 회전 중심은 더 이상 bounding box 중심을 쓰지 않고,
+    #    "현재 샤프트 바디 위치(shaft.GetPos())"를 그대로 사용
+    shaft_center_world = shaft.GetPos()
+
+    # 조인트 생성 (자전용: 샤프트 자기 중심을 축으로 회전)
     rev = _make_revolute(sys, shaft, base, shaft_center_world, shaft_axis)
     joints.append(rev)
 
     # 모터 생성
-    motor = _make_rotation_motor(
-        sys, shaft, base, shaft_center_world, shaft_axis, motor_speed
-    )
-    if hasattr(motor, "SetName"):
-        motor.SetName(shaft_meta.get("motor_name", "shaft_motor"))
-    motors.append(motor)
+    # motor = _make_rotation_motor(
+    #    sys, shaft, base, shaft_center_world, shaft_axis, motor_speed
+    # )
+    # if hasattr(motor, "SetName"):
+    #    motor.SetName(shaft_meta.get("motor_name", "shaft_motor"))
+    # motors.append(motor)
 
     print(f"[sim] 샤프트-베이스 조립 완료 (speed = {motor_speed} rad/s)")
     # AR 드래그 컨트롤러에서 쓸 샤프트 정보 리턴
@@ -334,8 +342,9 @@ def buildSimulation(sim_description: SimDescription) -> Simulation:
         sim_handle.drag_controller = ShaftDragController(sim_handle)
         print("[sim] ShaftDragController 초기화 완료")
     else:
-        print("[sim] 경고: shaft_base 어셈블리를 찾지 못해 드래그 컨트롤러를 설정하지 못했습니다.")
-
+        print(
+            "[sim] 경고: shaft_base 어셈블리를 찾지 못해 드래그 컨트롤러를 설정하지 못했습니다."
+        )
 
     # 4) 초기 상태 생성
     init_states = [PartState.fromBody(b) for b in bodies]
@@ -354,7 +363,6 @@ def buildSimulation(sim_description: SimDescription) -> Simulation:
     )
 
     return simulation
-
 
 
 # 유저입력을 다루는부분
@@ -577,9 +585,9 @@ class ShaftDragController:
         이 컨트롤러를 사용하기 전 그 부분을 먼저 세팅해야 한다.
     """
 
-    DRAG_TORQUE = 0.005  # 드래그 시 주는 토크 크기
-    DAMP_FREE = 8.0  # 손 뗀 후 감쇠 강도 (값 키우면 더 빨리 멈춤)
-    DAMP_DRAG = 1.5  # 드래그 중 감쇠 강도 (너무 크면 잘 안 도는 느낌)
+    DRAG_TORQUE = 5  # 드래그 시 주는 토크 크기
+    DAMP_FREE = 2.0  # 손 뗀 후 감쇠 강도 (값 키우면 더 빨리 멈춤)
+    DAMP_DRAG = 1  # 드래그 중 감쇠 강도 (너무 크면 잘 안 도는 느낌)
     VEL_EPS = 5e-3  # 이 이하 각속도면 그냥 0으로 스냅 (떨림 제거용)
 
     def __init__(self, sim_handle: Any):
@@ -615,13 +623,12 @@ class ShaftDragController:
             shaft = self.handle.shaft_body
         else:
             # bodies가 2개 이상이라는 기존 가정 유지
-            shaft = self.handle.bodies[1]
+            shaft = self.handle.bodies[0]
 
         # 축/중심도 sim_handle에 세팅된 값을 사용 (없으면 기본값)
         axis_vec = self.handle.shaft_axis_world or chrono.ChVector3d(0, 0, 1)
         center = self.handle.shaft_center_world or chrono.ChVector3d(0, 0, 0)
         axis = _vec_normalize(axis_vec)
-
 
         # 1) 이번 프레임 시작 시 외력/토크 비우기 (중복 누적 방지)
         _clear_forces(shaft)
