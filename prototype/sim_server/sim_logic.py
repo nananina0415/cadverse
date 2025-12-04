@@ -616,14 +616,17 @@ class ShaftDragController:
         """
         ev = self.event
 
-        # shaft 바디 찾기:
-        #  - 가능하면 sim_handle.shaft_body 사용
-        #  - 없으면 bodies[1] (기존 가정)로 fallback
         if getattr(self.handle, "shaft_body", None) is not None:
             shaft = self.handle.shaft_body
         else:
             # bodies가 2개 이상이라는 기존 가정 유지
             shaft = self.handle.bodies[0]
+
+        axis_vec = self.handle.shaft_axis_world or chrono.ChVector3d(0, 0, 1)
+        center = self.handle.shaft_center_world or chrono.ChVector3d(0, 0, 0)
+        axis = _vec_normalize(axis_vec)
+
+
 
         # 축/중심도 sim_handle에 세팅된 값을 사용 (없으면 기본값)
         axis_vec = self.handle.shaft_axis_world or chrono.ChVector3d(0, 0, 1)
