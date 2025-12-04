@@ -14,4 +14,4 @@ content = re.sub(
 with open("main.py", "w", encoding="utf-8") as f:
     f.write(content)
 
-print("main.py 수정 완료")
+print("main.py 수정 완료!")
