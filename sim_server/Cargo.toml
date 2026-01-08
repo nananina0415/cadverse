@@ -10,17 +10,19 @@ path = "src/main.rs"
 [dependencies]
 server = { path = "crates/server" }
 sim_manager = { path = "crates/sim_manager" }
-cad_data_loader = { path = "crates/cad_data_loader" }
+cad_data_loader = { path = "crates/data_loader" }
 tokio = { version = "1.42", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1.0"
+arc-swap = { workspace = true }
+serde = { workspace = true }
 
 [workspace]
 members = [
     "crates/server",
     "crates/sim_manager",
-    "crates/cad_data_loader"
+    "crates/data_loader"
 ]
 resolver = "2"
 
@@ -29,9 +31,10 @@ resolver = "2"
 tokio = { version = "1.42", features = ["full"] }
 
 # 웹 서버 프레임워크 (WebSocket 기본 지원)
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+futures-util = "0.3"
 
 # JSON 직렬화/역직렬화
 serde = { version = "1.0", features = ["derive"] }
@@ -50,3 +53,6 @@ thiserror = "2.0"
 
 # 환경 변수 관리
 dotenvy = "0.15"
+
+# Lock-free 동기화
+arc-swap = "1.7"
