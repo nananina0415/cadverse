@@ -65,7 +65,7 @@ cargo build --release
 - **Release 모드**: 자동으로 conda-pack을 사용하여 Python 환경 번들링
 - **캐싱**: 한 번 번들링되면 재사용 (속도 향상)
 
-자세한 내용은 [BUILD_GUIDE.md](BUILD_GUIDE.md) 참조
+자세한 내용은 [README_BUILD.md](README_BUILD.md) 참조
 
 ### 번들링 위치
 
@@ -129,10 +129,10 @@ release/
 
 ### 워크스페이스 구조
 
-| 크레이트 | 역할 |
-|---------|------|
-| `server` | WebSocket/HTTP 서버 (axum) |
-| `sim_manager` | 시뮬레이션 라이프사이클 관리 |
+| 크레이트          | 역할                            |
+| ----------------- | ------------------------------- |
+| `server`          | WebSocket/HTTP 서버 (axum)      |
+| `sim_manager`     | 시뮬레이션 라이프사이클 관리    |
 | `cad_data_loader` | OBJ 파싱 및 SimDescription 생성 |
 
 ## 의존성
@@ -169,11 +169,11 @@ PYO3_PYTHON 환경 변수를 확인하세요:
 echo $env:PYO3_PYTHON
 ```
 
-자세한 내용은 [BUILD_GUIDE.md](BUILD_GUIDE.md) 참조
+자세한 내용은 [README_BUILD.md](README_BUILD.md) 참조
 
 ## 문서
 
-- [빌드 가이드](../BUILD_GUIDE.md): 빌드 시스템 상세 설명
+- [빌드 가이드](../README_BUILD.md): 빌드 시스템 상세 설명
 - [환경 설정 가이드](README_SETUP.md): 개발 환경 설정
 
 ## 라이선스
