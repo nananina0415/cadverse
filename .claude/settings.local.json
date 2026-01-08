@@ -12,7 +12,9 @@
       "Bash(curl:*)",
       "Bash(unzip:*)",
       "Bash(cp:*)",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo run:*)"
     ],
     "deny": [],
     "ask": []
