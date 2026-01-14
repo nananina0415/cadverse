@@ -14,7 +14,9 @@
       "Bash(cp:*)",
       "Bash(rm:*)",
       "Bash(cargo build:*)",
-      "Bash(cargo run:*)"
+      "Bash(cargo run:*)",
+      "Bash(find:*)",
+      "Bash(git checkout:*)"
     ],
     "deny": [],
     "ask": []
