@@ -12,7 +12,8 @@
       "Bash(curl:*)",
       "Bash(unzip:*)",
       "Bash(cp:*)",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "Bash(git add:*)"
     ],
     "deny": [],
     "ask": []
