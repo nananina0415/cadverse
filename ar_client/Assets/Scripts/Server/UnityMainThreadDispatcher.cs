@@ -23,14 +23,19 @@ namespace CADverse.Server
                 if (_instance == null)
                 {
                     // 기존 인스턴스 찾기
-                    _instance = FindObjectOfType<UnityMainThreadDispatcher>();
+                    _instance = FindFirstObjectByType<UnityMainThreadDispatcher>();
 
                     if (_instance == null)
                     {
                         // 없으면 생성
                         var go = new GameObject("UnityMainThreadDispatcher");
                         _instance = go.AddComponent<UnityMainThreadDispatcher>();
-                        DontDestroyOnLoad(go);
+
+                        // Play Mode에서만 DontDestroyOnLoad 사용
+                        if (Application.isPlaying)
+                        {
+                            DontDestroyOnLoad(go);
+                        }
                     }
                 }
 
