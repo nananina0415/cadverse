@@ -8,11 +8,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Dict, Optional
 
 import pychrono as chrono
 
-from simulator.SimInfo import (  # <- 너희가 "공식 계약"으로 쓰는 SimInfo.py에 맞춰 import 경로 조정
+# ✅ [수정 1] 패키지 import 안정성을 위해 상대 import 권장
+from .metadata_types import (
     SceneMeta,
     BodyDef,
     JointDef,
@@ -109,7 +110,6 @@ def _add_collision_box(
     frame: Optional[chrono.ChFramed] = None,
 ) -> None:
     fr = frame if frame is not None else chrono.ChFramed()
-    # PyChrono 8: preferred API is AddCollisionShape(Shape, Frame)
     shape = chrono.ChCollisionShapeBox(mat, float(hx), float(hy), float(hz))
     body.AddCollisionShape(shape, fr)
 
@@ -121,8 +121,6 @@ def _add_collision_cylinder(
     length: float,
     frame: Optional[chrono.ChFramed] = None,
 ) -> None:
-    # Chrono cylinder uses half-length parameter in some contexts,
-    # but collision shape constructor here expects (radius, half_length)
     fr = frame if frame is not None else chrono.ChFramed()
     shape = chrono.ChCollisionShapeCylinder(mat, float(radius), float(0.5 * length))
     body.AddCollisionShape(shape, fr)
@@ -154,15 +152,13 @@ def _attach_visual_mesh(
     Attach mesh for visualization only.
     NOTE: Visual offset is BODY-LOCAL (per your schema).
     """
-    # Load triangle mesh
     mesh = chrono.ChTriangleMeshConnected()
-    mesh.LoadWavefrontMesh(str(mesh_file), False, True)  # (filename, load_normals, flip_yz) - depends on export; keep as earlier prototype
+    mesh.LoadWavefrontMesh(str(mesh_file), False, True)
 
     vshape = chrono.ChVisualShapeTriangleMesh()
     vshape.SetMesh(mesh)
     vshape.SetScale(scale)
 
-    # AddVisualShape(shape, frame) exists in Chrono 8 python bindings
     body.AddVisualShape(vshape, offset)
 
 
@@ -186,16 +182,11 @@ def _build_body(sys: chrono.ChSystemNSC, bdef: BodyDef) -> chrono.ChBody:
     # inertia
     inertia = bdef.mechanical.inertia
     if inertia.mode == "explicit":
-        # basic diagonal inertia
         Ixx = float(inertia.Ixx or 0.0)
         Iyy = float(inertia.Iyy or 0.0)
         Izz = float(inertia.Izz or 0.0)
         body.SetInertiaXX(chrono.ChVector3d(Ixx, Iyy, Izz))
     else:
-        # auto_from_collision (simple placeholder):
-        # In Chrono you can compute inertia from collision shapes,
-        # but implementing a full auto pipeline is non-trivial.
-        # Here we set a conservative diagonal; you can refine later.
         mval = float(bdef.mechanical.mass)
         body.SetInertiaXX(chrono.ChVector3d(1e-3 * mval, 1e-3 * mval, 1e-3 * mval))
 
@@ -218,11 +209,10 @@ def _build_body(sys: chrono.ChSystemNSC, bdef: BodyDef) -> chrono.ChBody:
         _add_collision_cylinder(body, mat, col.radius, col.length)
 
     elif col.kind == "sphere":
-        # schema uses r or radius? (your metadata_types uses r but from_dict uses d["radius"])
-        r = col.r if col.r is not None else getattr(col, "radius", None)
-        if r is None:
+        # metadata_types: sphere radius is stored in r
+        if col.r is None:
             raise ValueError(f"Body '{bdef.name}': collision.sphere requires radius")
-        _add_collision_sphere(body, mat, float(r))
+        _add_collision_sphere(body, mat, float(col.r))
 
     else:
         raise NotImplementedError(f"Body '{bdef.name}': unsupported collision kind '{col.kind}'")
@@ -281,7 +271,6 @@ def _build_gear_pair(
     gearA = bodies[gp.gearA].body
     gearB = bodies[gp.gearB].body
 
-    # pitch radii from gearProps on bodies (required per schema)
     propsA = bodies[gp.gearA].meta.mechanical.gearProps
     propsB = bodies[gp.gearB].meta.mechanical.gearProps
     if propsA is None or propsB is None:
@@ -296,11 +285,11 @@ def _build_gear_pair(
 
     link = chrono.ChLinkLockGear()
 
-    # meshFrame: WORLD frame. If not provided, use identity.
+    # ✅ [수정 2] meshFrame 미지정 시, 스키마 의도대로 gearA pose를 기본 프레임으로 사용
     if gp.meshFrame is not None:
         fr = _to_chframe(gp.meshFrame)
     else:
-        fr = chrono.ChFramed()
+        fr = _to_chframe(bodies[gp.gearA].meta.pose)
 
     link.Initialize(gearA, gearB, fr)
     link.SetTransmissionRatio(float(ratio))
@@ -318,6 +307,7 @@ def _build_actuator(
     sys: chrono.ChSystemNSC,
     adef: ActuatorDef,
     joints: Dict[str, BuiltJoint],
+    bodies: Dict[str, BuiltBody],
 ) -> chrono.ChLinkBase:
     """
     Actuators target a joint frame Z-axis by design.
@@ -330,10 +320,12 @@ def _build_actuator(
     target_joint = joints[adef.targetJoint]
     jmeta = target_joint.meta
 
-    # recover bodies from the joint link
-    # ChLinkLockRevolute etc. expose GetBody1/GetBody2 in Chrono
-    body1 = target_joint.link.GetBody1()
-    body2 = target_joint.link.GetBody2()
+    # GetBody1/GetBody2 의존 제거 (바인딩/타입 차이 방어)
+    if jmeta.body1 not in bodies or jmeta.body2 not in bodies:
+        raise ValueError(f"Actuator '{adef.name}': joint refers missing bodies: {jmeta.body1}, {jmeta.body2}")
+    body1 = bodies[jmeta.body1].body
+    body2 = bodies[jmeta.body2].body
+
     fr = _to_chframe(jmeta.frame)
 
     if adef.type == "rotation_speed":
@@ -346,15 +338,9 @@ def _build_actuator(
         return motor
 
     if adef.type == "rotation_torque":
-        # 현실적 토크 모델: simplest approach is to apply a torque via a link (if available)
-        # In Chrono, a common approach is ChLinkMotorRotationTorque (torque motor),
-        # or apply torque directly to a body each step.
-        #
-        # We'll use ChLinkMotorRotationTorque if present in PyChrono 8.
         if adef.torqueModel is None:
             raise ValueError(f"Actuator '{adef.name}': rotation_torque requires torqueModel")
 
-        # only const supported in schema right now
         const_model = adef.torqueModel
         tau = float(getattr(const_model, "value", 0.0))
 
@@ -365,7 +351,6 @@ def _build_actuator(
             sys.AddLink(motor)
             return motor
 
-        # fallback: raise and let caller implement per-step torque application
         raise NotImplementedError(
             "PyChrono build does not expose ChLinkMotorRotationTorque. "
             "Use per-step body torque application in Simulator.step instead."
@@ -384,7 +369,6 @@ def build_system_from_scene(meta: SceneMeta) -> BuildResult:
     Build a Chrono system from metadata.
     Returns registries for easy lookups.
     """
-    # system
     sys = chrono.ChSystemNSC()
     sys.SetGravitationalAcceleration(_to_chvec(meta.gravity))
 
@@ -410,37 +394,31 @@ def build_system_from_scene(meta: SceneMeta) -> BuildResult:
             link.SetName(j.name)
         joints[j.name] = BuiltJoint(name=j.name, meta=j, link=link)
 
-    # 3) gearPairs (as links too; store under joints registry or separate? we keep separate by name_to_link)
+    # 3) gearPairs
     for gp in meta.gearPairs:
         if gp.name in joints:
             raise ValueError(f"GearPair name collides with joint name: {gp.name}")
         link = _build_gear_pair(sys, gp, bodies, joints)
         if hasattr(link, "SetName"):
             link.SetName(gp.name)
-        # store in name_to_link only (not in joints dict to keep joint types strict)
-        # (if you prefer, you can store as BuiltJoint too)
 
     # 4) actuators
     for a in meta.actuators:
         if a.name in actuators:
             raise ValueError(f"Duplicate actuator name: {a.name}")
-        link = _build_actuator(sys, a, joints)
+        link = _build_actuator(sys, a, joints, bodies)
         if hasattr(link, "SetName"):
             link.SetName(a.name)
         actuators[a.name] = BuiltActuator(name=a.name, meta=a, link=link)
 
-    # convenience maps
     name_to_body = {k: v.body for k, v in bodies.items()}
 
-    # collect all links: joints + gear links + actuators (gear links not stored separately above)
     name_to_link: Dict[str, chrono.ChLinkBase] = {}
     for k, v in joints.items():
         name_to_link[k] = v.link
     for k, v in actuators.items():
         name_to_link[k] = v.link
 
-    # gear links were added to system but not stored; optionally enumerate sys links
-    # Here we add any named links not yet in name_to_link.
     try:
         for link in sys.GetLinks():
             if hasattr(link, "GetName"):

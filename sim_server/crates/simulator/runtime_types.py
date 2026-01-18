@@ -12,7 +12,12 @@
 # - 입력/출력은 JSON 직렬화 가능해야 함
 # - 회전(Quaternion) 표기:
 #   - 내부 표준: w,x,y,z
-#   - 런타임 출력(rot): e0=w, e1=x, e2=y, e3=z  (Chrono 문서/프로토타입 컨벤션)
+#   - 런타임 출력(rot): {w,x,y,z}  (docs/07 기준)
+#
+# 호환성(레거시) 지원:
+# - 과거 프로토타입에서 rot를 e0/e1/e2/e3로 주고받던 흔적이 있어,
+#   from_dict에서는 e0/e1/e2/e3도 fallback으로 받아준다.
+# - 입력 스키마도 actionPoint/fingerPoint/z_direction 같은 레거시 키를 fallback으로 받아준다.
 
 from __future__ import annotations
 
@@ -53,11 +58,30 @@ class QuatWXYZ:
         return QuatWXYZ(float(v[0]), float(v[1]), float(v[2]), float(v[3]))
 
     @staticmethod
+    def from_wxyz_dict(d: Dict[str, Any]) -> "QuatWXYZ":
+        # docs/07: {"w":..,"x":..,"y":..,"z":..}
+        return QuatWXYZ(float(d["w"]), float(d["x"]), float(d["y"]), float(d["z"]))
+
+    @staticmethod
     def from_e0e1e2e3_dict(d: Dict[str, Any]) -> "QuatWXYZ":
-        # runtime output convention: e0=w, e1=x, e2=y, e3=z
+        # legacy: {"e0":w,"e1":x,"e2":y,"e3":z}
         return QuatWXYZ(float(d["e0"]), float(d["e1"]), float(d["e2"]), float(d["e3"]))
 
+    @staticmethod
+    def from_any_dict(d: Dict[str, Any]) -> "QuatWXYZ":
+        # 우선 docs/07 (wxyz), 그 다음 legacy (e0..e3)
+        if "w" in d and "x" in d and "y" in d and "z" in d:
+            return QuatWXYZ.from_wxyz_dict(d)
+        if "e0" in d and "e1" in d and "e2" in d and "e3" in d:
+            return QuatWXYZ.from_e0e1e2e3_dict(d)
+        raise ValueError(f"Quaternion must be wxyz or e0e1e2e3 dict, got keys={list(d.keys())}")
+
+    def to_wxyz_dict(self) -> Dict[str, float]:
+        # docs/07: {"w","x","y","z"}
+        return {"w": float(self.w), "x": float(self.x), "y": float(self.y), "z": float(self.z)}
+
     def to_e0e1e2e3_dict(self) -> Dict[str, float]:
+        # legacy export (필요 시)
         return {"e0": float(self.w), "e1": float(self.x), "e2": float(self.y), "e3": float(self.z)}
 
 
@@ -69,29 +93,47 @@ class QuatWXYZ:
 class PartState:
     """
     07_runtime_output_schema.md에서 정의할 "parts" 원자 단위.
-    - pos/rot 는 WORLD 기준
-    - rot는 e0/e1/e2/e3로 직렬화
+    - name/pos/rot 는 WORLD 기준
+    - rot는 {w,x,y,z}로 직렬화 (docs/07)
     """
+    name: str
     pos: Vec3
     rot: QuatWXYZ
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "PartState":
+        # docs/07: {"name":..., "pos":{x,y,z}, "rot":{w,x,y,z}}
         return PartState(
+            name=str(d.get("name", "")),
             pos=Vec3.from_dict(d["pos"]),
-            rot=QuatWXYZ.from_e0e1e2e3_dict(d["rot"]),
+            rot=QuatWXYZ.from_any_dict(d["rot"]),
         )
 
     def to_dict(self) -> Dict[str, Any]:
+        # docs/07 준수
         return {
+            "name": str(self.name),
             "pos": self.pos.to_dict(),
-            "rot": self.rot.to_e0e1e2e3_dict(),
+            "rot": self.rot.to_wxyz_dict(),
         }
 
-    # (선택) pychrono에서 바로 만들고 싶을 때를 위한 헬퍼 자리:
-    # @staticmethod
-    # def from_chrono_body(body: "chrono.ChBody") -> "PartState":
-    #     ...
+    # (선택) pychrono에서 바로 만들고 싶을 때를 위한 헬퍼
+    @staticmethod
+    def from_chrono_body(body: Any, *, name: str) -> "PartState":
+        """
+        Chrono body -> PartState 변환 헬퍼.
+        - name: docs/07에서 요구하는 bodies[*].name 과 동일한 문자열
+        - pos: WORLD (x,y,z)
+        - rot: WORLD quaternion (w,x,y,z) == Chrono (e0,e1,e2,e3)
+        """
+        p = body.GetPos()
+        q = body.GetRot()  # Chrono: e0=w, e1=x, e2=y, e3=z
+
+        return PartState(
+            name=str(name),
+            pos=Vec3(float(p.x), float(p.y), float(p.z)),
+            rot=QuatWXYZ(float(q.e0), float(q.e1), float(q.e2), float(q.e3)),
+        )
 
 
 @dataclass(frozen=True)
@@ -103,19 +145,25 @@ class SimState:
     """
     sim_time: float
     parts: List[PartState]
+    # (선택 확장) index 안정성을 위해 partNames를 같이 보낼 수 있음 (docs/07 Optional)
+    partNames: Optional[List[str]] = None
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "SimState":
         return SimState(
             sim_time=float(d["sim_time"]),
             parts=[PartState.from_dict(p) for p in d.get("parts", [])],
+            partNames=[str(x) for x in d.get("partNames", [])] if "partNames" in d else None,
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        out: Dict[str, Any] = {
             "sim_time": float(self.sim_time),
             "parts": [p.to_dict() for p in self.parts],
         }
+        if self.partNames is not None:
+            out["partNames"] = [str(x) for x in self.partNames]
+        return out
 
 
 # ============================================================
@@ -128,78 +176,145 @@ PartIndex = int
 class PartRef:
     """
     타겟 파트 지정.
-    - 현재 프로토콜은 PartIndex 기반이지만,
-      안정성을 위해 name 기반도 옵션으로 열어둠(06 확장안).
+    - docs/06: target.partIndex / target.partName (둘 다 optional)
+    - 레거시: targetPartIndex / targetPartName 같은 키가 payload 최상단에 있던 버전도 fallback 지원
     """
     partIndex: Optional[PartIndex] = None
     partName: Optional[str] = None
 
     @staticmethod
     def from_any(d: Dict[str, Any]) -> "PartRef":
-        # 허용 형태:
-        # 1) {"targetPartIndex": 3}  (기존 프로토타입 형태)
-        # 2) {"partIndex": 3} / {"partName": "gear_A"} (확장 형태)
-        if "targetPartIndex" in d:
-            return PartRef(partIndex=int(d["targetPartIndex"]))
+        # 1) docs/06: {"target": {"partIndex":..,"partName":..}}
+        if "target" in d and isinstance(d["target"], dict):
+            t = d["target"]
+            return PartRef(
+                partIndex=int(t["partIndex"]) if "partIndex" in t else None,
+                partName=str(t["partName"]) if "partName" in t else None,
+            )
+
+        # 2) 레거시 형태:
+        #    {"targetPartIndex": 3} or {"targetPartName": "gear_A"}
+        if "targetPartIndex" in d or "targetPartName" in d:
+            return PartRef(
+                partIndex=int(d["targetPartIndex"]) if "targetPartIndex" in d else None,
+                partName=str(d["targetPartName"]) if "targetPartName" in d else None,
+            )
+
+        # 3) 확장 형태(예전 네 코드가 받던 형태):
+        #    {"partIndex": 3} / {"partName": "gear_A"}
         return PartRef(
             partIndex=int(d["partIndex"]) if "partIndex" in d else None,
             partName=str(d["partName"]) if "partName" in d else None,
         )
 
     def to_target_dict(self) -> Dict[str, Any]:
-        # 기본은 인덱스를 쓰되, 없으면 name 사용
+        # docs/06 준수: payload.target = {partIndex?, partName?}
+        t: Dict[str, Any] = {}
         if self.partIndex is not None:
-            return {"targetPartIndex": int(self.partIndex)}
+            t["partIndex"] = int(self.partIndex)
         if self.partName is not None:
-            return {"targetPartName": str(self.partName)}
-        return {}
+            t["partName"] = str(self.partName)
+        return {"target": t}
 
 
 @dataclass(frozen=True)
 class TouchStartPayload:
+    # docs/06
     target: PartRef
-    actionPoint: Vec3      # BODY-LOCAL
-    fingerPoint: Vec3      # WORLD
-    z_direction: Vec3      # WORLD (camera forward)
+    actionPointLocal: Vec3        # BODY-LOCAL
+    fingerPointWorld: Vec3        # WORLD
+    cameraForwardWorld: Vec3      # WORLD (camera forward)
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "TouchStartPayload":
-        # d에는 targetPartIndex가 payload 내부에 존재하는 기존형을 우선 지원
         target = PartRef.from_any(d)
+
+        # docs/06 keys (preferred)
+        if "actionPointLocal" in d:
+            ap = Vec3.from_dict(d["actionPointLocal"])
+        else:
+            # legacy fallback
+            ap = Vec3.from_dict(d.get("actionPoint", {"x": 0, "y": 0, "z": 0}))
+
+        if "fingerPointWorld" in d:
+            fp = Vec3.from_dict(d["fingerPointWorld"])
+        else:
+            fp = Vec3.from_dict(d.get("fingerPoint", {"x": 0, "y": 0, "z": 0}))
+
+        if "cameraForwardWorld" in d:
+            cf = Vec3.from_dict(d["cameraForwardWorld"])
+        else:
+            cf = Vec3.from_dict(d.get("z_direction", {"x": 0, "y": 0, "z": 1}))
+
         return TouchStartPayload(
             target=target,
-            actionPoint=Vec3.from_dict(d["actionPoint"]),
-            fingerPoint=Vec3.from_dict(d["fingerPoint"]),
-            z_direction=Vec3.from_dict(d["z_direction"]),
+            actionPointLocal=ap,
+            fingerPointWorld=fp,
+            cameraForwardWorld=cf,
         )
 
     def to_dict(self) -> Dict[str, Any]:
+        # docs/06 준수
         out = {
             **self.target.to_target_dict(),
-            "actionPoint": self.actionPoint.to_dict(),
-            "fingerPoint": self.fingerPoint.to_dict(),
-            "z_direction": self.z_direction.to_dict(),
+            "actionPointLocal": self.actionPointLocal.to_dict(),
+            "fingerPointWorld": self.fingerPointWorld.to_dict(),
+            "cameraForwardWorld": self.cameraForwardWorld.to_dict(),
         }
         return out
+
+    # 레거시 코드 호환용 프로퍼티 (기존 코드에서 actionPoint 등으로 접근해도 깨지지 않게)
+    @property
+    def actionPoint(self) -> Vec3:
+        return self.actionPointLocal
+
+    @property
+    def fingerPoint(self) -> Vec3:
+        return self.fingerPointWorld
+
+    @property
+    def z_direction(self) -> Vec3:
+        return self.cameraForwardWorld
 
 
 @dataclass(frozen=True)
 class TouchingPayload:
-    fingerPoint: Vec3      # WORLD
-    z_direction: Vec3      # WORLD
+    # docs/06
+    fingerPointWorld: Vec3      # WORLD
+    cameraForwardWorld: Vec3    # WORLD
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "TouchingPayload":
+        if "fingerPointWorld" in d:
+            fp = Vec3.from_dict(d["fingerPointWorld"])
+        else:
+            fp = Vec3.from_dict(d.get("fingerPoint", {"x": 0, "y": 0, "z": 0}))
+
+        if "cameraForwardWorld" in d:
+            cf = Vec3.from_dict(d["cameraForwardWorld"])
+        else:
+            cf = Vec3.from_dict(d.get("z_direction", {"x": 0, "y": 0, "z": 1}))
+
         return TouchingPayload(
-            fingerPoint=Vec3.from_dict(d["fingerPoint"]),
-            z_direction=Vec3.from_dict(d["z_direction"]),
+            fingerPointWorld=fp,
+            cameraForwardWorld=cf,
         )
 
     def to_dict(self) -> Dict[str, Any]:
+        # docs/06 준수
         return {
-            "fingerPoint": self.fingerPoint.to_dict(),
-            "z_direction": self.z_direction.to_dict(),
+            "fingerPointWorld": self.fingerPointWorld.to_dict(),
+            "cameraForwardWorld": self.cameraForwardWorld.to_dict(),
         }
+
+    # 레거시 코드 호환용 프로퍼티
+    @property
+    def fingerPoint(self) -> Vec3:
+        return self.fingerPointWorld
+
+    @property
+    def z_direction(self) -> Vec3:
+        return self.cameraForwardWorld
 
 
 @dataclass(frozen=True)

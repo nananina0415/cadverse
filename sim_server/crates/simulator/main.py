@@ -22,7 +22,7 @@ from .SimInfo import SimInfo
 from .runtime_types import (
     UserInput,
     SimState,
-    PartState
+    PartState,
 )
 
 from .sim_builder import build_system_from_scene
@@ -54,10 +54,15 @@ class Simulator:
         self.sim_time: float = 0.0
 
         # 출력 순서 고정 (PartIndex 기반 통신을 위함)
-        if info.body_order:
-            self._body_order = list(info.body_order)
+        if getattr(info, "body_order", None):
+            self._body_order = list(info.body_order)  # type: ignore[attr-defined]
         else:
-            self._body_order = sorted(self.bodies.keys())
+            # ✅ SceneMeta.bodies 순서를 PartIndex 기준으로 사용(스키마/06-07과 정합)
+            try:
+                self._body_order = [b.name for b in info.scene.bodies]
+            except Exception:
+                # 최후 fallback (그래도 고정 순서가 필요)
+                self._body_order = sorted(self.bodies.keys())
 
         self.part_index: Dict[str, int] = {n: i for i, n in enumerate(self._body_order)}
 
@@ -75,7 +80,7 @@ class Simulator:
         2) DoStepDynamics(dt)
         3) 현재 바디 포즈를 SimState로 반환
         """
-        dt = float(self.info.dt)
+        dt = float(self.info.options.dt)
 
         # 1) 입력 반영
         if userInput is not None:
@@ -89,6 +94,7 @@ class Simulator:
         parts: List[PartState] = []
         for name in self._body_order:
             b = self.bodies[name].body
+            # runtime_types.PartState.from_chrono_body는 name을 받더라도 무시하도록 구현되어 있음
             parts.append(PartState.from_chrono_body(b, name=name))
 
         return SimState(sim_time=self.sim_time, parts=parts)
@@ -107,50 +113,68 @@ class Simulator:
         """
         입력을 엔진에 반영하는 내부 함수.
 
-        현재 최소 규칙:
-        - userInput.motor_speeds: {"actuatorName": rad/s}
-          -> rotation_speed actuator의 speed를 갱신
+        ✅ 현재 프로젝트 스키마(06)는 TouchStart/Touching/TouchEnd 이벤트 기반이다.
+        즉, 이 함수는 "이벤트(의도)"를 받아서
+        이후 Interaction Controller 계층에서 speed/torque 명령으로 변환하는 방향이 맞다.
 
-        - userInput.torque_cmds: {"actuatorName": torque_Nm}
-          -> rotation_torque actuator인 경우:
-             - Chrono에 ChLinkMotorRotationTorque가 있으면 토크 함수 갱신
-             - 없으면(빌더가 NotImplemented를 띄우는 환경) 이 경로는 무시(확장 필요)
+        다만, 지금까지의 테스트 코드/프로토타입에서는 아래 형태의 "직접 명령"도 썼기 때문에,
+        호환을 위해 아래 2가지 입력을 모두 안전하게 받는다:
+
+        1) (legacy) userInput.motor_speeds / userInput.torque_cmds 형태
+        2) (schema-06) TouchStart/Touching/TouchEnd 이벤트 Union
         """
 
-        # 1) rotation_speed actuator 업데이트
-        if userInput.motor_speeds:
-            for act_name, speed in userInput.motor_speeds.items():
-                built_act = self.actuators.get(act_name)
-                if built_act is None:
-                    continue
+        # ------------------------------------------------------------
+        # (A) legacy path: motor_speeds / torque_cmds 가 있는 경우만 처리
+        # ------------------------------------------------------------
+        motor_speeds = getattr(userInput, "motor_speeds", None)
+        torque_cmds = getattr(userInput, "torque_cmds", None)
 
-                # sim_builder의 BuiltActuator.meta.type 이 "rotation_speed" / "rotation_torque"
-                if built_act.meta.type != "rotation_speed":
-                    continue
+        if isinstance(motor_speeds, dict) or isinstance(torque_cmds, dict):
+            # 1) rotation_speed actuator 업데이트
+            if isinstance(motor_speeds, dict) and motor_speeds:
+                for act_name, speed in motor_speeds.items():
+                    built_act = self.actuators.get(act_name)
+                    if built_act is None:
+                        continue
+                    if built_act.meta.type != "rotation_speed":
+                        continue
 
-                motor = built_act.link  # chrono.ChLinkMotorRotationSpeed
-                try:
-                    motor.SetSpeedFunction(chrono.ChFunctionConst(float(speed)))
-                except Exception:
-                    # 바인딩/버전 차이 방어
-                    pass
+                    motor = built_act.link  # chrono.ChLinkMotorRotationSpeed
+                    try:
+                        motor.SetSpeedFunction(chrono.ChFunctionConst(float(speed)))
+                    except Exception:
+                        pass
 
-        # 2) rotation_torque actuator 업데이트(가능한 경우)
-        if userInput.torque_cmds:
-            for act_name, torque in userInput.torque_cmds.items():
-                built_act = self.actuators.get(act_name)
-                if built_act is None:
-                    continue
-                if built_act.meta.type != "rotation_torque":
-                    continue
+            # 2) rotation_torque actuator 업데이트(가능한 경우)
+            if isinstance(torque_cmds, dict) and torque_cmds:
+                for act_name, torque in torque_cmds.items():
+                    built_act = self.actuators.get(act_name)
+                    if built_act is None:
+                        continue
+                    if built_act.meta.type != "rotation_torque":
+                        continue
 
-                motor = built_act.link  # chrono.ChLinkMotorRotationTorque (존재할 때만)
-                # Torque motor인 경우 SetTorqueFunction이 있을 수 있음
-                try:
-                    motor.SetTorqueFunction(chrono.ChFunctionConst(float(torque)))
-                except Exception:
-                    # 이 환경에서는 torque motor가 없거나, sim_builder에서 per-step 토크 방식으로 확장해야 함
-                    pass
+                    motor = built_act.link  # chrono.ChLinkMotorRotationTorque (존재할 때만)
+                    try:
+                        motor.SetTorqueFunction(chrono.ChFunctionConst(float(torque)))
+                    except Exception:
+                        pass
+
+            return
+
+        # ------------------------------------------------------------
+        # (B) schema-06 path: TouchStart/Touching/TouchEnd 이벤트
+        # ------------------------------------------------------------
+        # 현재 단계에서는 "입력 이벤트 → 물리 명령 변환" 로직(Interaction Controller)이
+        # 아직 main.py에 들어오지 않았으므로,
+        # 여기서는 이벤트를 받아도 절대 크래시 나지 않게만 유지한다.
+        #
+        # TODO(다음 단계):
+        # - TouchStart에서 target/actionPointLocal 저장
+        # - Touching에서 fingerPointWorld 변화량 + cameraForwardWorld로 회전 의도 계산
+        # - 계산된 의도를 actuator speed/torque로 변환해서 위 legacy path처럼 적용
+        _ = userInput  # placeholder (no-op)
 
 
 # -----------------------------

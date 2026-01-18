@@ -63,6 +63,9 @@ class Quat:
 
 @dataclass(frozen=True)
 class Pose:
+    # NOTE:
+    # - Body pose 뿐 아니라 Joint frame / Gear mesh frame 등 "WORLD frame"도
+    #   동일한 JSON 구조를 사용하므로 Pose 타입을 재사용한다.
     pos: Vec3
     rot: Quat
 
@@ -116,8 +119,8 @@ class CollisionShape:
     # cylinder
     radius: Optional[float] = None
     length: Optional[float] = None
-    # sphere
-    r: Optional[float] = None
+    # sphere (radius로 통일)
+    sphere_radius: Optional[float] = None
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "CollisionShape":
@@ -140,7 +143,8 @@ class CollisionShape:
                 length=float(d["length"]),
             )
         # sphere
-        return CollisionShape(kind="sphere", r=float(d["radius"]))
+        # schema 입력 키는 radius를 공식으로 사용
+        return CollisionShape(kind="sphere", sphere_radius=float(d["radius"]))
 
 
 @dataclass(frozen=True)
@@ -294,7 +298,7 @@ class JointDef:
     type: JointType
     body1: str
     body2: str
-    frame: Pose
+    frame: Pose   # NOTE: 의미는 "WORLD frame"
     limits: Optional[JointLimits] = None
 
     @staticmethod
@@ -337,7 +341,7 @@ class GearPairDef:
     gearB: str
     ratio_sign: int = -1
     enforcePhase: bool = False
-    meshFrame: Optional[Pose] = None
+    meshFrame: Optional[Pose] = None   # NOTE: 의미는 "WORLD frame"
     gearProps: Optional[GearPairProps] = None
 
     @staticmethod
@@ -447,8 +451,30 @@ class SceneMeta:
 
 def validate_scene(meta: SceneMeta) -> None:
     """기본적인 참조 무결성 검증. (필요 시 확장)"""
-    body_names = {b.name for b in meta.bodies}
-    joint_names = {j.name for j in meta.joints}
+
+    # ---- uniqueness checks (schema design rule) ----
+    body_names_list = [b.name for b in meta.bodies]
+    joint_names_list = [j.name for j in meta.joints]
+    gearpair_names_list = [g.name for g in meta.gearPairs]
+    actuator_names_list = [a.name for a in meta.actuators]
+
+    def _assert_unique(names: List[str], what: str) -> None:
+        s = set()
+        dup = set()
+        for n in names:
+            if n in s:
+                dup.add(n)
+            s.add(n)
+        if dup:
+            raise ValueError(f"Duplicate {what} name(s): {sorted(dup)}")
+
+    _assert_unique(body_names_list, "body")
+    _assert_unique(joint_names_list, "joint")
+    _assert_unique(gearpair_names_list, "gearPair")
+    _assert_unique(actuator_names_list, "actuator")
+
+    body_names = set(body_names_list)
+    joint_names = set(joint_names_list)
 
     # joints refer to bodies
     for j in meta.joints:
@@ -457,10 +483,18 @@ def validate_scene(meta: SceneMeta) -> None:
         if j.body2 not in body_names:
             raise ValueError(f"Joint {j.name} refers missing body2: {j.body2}")
 
-    # gearPairs refer to gear bodies
+    # gearPairs refer to gear bodies + gearProps existence
     for gp in meta.gearPairs:
         if gp.gearA not in body_names or gp.gearB not in body_names:
             raise ValueError(f"GearPair {gp.name} refers missing gear body: {gp.gearA}, {gp.gearB}")
+
+        # gearProps are required to compute ratio (builder에서도 체크하지만 여기서 빨리 잡아줌)
+        gearA_def = next((b for b in meta.bodies if b.name == gp.gearA), None)
+        gearB_def = next((b for b in meta.bodies if b.name == gp.gearB), None)
+        if gearA_def is None or gearB_def is None:
+            continue
+        if gearA_def.mechanical.gearProps is None or gearB_def.mechanical.gearProps is None:
+            raise ValueError(f"GearPair {gp.name}: gear bodies must have mechanical.gearProps")
 
     # actuators refer to joints
     for a in meta.actuators:
