@@ -3,11 +3,19 @@
 #
 # - JSON(dict) 을 "타입이 있는 객체"로 변환
 # - 필드 누락/형식 오류를 가능한 빨리 검출
+#
+# [UPDATED]
+# - geometry.collision:
+#     (1) 단일 primitive dict
+#     (2) 복합 primitive list[dict]
+#     (3) auto-approx opt-in: "auto" 또는 {"kind":"auto", "strategy":"default"}
+# - collision primitive는 BODY-LOCAL offset(Pose)을 선택적으로 가질 수 있음
+#   (미지정 시 identity)
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional, Union
 
 
@@ -66,8 +74,13 @@ class Pose:
     # NOTE:
     # - Body pose 뿐 아니라 Joint frame / Gear mesh frame 등 "WORLD frame"도
     #   동일한 JSON 구조를 사용하므로 Pose 타입을 재사용한다.
+    # - collision.offset, visual.offset 은 BODY-LOCAL frame 의미로 사용 가능
     pos: Vec3
     rot: Quat
+
+    @staticmethod
+    def identity() -> "Pose":
+        return Pose(pos=Vec3(0.0, 0.0, 0.0), rot=Quat(1.0, 0.0, 0.0, 0.0))
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "Pose":
@@ -77,6 +90,17 @@ class Pose:
             pos=Vec3.from_any(d["pos"]),
             rot=Quat.from_any(d["rot"]),
         )
+
+    @staticmethod
+    def from_optional_dict(d: Optional[Dict[str, Any]]) -> "Pose":
+        if d is None:
+            return Pose.identity()
+        if not isinstance(d, dict):
+            raise ValueError(f"Pose must be object, got: {d}")
+        # allow missing fields with defaults
+        pos = d.get("pos", [0.0, 0.0, 0.0])
+        rot = d.get("rot", [1.0, 0.0, 0.0, 0.0])
+        return Pose(pos=Vec3.from_any(pos), rot=Quat.from_any(rot))
 
 
 # =========================
@@ -95,6 +119,8 @@ class VisualMesh:
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "VisualMesh":
+        if not isinstance(d, dict):
+            raise ValueError(f"geometry.visual must be object, got: {type(d)}")
         if d.get("kind") != "mesh":
             raise ValueError(f"visual.kind must be 'mesh', got: {d.get('kind')}")
         scale = d.get("scale", [1, 1, 1])
@@ -107,57 +133,156 @@ class VisualMesh:
         )
 
 
-CollisionKind = Literal["box", "cylinder", "sphere"]
+# ---- Collision (UPDATED) ----
+CollisionPrimitiveKind = Literal["box", "cylinder", "sphere"]
 
 @dataclass(frozen=True)
-class CollisionShape:
-    kind: CollisionKind
+class CollisionPrimitive:
+    """
+    단일 collision primitive.
+
+    - kind: box|cylinder|sphere
+    - offset: BODY-LOCAL Pose (선택, 기본 identity)
+    """
+    kind: CollisionPrimitiveKind
+    offset: Pose = field(default_factory=Pose.identity)
+
     # box
     hx: Optional[float] = None
     hy: Optional[float] = None
     hz: Optional[float] = None
-    # cylinder
+
+    # cylinder or sphere
     radius: Optional[float] = None
+
+    # cylinder
     length: Optional[float] = None
-    # sphere (radius로 통일)
-    sphere_radius: Optional[float] = None
 
     @staticmethod
-    def from_dict(d: Dict[str, Any]) -> "CollisionShape":
+    def from_dict(d: Dict[str, Any]) -> "CollisionPrimitive":
+        if not isinstance(d, dict):
+            raise ValueError(f"collision primitive must be object, got: {type(d)}")
+
         kind = d.get("kind")
         if kind not in ("box", "cylinder", "sphere"):
             raise ValueError(f"collision.kind must be box|cylinder|sphere, got: {kind}")
 
+        offset = Pose.from_optional_dict(d.get("offset"))
+
         if kind == "box":
-            # hx,hy,hz: half extents (권장)
-            return CollisionShape(
+            return CollisionPrimitive(
                 kind="box",
+                offset=offset,
                 hx=float(d["hx"]),
                 hy=float(d["hy"]),
                 hz=float(d["hz"]),
             )
+
         if kind == "cylinder":
-            return CollisionShape(
+            return CollisionPrimitive(
                 kind="cylinder",
+                offset=offset,
                 radius=float(d["radius"]),
                 length=float(d["length"]),
             )
+
         # sphere
-        # schema 입력 키는 radius를 공식으로 사용
-        return CollisionShape(kind="sphere", sphere_radius=float(d["radius"]))
+        return CollisionPrimitive(
+            kind="sphere",
+            offset=offset,
+            radius=float(d["radius"]),
+        )
+
+
+CollisionStrategy = Literal["default", "base_aabb", "shaft_pca_hub2cyl", "aabb_box"]
+_ALLOWED_COLLISION_STRATEGIES = {"default", "base_aabb", "shaft_pca_hub2cyl", "aabb_box"}
+
+@dataclass(frozen=True)
+class CollisionAuto:
+    """
+    collision auto-approx (OPT-IN).
+
+    허용 입력 형태:
+    - "auto"
+    - {"kind":"auto", "strategy":"default"}
+
+    NOTE:
+    - 실제 OBJ 추정은 builder/runtime 옵션에서 허용될 때만 수행 (스키마는 의도만 표현)
+    """
+    kind: Literal["auto"] = "auto"
+    strategy: CollisionStrategy = "default"
+
+    @staticmethod
+    def from_any(v: Any) -> "CollisionAuto":
+        if v == "auto":
+            return CollisionAuto()
+
+        if isinstance(v, dict):
+            if v.get("kind") != "auto":
+                raise ValueError(f"collision.kind must be 'auto' for auto object, got: {v.get('kind')}")
+            strategy = v.get("strategy", "default")
+            if strategy is None:
+                strategy = "default"
+            strategy = str(strategy)
+
+            if strategy not in _ALLOWED_COLLISION_STRATEGIES:
+                raise ValueError(
+                    f"collision.auto.strategy must be one of {sorted(_ALLOWED_COLLISION_STRATEGIES)}, got: {strategy}"
+                )
+
+            return CollisionAuto(strategy=strategy)  # type: ignore[arg-type]
+
+        raise ValueError(f"collision auto must be 'auto' or object, got: {type(v)}")
+
+
+# collision can be:
+# - single primitive object
+# - list of primitive objects
+# - auto directive
+CollisionSpec = Union[CollisionPrimitive, List[CollisionPrimitive], CollisionAuto]
 
 
 @dataclass(frozen=True)
 class Geometry:
     visual: VisualMesh
-    collision: CollisionShape
+    collision: CollisionSpec
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "Geometry":
-        return Geometry(
-            visual=VisualMesh.from_dict(d["visual"]),
-            collision=CollisionShape.from_dict(d["collision"]),
-        )
+        if not isinstance(d, dict):
+            raise ValueError(f"geometry must be object, got: {type(d)}")
+
+        if "visual" not in d:
+            raise ValueError("geometry.visual is required")
+        if "collision" not in d:
+            # opt-in 원칙을 강제: omission은 허용하지 않음
+            raise ValueError(
+                "geometry.collision is required. "
+                "Use an explicit primitive, a list of primitives, or opt-in auto as "
+                "collision:'auto' / {kind:'auto'}."
+            )
+
+        visual = VisualMesh.from_dict(d["visual"])
+        col_raw = d["collision"]
+
+        # (3) auto
+        if col_raw == "auto" or (isinstance(col_raw, dict) and col_raw.get("kind") == "auto"):
+            collision: CollisionSpec = CollisionAuto.from_any(col_raw)
+            return Geometry(visual=visual, collision=collision)
+
+        # (2) multiple
+        if isinstance(col_raw, list):
+            if len(col_raw) == 0:
+                raise ValueError("geometry.collision list must not be empty")
+            prims = [CollisionPrimitive.from_dict(x) for x in col_raw]
+            return Geometry(visual=visual, collision=prims)
+
+        # (1) single primitive
+        if isinstance(col_raw, dict):
+            prim = CollisionPrimitive.from_dict(col_raw)
+            return Geometry(visual=visual, collision=prim)
+
+        raise ValueError(f"geometry.collision must be object | list | 'auto', got: {type(col_raw)}")
 
 
 # =========================
@@ -256,6 +381,7 @@ class Mechanical:
 
 
 BodyCategory = Literal["gear", "shaft", "base", "link", "generic"]
+_ALLOWED_BODY_CATEGORIES = {"gear", "shaft", "base", "link", "generic"}
 
 @dataclass(frozen=True)
 class BodyDef:
@@ -267,9 +393,16 @@ class BodyDef:
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "BodyDef":
+        cat = d.get("category", "generic")
+        if cat is None:
+            cat = "generic"
+        cat = str(cat)
+        if cat not in _ALLOWED_BODY_CATEGORIES:
+            raise ValueError(f"body.category must be one of {sorted(_ALLOWED_BODY_CATEGORIES)}, got: {cat}")
+
         return BodyDef(
             name=str(d["name"]),
-            category=str(d.get("category", "generic")),  # type: ignore
+            category=cat,  # type: ignore
             geometry=Geometry.from_dict(d["geometry"]),
             mechanical=Mechanical.from_dict(d["mechanical"]),
             pose=Pose.from_dict(d["pose"]),
@@ -402,7 +535,6 @@ class ActuatorDef:
                 speed=float(d["speed"]),
             )
 
-        # rotation_torque
         return ActuatorDef(
             name=str(d["name"]),
             type="rotation_torque",
@@ -488,7 +620,6 @@ def validate_scene(meta: SceneMeta) -> None:
         if gp.gearA not in body_names or gp.gearB not in body_names:
             raise ValueError(f"GearPair {gp.name} refers missing gear body: {gp.gearA}, {gp.gearB}")
 
-        # gearProps are required to compute ratio (builder에서도 체크하지만 여기서 빨리 잡아줌)
         gearA_def = next((b for b in meta.bodies if b.name == gp.gearA), None)
         gearB_def = next((b for b in meta.bodies if b.name == gp.gearB), None)
         if gearA_def is None or gearB_def is None:

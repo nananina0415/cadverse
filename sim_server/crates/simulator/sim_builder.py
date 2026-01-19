@@ -1,18 +1,27 @@
 # simulator/sim_builder.py
-# Build a PyChrono simulation system from SimInfo/SceneMeta (strict metadata-only).
-# Target: Project Chrono / PyChrono 8.0.0
+# Build a PyChrono simulation system from SceneMeta.
 #
-# - No inference from OBJ/CAD. Everything must be specified in metadata.
-# - Physics uses simple collision primitives; visuals use mesh (OBJ) with optional local offset.
+# Updates:
+# - geometry.collision supports:
+#   1) single primitive
+#   2) multiple primitives (list)
+#   3) "auto" (explicit opt-in) -> approximate from OBJ mesh (base=box, shaft=cyl + optional hub cyl)
+#
+# Target: Project Chrono / PyChrono 8.x
+# Notes:
+# - No hidden inference by default: auto is allowed ONLY when metadata explicitly says collision == "auto"/{kind:"auto"}.
+# - Visual mesh is for visualization only; collision uses primitives.
+# - Auto-approx currently assumes OBJ vertices are already in the correct (scaled) units.
+#   (It DOES NOT apply visual.scale / visual.offset to the vertices yet.)
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
+import math as m
 import pychrono as chrono
 
-# ✅ [수정 1] 패키지 import 안정성을 위해 상대 import 권장
 from .metadata_types import (
     SceneMeta,
     BodyDef,
@@ -22,6 +31,8 @@ from .metadata_types import (
     Vec3,
     Quat,
     Pose,
+    CollisionPrimitive,
+    CollisionAuto,
 )
 
 # ---------------------------------------------------------------------
@@ -56,7 +67,6 @@ class BuildResult:
     bodies: Dict[str, BuiltBody]
     joints: Dict[str, BuiltJoint]
     actuators: Dict[str, BuiltActuator]
-    # convenience mappings
     name_to_body: Dict[str, chrono.ChBody]
     name_to_link: Dict[str, chrono.ChLinkBase]
 
@@ -71,7 +81,6 @@ def _to_chvec(v: Vec3) -> chrono.ChVector3d:
 
 
 def _to_chquat(q: Quat) -> chrono.ChQuaterniond:
-    # Chrono constructor ordering: (e0,e1,e2,e3) == (w,x,y,z)
     return chrono.ChQuaterniond(float(q.w), float(q.x), float(q.y), float(q.z))
 
 
@@ -80,7 +89,6 @@ def _to_chframe(p: Pose) -> chrono.ChFramed:
 
 
 def _pitch_radius_from_gearprops(module_m: float, teeth: int) -> float:
-    # pitch radius r = (m * z) / 2
     return 0.5 * float(module_m) * float(teeth)
 
 
@@ -97,7 +105,192 @@ def _make_contact_material_nsc(mu: float, restitution: float) -> chrono.ChContac
 
 
 # ---------------------------------------------------------------------
-# Collision shape builders (primitive-only)
+# OBJ auto-approx utilities
+# ---------------------------------------------------------------------
+
+
+def _load_obj_vertices(obj_path: str) -> List[Tuple[float, float, float]]:
+    verts: List[Tuple[float, float, float]] = []
+    with open(obj_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            if line.startswith("v "):
+                parts = line.strip().split()
+                if len(parts) >= 4:
+                    verts.append((float(parts[1]), float(parts[2]), float(parts[3])))
+    if not verts:
+        raise ValueError(f"[auto] OBJ '{obj_path}'에서 vertex(v ...)를 찾지 못했습니다.")
+    return verts
+
+
+def _compute_aabb(verts: List[Tuple[float, float, float]]):
+    xs = [v[0] for v in verts]
+    ys = [v[1] for v in verts]
+    zs = [v[2] for v in verts]
+    mn = (min(xs), min(ys), min(zs))
+    mx = (max(xs), max(ys), max(zs))
+    center = ((mn[0] + mx[0]) * 0.5, (mn[1] + mx[1]) * 0.5, (mn[2] + mx[2]) * 0.5)
+    ext = ((mx[0] - mn[0]) * 0.5, (mx[1] - mn[1]) * 0.5, (mx[2] - mn[2]) * 0.5)  # half extents
+    return mn, mx, center, ext
+
+
+def _pca_main_axis(verts: List[Tuple[float, float, float]]) -> Tuple[float, float, float]:
+    cx = sum(v[0] for v in verts) / len(verts)
+    cy = sum(v[1] for v in verts) / len(verts)
+    cz = sum(v[2] for v in verts) / len(verts)
+
+    sxx = syy = szz = sxy = sxz = syz = 0.0
+    for x, y, z in verts:
+        dx, dy, dz = x - cx, y - cy, z - cz
+        sxx += dx * dx
+        syy += dy * dy
+        szz += dz * dz
+        sxy += dx * dy
+        sxz += dx * dz
+        syz += dy * dz
+
+    vx, vy, vz = 1.0, 0.3, 0.2
+    for _ in range(30):
+        nx = sxx * vx + sxy * vy + sxz * vz
+        ny = sxy * vx + syy * vy + syz * vz
+        nz = sxz * vx + syz * vy + szz * vz
+        nrm = m.sqrt(nx * nx + ny * ny + nz * nz) + 1e-12
+        vx, vy, vz = nx / nrm, ny / nrm, nz / nrm
+    return (vx, vy, vz)
+
+
+def _dot(a, b) -> float:
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _sub(a, b):
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def _mul(a, s: float):
+    return (a[0] * s, a[1] * s, a[2] * s)
+
+
+def _norm(a) -> float:
+    return m.sqrt(_dot(a, a))
+
+
+def _normalize(a):
+    n = _norm(a) + 1e-12
+    return (a[0] / n, a[1] / n, a[2] / n)
+
+
+def _cross(a, b):
+    return (
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    )
+
+
+def _quat_from_two_vectors(v_from: Tuple[float, float, float], v_to: Tuple[float, float, float]) -> Quat:
+    a = _normalize(v_from)
+    b = _normalize(v_to)
+    c = _cross(a, b)
+    w = 1.0 + _dot(a, b)
+    if w < 1e-8:
+        axis = _cross(a, (1.0, 0.0, 0.0))
+        if _norm(axis) < 1e-6:
+            axis = _cross(a, (0.0, 1.0, 0.0))
+        axis = _normalize(axis)
+        return Quat(0.0, axis[0], axis[1], axis[2])
+
+    qn = m.sqrt(w * w + c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) + 1e-12
+    return Quat(w / qn, c[0] / qn, c[1] / qn, c[2] / qn)
+
+
+def _approx_base_from_obj(obj_path: str) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+    verts = _load_obj_vertices(obj_path)
+    _, _, center, half_ext = _compute_aabb(verts)
+    size = (half_ext[0] * 2, half_ext[1] * 2, half_ext[2] * 2)
+    return center, size
+
+
+def _approx_shaft_with_hub_from_obj(obj_path: str):
+    verts = _load_obj_vertices(obj_path)
+    _, _, center, _ = _compute_aabb(verts)
+
+    axis = _normalize(_pca_main_axis(verts))
+    c = center
+
+    ss: List[float] = []
+    rs: List[float] = []
+    for p in verts:
+        d = (p[0] - c[0], p[1] - c[1], p[2] - c[2])
+        s = _dot(d, axis)
+        perp = _sub(d, _mul(axis, s))
+        r = _norm(perp)
+        ss.append(s)
+        rs.append(r)
+
+    smin, smax = min(ss), max(ss)
+    length = smax - smin
+    if length < 1e-6:
+        _, _, cc, half_ext = _compute_aabb(verts)
+        lx, ly, lz = half_ext[0] * 2, half_ext[1] * 2, half_ext[2] * 2
+        L = max(lx, ly, lz)
+        R = 0.5 * sorted([lx, ly, lz])[1]
+        return cc, (0.0, 0.0, 1.0), L, R, None
+
+    nbins = 40
+    bins: List[List[float]] = [[] for _ in range(nbins)]
+    for s, r in zip(ss, rs):
+        t = (s - smin) / (length + 1e-12)
+        i = int(t * nbins)
+        i = max(0, min(nbins - 1, i))
+        bins[i].append(r)
+
+    med: List[float] = []
+    for b in bins:
+        if not b:
+            med.append(0.0)
+        else:
+            bb = sorted(b)
+            med.append(bb[len(bb) // 2])
+
+    med_sorted = sorted([v for v in med if v > 1e-9])
+    if not med_sorted:
+        R = sorted(rs)[int(0.5 * len(rs))]
+        return center, axis, length, R, None
+
+    k = max(1, int(0.2 * len(med_sorted)))
+    baseline = sum(med_sorted[:k]) / k
+
+    thr = baseline * 1.35
+    hub_idx = [i for i, v in enumerate(med) if v > thr]
+
+    hub = None
+    if hub_idx:
+        best = (hub_idx[0], hub_idx[0])
+        cur_s = hub_idx[0]
+        cur_e = hub_idx[0]
+        for i in hub_idx[1:]:
+            if i == cur_e + 1:
+                cur_e = i
+            else:
+                if (cur_e - cur_s) > (best[1] - best[0]):
+                    best = (cur_s, cur_e)
+                cur_s = cur_e = i
+        if (cur_e - cur_s) > (best[1] - best[0]):
+            best = (cur_s, cur_e)
+
+        i0, i1 = best
+        hs0 = smin + (i0 / nbins) * length
+        hs1 = smin + ((i1 + 1) / nbins) * length
+        hub_len = max(0.0, hs1 - hs0)
+        hub_r = max(med[i0 : i1 + 1])
+        hub = {"length": hub_len, "radius": hub_r}
+
+    shaft_r = max(1e-4, baseline)
+    return center, axis, length, shaft_r, hub
+
+
+# ---------------------------------------------------------------------
+# Collision shape builders (primitive-only) + offset frame
 # ---------------------------------------------------------------------
 
 
@@ -137,6 +330,59 @@ def _add_collision_sphere(
     body.AddCollisionShape(shape, fr)
 
 
+def _reset_collision_model(body: chrono.ChBody) -> None:
+    # Chrono 버전에 따라 필요/불필요하지만 안전하게 초기화
+    try:
+        if hasattr(body, "GetCollisionModel"):
+            cm = body.GetCollisionModel()
+            if cm is not None and hasattr(cm, "ClearModel"):
+                cm.ClearModel()
+    except Exception:
+        pass
+
+
+def _finalize_collision_model(body: chrono.ChBody) -> None:
+    try:
+        if hasattr(body, "GetCollisionModel"):
+            cm = body.GetCollisionModel()
+            if cm is not None and hasattr(cm, "BuildModel"):
+                cm.BuildModel()
+    except Exception:
+        pass
+
+
+def _collision_primitive_to_chframe(p: CollisionPrimitive) -> chrono.ChFramed:
+    return _to_chframe(p.offset)
+
+
+def _apply_collision_primitive(
+    body: chrono.ChBody,
+    mat: chrono.ChContactMaterialNSC,
+    prim: CollisionPrimitive,
+) -> None:
+    fr = _collision_primitive_to_chframe(prim)
+
+    if prim.kind == "box":
+        if prim.hx is None or prim.hy is None or prim.hz is None:
+            raise ValueError("collision.box requires hx,hy,hz")
+        _add_collision_box(body, mat, float(prim.hx), float(prim.hy), float(prim.hz), fr)
+        return
+
+    if prim.kind == "cylinder":
+        if prim.radius is None or prim.length is None:
+            raise ValueError("collision.cylinder requires radius,length")
+        _add_collision_cylinder(body, mat, float(prim.radius), float(prim.length), fr)
+        return
+
+    if prim.kind == "sphere":
+        if prim.radius is None:
+            raise ValueError("collision.sphere requires radius")
+        _add_collision_sphere(body, mat, float(prim.radius), fr)
+        return
+
+    raise NotImplementedError(f"unsupported collision kind '{prim.kind}'")
+
+
 # ---------------------------------------------------------------------
 # Visual shape builders (mesh-only)
 # ---------------------------------------------------------------------
@@ -148,10 +394,6 @@ def _attach_visual_mesh(
     scale: chrono.ChVector3d,
     offset: chrono.ChFramed,
 ) -> None:
-    """
-    Attach mesh for visualization only.
-    NOTE: Visual offset is BODY-LOCAL (per your schema).
-    """
     mesh = chrono.ChTriangleMeshConnected()
     mesh.LoadWavefrontMesh(str(mesh_file), False, True)
 
@@ -160,6 +402,107 @@ def _attach_visual_mesh(
     vshape.SetScale(scale)
 
     body.AddVisualShape(vshape, offset)
+
+
+# ---------------------------------------------------------------------
+# Auto collision (from OBJ) -> list[CollisionPrimitive]
+# ---------------------------------------------------------------------
+
+
+def _auto_collision_from_obj(bdef: BodyDef, auto: CollisionAuto) -> List[CollisionPrimitive]:
+    vis = bdef.geometry.visual
+    if vis.kind != "mesh" or not getattr(vis, "file", None):
+        raise ValueError(f"Body '{bdef.name}': collision.auto requires geometry.visual.kind='mesh' and visual.file")
+
+    obj_file = str(vis.file)
+    strategy = str(auto.strategy)
+    cat = str(getattr(bdef, "category", "generic"))
+
+    # ---- strategy overrides ----
+    if strategy in ("aabb_box", "base_aabb"):
+        verts = _load_obj_vertices(obj_file)
+        _, _, _, half_ext = _compute_aabb(verts)
+        return [
+            CollisionPrimitive(
+                kind="box",
+                hx=float(half_ext[0]),
+                hy=float(half_ext[1]),
+                hz=float(half_ext[2]),
+                offset=Pose.identity(),
+            )
+        ]
+
+    if strategy == "shaft_pca_hub2cyl":
+        _, axis, L, R, hub = _approx_shaft_with_hub_from_obj(obj_file)
+        q = _quat_from_two_vectors((0.0, 0.0, 1.0), (axis[0], axis[1], axis[2]))
+        prims = [
+            CollisionPrimitive(
+                kind="cylinder",
+                radius=float(R),
+                length=float(L),
+                offset=Pose(pos=Pose.identity().pos, rot=q),
+            )
+        ]
+        if hub and float(hub.get("length", 0.0)) > 1e-5 and float(hub.get("radius", 0.0)) > float(R) * 1.2:
+            prims.append(
+                CollisionPrimitive(
+                    kind="cylinder",
+                    radius=float(hub["radius"]),
+                    length=float(hub["length"]),
+                    offset=Pose(pos=Pose.identity().pos, rot=q),
+                )
+            )
+        return prims
+
+    # ---- default behavior (category-based) ----
+    if cat == "base":
+        _, size = _approx_base_from_obj(obj_file)
+        hx, hy, hz = 0.5 * size[0], 0.5 * size[1], 0.5 * size[2]
+        return [
+            CollisionPrimitive(
+                kind="box",
+                hx=float(hx),
+                hy=float(hy),
+                hz=float(hz),
+                offset=Pose.identity(),
+            )
+        ]
+
+    if cat == "shaft":
+        # same as shaft_pca_hub2cyl
+        _, axis, L, R, hub = _approx_shaft_with_hub_from_obj(obj_file)
+        q = _quat_from_two_vectors((0.0, 0.0, 1.0), (axis[0], axis[1], axis[2]))
+        prims = [
+            CollisionPrimitive(
+                kind="cylinder",
+                radius=float(R),
+                length=float(L),
+                offset=Pose(pos=Pose.identity().pos, rot=q),
+            )
+        ]
+        if hub and float(hub.get("length", 0.0)) > 1e-5 and float(hub.get("radius", 0.0)) > float(R) * 1.2:
+            prims.append(
+                CollisionPrimitive(
+                    kind="cylinder",
+                    radius=float(hub["radius"]),
+                    length=float(hub["length"]),
+                    offset=Pose(pos=Pose.identity().pos, rot=q),
+                )
+            )
+        return prims
+
+    # fallback: aabb box
+    verts = _load_obj_vertices(obj_file)
+    _, _, _, half_ext = _compute_aabb(verts)
+    return [
+        CollisionPrimitive(
+            kind="box",
+            hx=float(half_ext[0]),
+            hy=float(half_ext[1]),
+            hz=float(half_ext[2]),
+            offset=Pose.identity(),
+        )
+    ]
 
 
 # ---------------------------------------------------------------------
@@ -195,33 +538,35 @@ def _build_body(sys: chrono.ChSystemNSC, bdef: BodyDef) -> chrono.ChBody:
     mat = _make_contact_material_nsc(c.friction, c.restitution)
 
     # collision
-    col = bdef.geometry.collision
     body.EnableCollision(True)
+    _reset_collision_model(body)
 
-    if col.kind == "box":
-        if col.hx is None or col.hy is None or col.hz is None:
-            raise ValueError(f"Body '{bdef.name}': collision.box requires hx,hy,hz")
-        _add_collision_box(body, mat, col.hx, col.hy, col.hz)
+    col = bdef.geometry.collision
 
-    elif col.kind == "cylinder":
-        if col.radius is None or col.length is None:
-            raise ValueError(f"Body '{bdef.name}': collision.cylinder requires radius,length")
-        _add_collision_cylinder(body, mat, col.radius, col.length)
+    # 1) auto
+    if isinstance(col, CollisionAuto):
+        prims = _auto_collision_from_obj(bdef, col)
+        for p in prims:
+            _apply_collision_primitive(body, mat, p)
 
-    elif col.kind == "sphere":
-        # metadata_types: sphere radius is stored in r
-        if col.r is None:
-            raise ValueError(f"Body '{bdef.name}': collision.sphere requires radius")
-        _add_collision_sphere(body, mat, float(col.r))
+    # 2) list of primitives
+    elif isinstance(col, list):
+        if not col:
+            raise ValueError(f"Body '{bdef.name}': collision list is empty")
+        for prim in col:
+            _apply_collision_primitive(body, mat, prim)
 
+    # 3) single primitive
     else:
-        raise NotImplementedError(f"Body '{bdef.name}': unsupported collision kind '{col.kind}'")
+        _apply_collision_primitive(body, mat, col)
 
-    # visual mesh
+    _finalize_collision_model(body)
+
+    # visual mesh (visual offset is BODY-LOCAL by schema)
     vis = bdef.geometry.visual
     if vis.kind == "mesh":
         scale = _to_chvec(vis.scale)
-        offset = _to_chframe(vis.offset)  # BODY-LOCAL by convention (schema)
+        offset = _to_chframe(vis.offset)
         _attach_visual_mesh(body, vis.file, scale, offset)
 
     sys.AddBody(body)
@@ -234,7 +579,7 @@ def _build_body(sys: chrono.ChSystemNSC, bdef: BodyDef) -> chrono.ChBody:
 
 
 def _build_joint(sys: chrono.ChSystemNSC, jdef: JointDef, bodyA: chrono.ChBody, bodyB: chrono.ChBody) -> chrono.ChLinkBase:
-    fr = _to_chframe(jdef.frame)  # WORLD frame, local Z is DOF axis by convention
+    fr = _to_chframe(jdef.frame)  # WORLD frame, local Z is DOF axis
 
     if jdef.type == "revolute":
         link = chrono.ChLinkLockRevolute()
@@ -284,8 +629,6 @@ def _build_gear_pair(
     ratio = (rA / rB) * float(gp.ratio_sign)
 
     link = chrono.ChLinkLockGear()
-
-    # ✅ [수정 2] meshFrame 미지정 시, 스키마 의도대로 gearA pose를 기본 프레임으로 사용
     if gp.meshFrame is not None:
         fr = _to_chframe(gp.meshFrame)
     else:
@@ -309,18 +652,12 @@ def _build_actuator(
     joints: Dict[str, BuiltJoint],
     bodies: Dict[str, BuiltBody],
 ) -> chrono.ChLinkBase:
-    """
-    Actuators target a joint frame Z-axis by design.
-    For speed motor: we create a motor link between the same two bodies as the joint,
-    and initialize it with the joint's frame.
-    """
     if adef.targetJoint not in joints:
         raise ValueError(f"Actuator '{adef.name}': targetJoint '{adef.targetJoint}' not found")
 
     target_joint = joints[adef.targetJoint]
     jmeta = target_joint.meta
 
-    # GetBody1/GetBody2 의존 제거 (바인딩/타입 차이 방어)
     if jmeta.body1 not in bodies or jmeta.body2 not in bodies:
         raise ValueError(f"Actuator '{adef.name}': joint refers missing bodies: {jmeta.body1}, {jmeta.body2}")
     body1 = bodies[jmeta.body1].body
@@ -341,8 +678,7 @@ def _build_actuator(
         if adef.torqueModel is None:
             raise ValueError(f"Actuator '{adef.name}': rotation_torque requires torqueModel")
 
-        const_model = adef.torqueModel
-        tau = float(getattr(const_model, "value", 0.0))
+        tau = float(getattr(adef.torqueModel, "value", 0.0))
 
         if hasattr(chrono, "ChLinkMotorRotationTorque"):
             motor = chrono.ChLinkMotorRotationTorque()
@@ -365,10 +701,6 @@ def _build_actuator(
 
 
 def build_system_from_scene(meta: SceneMeta) -> BuildResult:
-    """
-    Build a Chrono system from metadata.
-    Returns registries for easy lookups.
-    """
     sys = chrono.ChSystemNSC()
     sys.SetGravitationalAcceleration(_to_chvec(meta.gravity))
 
