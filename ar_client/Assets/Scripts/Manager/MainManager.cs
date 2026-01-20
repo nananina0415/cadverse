@@ -5,6 +5,7 @@ using TMPro;
 using CADverse.Server;
 using CADverse.Server.DataModel;
 using CADverse.QRScan;
+using CADverse.Renderer;
 
 namespace CADverse.Manager
 {
@@ -21,6 +22,11 @@ namespace CADverse.Manager
 
         [Header("Components")]
         [SerializeField] private QRScanner qrScanner;
+        [SerializeField] private ModelPreview modelPreview;
+
+        [Header("Server Config")]
+        [SerializeField] private string defaultServerIp = "127.0.0.1";
+        [SerializeField] private int defaultServerPort = 3000;
 
         // 서버 프록시
         public ServerProxy Server { get; private set; }
@@ -30,10 +36,17 @@ namespace CADverse.Manager
 
         private void Awake()
         {
+            Debug.Log("[MainManager] Awake called");
+
             // 버튼 이벤트 등록
             if (connectButton != null)
             {
                 connectButton.onClick.AddListener(OnConnectButtonClicked);
+                Debug.Log("[MainManager] Connect button listener registered");
+            }
+            else
+            {
+                Debug.LogError("[MainManager] Connect button is NULL!");
             }
 
             // QR 스캐너 이벤트 등록
@@ -41,15 +54,35 @@ namespace CADverse.Manager
             {
                 qrScanner.OnQRCodeDetected += OnQRCodeDetected;
                 qrScanner.OnScanError += OnQRScanError;
+                Debug.Log("[MainManager] QR Scanner events registered");
+            }
+            else
+            {
+                Debug.LogWarning("[MainManager] QR Scanner is NULL!");
+            }
+
+            // Model Preview 체크
+            if (modelPreview != null)
+            {
+                Debug.Log("[MainManager] Model Preview assigned");
+            }
+            else
+            {
+                Debug.LogWarning("[MainManager] Model Preview is NULL!");
             }
 
             // 초기 상태
             if (qrScannerPanel != null)
             {
                 qrScannerPanel.SetActive(false);
+                Debug.Log("[MainManager] QR Scanner panel hidden");
+            }
+            else
+            {
+                Debug.LogWarning("[MainManager] QR Scanner panel is NULL!");
             }
 
-            UpdateStatusText("서버 연결 버튼을 눌러주세요");
+            UpdateStatusText("Press Connect Button");
         }
 
         /// <summary>
@@ -57,13 +90,17 @@ namespace CADverse.Manager
         /// </summary>
         private void OnConnectButtonClicked()
         {
+            Debug.Log("[MainManager] Connect button clicked!");
+
             if (IsConnected)
             {
+                Debug.Log("[MainManager] Already connected, disconnecting...");
                 // 이미 연결되어 있으면 연결 해제
                 DisconnectFromServer();
             }
             else
             {
+                Debug.Log("[MainManager] Not connected, starting QR scan...");
                 // QR 스캔 시작
                 StartQRScan();
             }
@@ -72,7 +109,7 @@ namespace CADverse.Manager
         /// <summary>
         /// QR 스캔 시작
         /// </summary>
-        private void StartQRScan()
+        private async void StartQRScan()
         {
             Debug.Log("[MainManager] Starting QR scan");
 
@@ -82,16 +119,29 @@ namespace CADverse.Manager
                 qrScannerPanel.SetActive(true);
             }
 
+            // 모델 프리뷰 로드 (서버에서 가져오기)
+            if (modelPreview != null)
+            {
+                UpdateStatusText("Loading model from server...");
+                await modelPreview.LoadPreviewModel(defaultServerIp, defaultServerPort);
+            }
+
             // 스캔 시작
             if (qrScanner != null)
             {
                 qrScanner.StartScanning();
-                UpdateStatusText("QR 코드를 카메라에 비춰주세요");
+                UpdateStatusText("Scan QR code with camera");
             }
             else
             {
-                Debug.LogError("[MainManager] QR Scanner not found!");
-                UpdateStatusText("에러: QR 스캐너를 찾을 수 없습니다");
+                // QR Scanner가 없으면 테스트용 더미 데이터 사용
+                Debug.LogWarning("[MainManager] QR Scanner not found! Using default server address for testing.");
+                UpdateStatusText("No QR scanner. Connecting to default server...");
+
+                // 2초 후 자동으로 기본 서버 주소로 연결
+                await System.Threading.Tasks.Task.Delay(2000);
+                string dummyQR = $"{defaultServerIp}:{defaultServerPort}";
+                OnQRCodeDetected(dummyQR);
             }
         }
 
@@ -102,6 +152,12 @@ namespace CADverse.Manager
         {
             Debug.Log($"[MainManager] QR detected: {qrData}");
 
+            // 모델 프리뷰 제거
+            if (modelPreview != null)
+            {
+                modelPreview.ClearPreview();
+            }
+
             // QR 스캐너 UI 숨기기
             if (qrScannerPanel != null)
             {
@@ -111,7 +167,7 @@ namespace CADverse.Manager
             // QR 데이터 파싱 (ip:port 형식)
             if (!TryParseServerInfo(qrData, out string ip, out int port))
             {
-                UpdateStatusText($"에러: 잘못된 QR 코드 형식\n{qrData}");
+                UpdateStatusText($"Error: Invalid QR format\n{qrData}");
                 return;
             }
 
@@ -125,7 +181,7 @@ namespace CADverse.Manager
         private void OnQRScanError(string error)
         {
             Debug.LogError($"[MainManager] QR scan error: {error}");
-            UpdateStatusText($"QR 스캔 에러: {error}");
+            UpdateStatusText($"QR scan error: {error}");
         }
 
         /// <summary>
@@ -135,7 +191,7 @@ namespace CADverse.Manager
         {
             try
             {
-                UpdateStatusText($"서버 연결 중...\n{ip}:{port}");
+                UpdateStatusText($"Connecting to server...\n{ip}:{port}");
 
                 // ServerProxy 생성
                 Server = ServerProxy.Create(ip, port);
@@ -152,7 +208,7 @@ namespace CADverse.Manager
             catch (Exception e)
             {
                 Debug.LogError($"[MainManager] Connection failed: {e.Message}");
-                UpdateStatusText($"연결 실패: {e.Message}");
+                UpdateStatusText($"Connection failed: {e.Message}");
 
                 // 서버 객체 정리
                 if (Server != null)
@@ -173,7 +229,7 @@ namespace CADverse.Manager
                 return;
             }
 
-            UpdateStatusText("연결 해제 중...");
+            UpdateStatusText("Disconnecting...");
 
             try
             {
@@ -191,8 +247,8 @@ namespace CADverse.Manager
                     Server = null;
                 }
 
-                UpdateStatusText("연결 해제됨");
-                UpdateConnectButton("서버 연결");
+                UpdateStatusText("Disconnected");
+                UpdateConnectButton("Connect");
             }
         }
 
@@ -201,21 +257,21 @@ namespace CADverse.Manager
         private void OnServerConnected()
         {
             Debug.Log("[MainManager] Server connected!");
-            UpdateStatusText("서버 연결 성공!");
-            UpdateConnectButton("연결 해제");
+            UpdateStatusText("Connected!");
+            UpdateConnectButton("Disconnect");
         }
 
         private void OnServerDisconnected()
         {
             Debug.Log("[MainManager] Server disconnected");
-            UpdateStatusText("서버 연결이 끊어졌습니다");
-            UpdateConnectButton("서버 연결");
+            UpdateStatusText("Server disconnected");
+            UpdateConnectButton("Connect");
         }
 
         private void OnServerError(string error)
         {
             Debug.LogError($"[MainManager] Server error: {error}");
-            UpdateStatusText($"서버 에러: {error}");
+            UpdateStatusText($"Server error: {error}");
         }
 
         private void OnSimulationStateReceived(SimulationState state)
