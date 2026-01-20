@@ -32,6 +32,10 @@ ENV/
 !.vscode/extensions.json
 !.vscode/launch.json
 !.vscode/tasks.json
+
+# CAD Plugin VSCode 개인 설정 제외
+cad_plugin/**/.vscode/
+
 .idea/
 *.swp
 *.swo
@@ -41,12 +45,17 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# Claude Code
+# Claude Code temporary files
 tmpclaude-*
+**/tmpclaude-*
+.claude/settings.local.json
 
 # Rust
 sim_server/target/
 sim_server/Cargo.lock
+**/target/
+**/Cargo.lock
+interface/codegen/server/target/
 
 # Unity
 ar_client/[Ll]ibrary/
@@ -96,3 +105,28 @@ ar_client/crashlytics-build.properties
 # Unity specific
 ar_client/[Aa]ssets/[Ss]treamingAssets/aa.meta
 ar_client/[Aa]ssets/[Ss]treamingAssets/aa/*
+
+# Unity APK builds
+ar_client/*.apk
+ar_client/*_BackUpThisFolder_ButDontShipItWithYourGame/
+ar_client/*_BurstDebugInformation_DoNotShip/
+
+# Unity temp folders
+ar_client/.utmp/
+
+# C# build artifacts
+interface/codegen/client/bin/
+interface/codegen/client/obj/
+**/bin/
+**/obj/
+
+# Unity solution files (generated)
+ar_client/*.slnx
+
+# Scripts (optional, remove from ignore if you want to commit them)
+# clean_temp.bat
+# clean_temp.sh
+# convert_obj_scale.py
+
+# Model backup files
+model/*_original.obj
