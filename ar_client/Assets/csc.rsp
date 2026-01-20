@@ -1,3 +1,3 @@
--analyzer:"../../../interface/codegen/client/bin/Release/netstandard2.0/InterfaceCodeGen.dll"
--additionalfile:"../../../interface/touch_raycast_input.ts"
--additionalfile:"../../../interface/type_mapping/client.json"
+-analyzer:"../../interface/codegen/client/bin/Release/netstandard2.0/InterfaceCodeGen.dll"
+-additionalfile:"../../interface/touch_raycast_input.ts"
+-additionalfile:"../../interface/type_mapping/client.json"
