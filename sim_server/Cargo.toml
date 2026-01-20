@@ -11,6 +11,7 @@ path = "src/main.rs"
 server = { path = "crates/server" }
 sim_manager = { path = "crates/sim_manager" }
 cad_data_loader = { path = "crates/data_loader" }
+interface_codegen_macro = { path = "../interface/codegen/server" }
 tokio = { version = "1.42", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
