@@ -1,0 +1,9 @@
+Assets\Scripts\QrScan\QrScanner.cs(155,9): error CS1519: Invalid token 'catch' in class, record, struct, or interface member declaration
+Assets\Scripts\QrScan\QrScanner.cs(155,28): error CS8124: Tuple must contain at least two elements.
+Assets\Scripts\QrScan\QrScanner.cs(156,9): error CS1519: Invalid token '{' in class, record, struct, or interface member declaration
+Assets\Scripts\QrScan\QrScanner.cs(159,29): error CS1519: Invalid token '(' in class, record, struct, or interface member declaration
+Assets\Scripts\QrScan\QrScanner.cs(159,30): error CS1031: Type expected
+Assets\Scripts\QrScan\QrScanner.cs(159,30): error CS8124: Tuple must contain at least two elements.
+Assets\Scripts\QrScan\QrScanner.cs(159,30): error CS1026: ) expected
+Assets\Scripts\QrScan\QrScanner.cs(159,30): error CS1519: Invalid token '$"[QrScanner] Decode error: {ex.Message}"' in class, record, struct, or interface member declaration
+Assets\Scripts\QrScan\QrScanner.cs(171,1): error CS1022: Type or namespace definition, or end-of-file expected
