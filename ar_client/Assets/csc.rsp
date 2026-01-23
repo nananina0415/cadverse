@@ -1,3 +1,3 @@
--analyzer:"../../interface/codegen/client/bin/Release/netstandard2.0/InterfaceCodeGen.dll"
--additionalfile:"../../interface/touch_raycast_input.ts"
--additionalfile:"../../interface/type_mapping/client.json"
+-analyzer:"C:/Users/nananina/Documents/03_Univ_Project/cadverse/interface/codegen/client/bin/Release/netstandard2.0/InterfaceCodeGen.dll"
+-additionalfile:"C:/Users/nananina/Documents/03_Univ_Project/cadverse/interface/touch_raycast_input.ts"
+-additionalfile:"C:/Users/nananina/Documents/03_Univ_Project/cadverse/interface/type_mapping/client.json"

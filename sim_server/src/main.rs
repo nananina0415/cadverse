@@ -44,11 +44,19 @@ async fn main() -> Result<()> {
     let buffer_for_sim = buffer.clone();
     let buffer_for_server = buffer.clone();
 
+    // 입력 버퍼 생성
+    #[cfg(debug_assertions)]
+    info!("Creating input buffer...");
+
+    let input_buffer = sim_manager::InputBuffer::new();
+    let input_buffer_for_sim = input_buffer.clone();
+    let input_buffer_for_server = input_buffer.clone();
+
     // 시뮬레이션 매니저 초기화
     #[cfg(debug_assertions)]
     info!("Initializing simulator...");
 
-    sim_manager::start(buffer_for_sim);
+    sim_manager::start(buffer_for_sim, input_buffer_for_sim);
 
     // QR 코드 출력
     if let Err(e) = qr_display::display_qr_code(3000) {
@@ -59,7 +67,7 @@ async fn main() -> Result<()> {
     #[cfg(debug_assertions)]
     info!("Starting WebSocket server...");
 
-    server::start_server(buffer_for_server).await?;
+    server::start_server(buffer_for_server, input_buffer_for_server).await?;
 
     Ok(())
 }

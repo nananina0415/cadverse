@@ -3,19 +3,19 @@ use axum::{
     response::Response,
 };
 use tracing::{info, warn, error};
-use crate::models::{SimulationState, UserInput, ObjectTransform};
-use crate::StateBuffer;
+use crate::models::{SimulationState, ObjectTransform, TouchRaycastInput};
+use crate::ServerState;
 
 /// WebSocket 연결 핸들러
 pub async fn websocket_handler(
-    State(buffer): State<StateBuffer>,
+    State(server_state): State<ServerState>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    ws.on_upgrade(move |socket| handle_socket(socket, buffer))
+    ws.on_upgrade(move |socket| handle_socket(socket, server_state))
 }
 
 /// WebSocket 연결 처리
-async fn handle_socket(mut socket: WebSocket, _buffer: StateBuffer) {
+async fn handle_socket(mut socket: WebSocket, server_state: ServerState) {
     info!("New WebSocket connection established");
 
     // TODO: buffer에서 실제 프레임 읽어서 전송
@@ -49,15 +49,15 @@ async fn handle_socket(mut socket: WebSocket, _buffer: StateBuffer) {
         match msg {
             Ok(Message::Text(text)) => {
                 info!("Received text: {}", text);
-                
-                // 유저 입력 파싱
-                match serde_json::from_str::<UserInput>(&text) {
+
+                // TouchRaycastInput 파싱 및 버퍼에 저장
+                match serde_json::from_str::<TouchRaycastInput>(&text) {
                     Ok(input) => {
-                        info!("User input: {:?}", input);
-                        // TODO: 시뮬레이션에 입력 전달
+                        info!("Touch input: {:?}", input);
+                        server_state.input_buffer.push(input);
                     }
                     Err(e) => {
-                        warn!("Failed to parse user input: {}", e);
+                        warn!("Failed to parse touch input: {} - error: {}", text, e);
                     }
                 }
             }

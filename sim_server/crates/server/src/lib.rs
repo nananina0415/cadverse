@@ -15,11 +15,28 @@ use tracing::info;
 // (sim_state_buffer는 루트 크레이트에 있음)
 pub type StateBuffer = Arc<dyn std::any::Any + Send + Sync>;
 
+// 입력 버퍼 타입 재export
+pub use sim_manager::InputBuffer;
+pub use models::TouchRaycastInput;
+
+/// 서버 상태 (StateBuffer + InputBuffer)
+#[derive(Clone)]
+pub struct ServerState {
+    pub state_buffer: StateBuffer,
+    pub input_buffer: InputBuffer<TouchRaycastInput>,
+}
+
 /// WebSocket 서버 초기화 및 시작
 ///
 /// ## 인자
-/// - `buffer`: 시뮬레이션 프레임 버퍼 (Arc<SimStateBuffer>)
-pub async fn start_server(buffer: StateBuffer) -> Result<()> {
+/// - `state_buffer`: 시뮬레이션 프레임 버퍼 (Arc<SimStateBuffer>)
+/// - `input_buffer`: 입력 메시지 버퍼 (InputBuffer<TouchRaycastInput>)
+pub async fn start_server(state_buffer: StateBuffer, input_buffer: InputBuffer<TouchRaycastInput>) -> Result<()> {
+    let server_state = ServerState {
+        state_buffer,
+        input_buffer,
+    };
+
     let app = Router::new()
         // WebSocket 엔드포인트
         .route("/cadverse", get(websocket::websocket_handler))
@@ -27,8 +44,8 @@ pub async fn start_server(buffer: StateBuffer) -> Result<()> {
         .route("/cadverse/object", get(routes::get_object_list))
         // 메쉬 파일 다운로드 API
         .route("/cadverse/object/{name}", get(routes::get_object_mesh))
-        // Axum state로 buffer 전달
-        .with_state(buffer);
+        // Axum state로 server_state 전달
+        .with_state(server_state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     info!("Server listening on {}", addr);

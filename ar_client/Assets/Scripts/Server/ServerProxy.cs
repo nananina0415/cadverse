@@ -231,6 +231,37 @@ namespace CADverse.Server
             }
         }
 
+        /// <summary>
+        /// 터치 레이캐스트 입력을 서버로 전송합니다 (제네릭)
+        /// </summary>
+        public async Task SendTouchInput<T>(T input) where T : class
+        {
+            if (!IsConnected || _webSocket?.State != WebSocketState.Open)
+            {
+                throw new InvalidOperationException("서버에 연결되지 않음");
+            }
+
+            try
+            {
+                var json = JsonUtility.ToJson(input);
+                var bytes = Encoding.UTF8.GetBytes(json);
+
+                await _webSocket.SendAsync(
+                    new ArraySegment<byte>(bytes),
+                    WebSocketMessageType.Text,
+                    true,
+                    _cancellationTokenSource.Token
+                );
+
+                Debug.Log($"[ServerProxy] Sent touch input: {typeof(T).Name}");
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[ServerProxy] Send error: {e.Message}");
+                throw;
+            }
+        }
+
         // === HTTP 요청 ===
         /// <summary>
         /// 서버에서 오브젝트 목록을 가져옵니다

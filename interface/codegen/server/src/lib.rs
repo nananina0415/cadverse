@@ -121,9 +121,8 @@ fn parse_typescript_interfaces(content: &str) -> HashMap<String, Vec<InterfaceFi
             }
         }
 
-        if !fields.is_empty() {
-            interfaces.insert(name, fields);
-        }
+        // 빈 인터페이스도 포함 (TouchEndPayload 등)
+        interfaces.insert(name, fields);
     }
 
     interfaces
@@ -156,6 +155,19 @@ fn camel_to_snake_case(s: &str) -> String {
     result
 }
 
+fn is_rust_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "as" | "break" | "const" | "continue" | "crate" | "else" | "enum" | "extern"
+            | "false" | "fn" | "for" | "if" | "impl" | "in" | "let" | "loop" | "match"
+            | "mod" | "move" | "mut" | "pub" | "ref" | "return" | "self" | "Self"
+            | "static" | "struct" | "super" | "trait" | "true" | "type" | "unsafe"
+            | "use" | "where" | "while" | "async" | "await" | "dyn" | "abstract"
+            | "become" | "box" | "do" | "final" | "macro" | "override" | "priv"
+            | "typeof" | "unsized" | "virtual" | "yield" | "try"
+    )
+}
+
 fn generate_rust_structs(
     interfaces: &HashMap<String, Vec<InterfaceField>>,
     type_map: &HashMap<String, String>,
@@ -167,16 +179,24 @@ fn generate_rust_structs(
 
         let field_tokens: Vec<_> = fields.iter().map(|field| {
             let field_name_snake = camel_to_snake_case(&field.name);
-            let field_ident = syn::Ident::new(&field_name_snake, proc_macro2::Span::call_site());
+
+            // Rust 키워드인 경우 r# 접두사 추가
+            let field_ident = if is_rust_keyword(&field_name_snake) {
+                syn::Ident::new_raw(&field_name_snake, proc_macro2::Span::call_site())
+            } else {
+                syn::Ident::new(&field_name_snake, proc_macro2::Span::call_site())
+            };
 
             let rust_type_str = convert_type(&field.ts_type, type_map);
             let rust_type: proc_macro2::TokenStream = rust_type_str.parse().unwrap();
 
-            // 리터럴 타입인 경우 초기값 설정
-            if field.ts_type.starts_with('"') && field.ts_type.ends_with('"') {
-                let _literal_value = field.ts_type.trim_matches('"');
+            // 원본 필드명 (camelCase)
+            let original_name = &field.name;
+
+            // snake_case와 camelCase가 다른 경우 rename 추가
+            if field_name_snake != *original_name {
                 quote! {
-                    #[serde(default = "default_type_value")]
+                    #[serde(rename = #original_name)]
                     pub #field_ident: #rust_type
                 }
             } else {
@@ -188,7 +208,6 @@ fn generate_rust_structs(
 
         struct_tokens.push(quote! {
             #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-            #[serde(rename_all = "camelCase")]
             pub struct #struct_name {
                 #(#field_tokens),*
             }
