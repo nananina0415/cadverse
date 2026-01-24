@@ -37,6 +37,8 @@ class Vec3:
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "Vec3":
+        if not isinstance(d, dict):
+            raise ValueError(f"Vec3 must be object, got: {type(d)}")
         return Vec3(float(d["x"]), float(d["y"]), float(d["z"]))
 
     def to_dict(self) -> Dict[str, float]:
@@ -69,10 +71,13 @@ class QuatWXYZ:
 
     @staticmethod
     def from_any_dict(d: Dict[str, Any]) -> "QuatWXYZ":
+        if not isinstance(d, dict):
+            raise ValueError(f"Quaternion must be object, got: {type(d)}")
+
         # 우선 docs/07 (wxyz), 그 다음 legacy (e0..e3)
-        if "w" in d and "x" in d and "y" in d and "z" in d:
+        if all(k in d for k in ("w", "x", "y", "z")):
             return QuatWXYZ.from_wxyz_dict(d)
-        if "e0" in d and "e1" in d and "e2" in d and "e3" in d:
+        if all(k in d for k in ("e0", "e1", "e2", "e3")):
             return QuatWXYZ.from_e0e1e2e3_dict(d)
         raise ValueError(f"Quaternion must be wxyz or e0e1e2e3 dict, got keys={list(d.keys())}")
 
@@ -103,6 +108,8 @@ class PartState:
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "PartState":
         # docs/07: {"name":..., "pos":{x,y,z}, "rot":{w,x,y,z}}
+        if not isinstance(d, dict):
+            raise ValueError(f"PartState must be object, got: {type(d)}")
         return PartState(
             name=str(d.get("name", "")),
             pos=Vec3.from_dict(d["pos"]),
@@ -117,7 +124,6 @@ class PartState:
             "rot": self.rot.to_wxyz_dict(),
         }
 
-    # (선택) pychrono에서 바로 만들고 싶을 때를 위한 헬퍼
     @staticmethod
     def from_chrono_body(body: Any, *, name: str) -> "PartState":
         """
@@ -128,7 +134,6 @@ class PartState:
         """
         p = body.GetPos()
         q = body.GetRot()  # Chrono: e0=w, e1=x, e2=y, e3=z
-
         return PartState(
             name=str(name),
             pos=Vec3(float(p.x), float(p.y), float(p.z)),
@@ -140,20 +145,73 @@ class PartState:
 class SimState:
     """
     서버가 클라이언트로 내보내는 상태 메시지.
-    - sim_time: 시뮬레이션 시간(초)
-    - parts: PartState 배열 (PartIndex는 이 배열 index로 정의)
+
+    docs/07 기본:
+    - sim_time: float
+    - parts: List[PartState]
+
+    docs/07 Optional:
+    - partNames: List[str]  (index 안정성)
+    - seq: int              (증가하는 시퀀스)
+    - server_time_sec: float (서버 wall-clock timestamp, seconds)
     """
     sim_time: float
     parts: List[PartState]
-    # (선택 확장) index 안정성을 위해 partNames를 같이 보낼 수 있음 (docs/07 Optional)
+
+    # (Optional) index 안정성 / 디버깅용
     partNames: Optional[List[str]] = None
+    seq: Optional[int] = None
+    server_time_sec: Optional[float] = None
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "SimState":
+        if not isinstance(d, dict):
+            raise ValueError(f"SimState must be object, got: {type(d)}")
+
+        sim_time = float(d["sim_time"])
+        seq = int(d["seq"]) if "seq" in d and d["seq"] is not None else None
+        server_time_sec = float(d["server_time_sec"]) if "server_time_sec" in d and d["server_time_sec"] is not None else None
+
+        partNames = [str(x) for x in d.get("partNames", [])] if "partNames" in d else None
+        raw_parts = d.get("parts", [])
+
+        # ---- Parse parts in two possible modes ----
+        # Mode A) parts = [{name,pos,rot}, ...]
+        # Mode B) partNames = [...], parts = [{pos,rot}, ...] (name omitted, index implied)
+        parts: List[PartState] = []
+
+        if isinstance(raw_parts, list) and raw_parts:
+            # If first element has "name", assume Mode A.
+            if isinstance(raw_parts[0], dict) and "name" in raw_parts[0]:
+                parts = [PartState.from_dict(p) for p in raw_parts]
+            else:
+                # Mode B (name omitted) - requires partNames
+                if partNames is None:
+                    raise ValueError("SimState.parts has no 'name' field; requires 'partNames' to map indices.")
+                if len(raw_parts) != len(partNames):
+                    raise ValueError(
+                        f"SimState.parts length ({len(raw_parts)}) must match partNames length ({len(partNames)}) in index-mapped mode."
+                    )
+                for nm, p in zip(partNames, raw_parts):
+                    if not isinstance(p, dict):
+                        raise ValueError(f"SimState.parts item must be object, got: {type(p)}")
+                    # p expected: {"pos":..., "rot":...}
+                    parts.append(
+                        PartState(
+                            name=str(nm),
+                            pos=Vec3.from_dict(p["pos"]),
+                            rot=QuatWXYZ.from_any_dict(p["rot"]),
+                        )
+                    )
+        else:
+            parts = []
+
         return SimState(
-            sim_time=float(d["sim_time"]),
-            parts=[PartState.from_dict(p) for p in d.get("parts", [])],
-            partNames=[str(x) for x in d.get("partNames", [])] if "partNames" in d else None,
+            sim_time=sim_time,
+            parts=parts,
+            partNames=partNames,
+            seq=seq,
+            server_time_sec=server_time_sec,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -163,6 +221,10 @@ class SimState:
         }
         if self.partNames is not None:
             out["partNames"] = [str(x) for x in self.partNames]
+        if self.seq is not None:
+            out["seq"] = int(self.seq)
+        if self.server_time_sec is not None:
+            out["server_time_sec"] = float(self.server_time_sec)
         return out
 
 
@@ -176,7 +238,7 @@ PartIndex = int
 class PartRef:
     """
     타겟 파트 지정.
-    - docs/06: target.partIndex / target.partName (둘 다 optional)
+    - docs/06: payload.target.partIndex / payload.target.partName (둘 다 optional)
     - 레거시: targetPartIndex / targetPartName 같은 키가 payload 최상단에 있던 버전도 fallback 지원
     """
     partIndex: Optional[PartIndex] = None
@@ -184,27 +246,28 @@ class PartRef:
 
     @staticmethod
     def from_any(d: Dict[str, Any]) -> "PartRef":
+        if not isinstance(d, dict):
+            raise ValueError(f"PartRef payload must be object, got: {type(d)}")
+
         # 1) docs/06: {"target": {"partIndex":..,"partName":..}}
         if "target" in d and isinstance(d["target"], dict):
             t = d["target"]
             return PartRef(
-                partIndex=int(t["partIndex"]) if "partIndex" in t else None,
-                partName=str(t["partName"]) if "partName" in t else None,
+                partIndex=int(t["partIndex"]) if "partIndex" in t and t["partIndex"] is not None else None,
+                partName=str(t["partName"]) if "partName" in t and t["partName"] is not None else None,
             )
 
-        # 2) 레거시 형태:
-        #    {"targetPartIndex": 3} or {"targetPartName": "gear_A"}
+        # 2) 레거시 형태: {"targetPartIndex": 3} / {"targetPartName": "gear_A"}
         if "targetPartIndex" in d or "targetPartName" in d:
             return PartRef(
-                partIndex=int(d["targetPartIndex"]) if "targetPartIndex" in d else None,
-                partName=str(d["targetPartName"]) if "targetPartName" in d else None,
+                partIndex=int(d["targetPartIndex"]) if "targetPartIndex" in d and d["targetPartIndex"] is not None else None,
+                partName=str(d["targetPartName"]) if "targetPartName" in d and d["targetPartName"] is not None else None,
             )
 
-        # 3) 확장 형태(예전 네 코드가 받던 형태):
-        #    {"partIndex": 3} / {"partName": "gear_A"}
+        # 3) 확장 형태(예전 코드): {"partIndex": 3} / {"partName": "gear_A"}
         return PartRef(
-            partIndex=int(d["partIndex"]) if "partIndex" in d else None,
-            partName=str(d["partName"]) if "partName" in d else None,
+            partIndex=int(d["partIndex"]) if "partIndex" in d and d["partIndex"] is not None else None,
+            partName=str(d["partName"]) if "partName" in d and d["partName"] is not None else None,
         )
 
     def to_target_dict(self) -> Dict[str, Any]:
@@ -225,8 +288,14 @@ class TouchStartPayload:
     fingerPointWorld: Vec3        # WORLD
     cameraForwardWorld: Vec3      # WORLD (camera forward)
 
+    # optional extension (recommended): interaction/session id
+    interactionId: Optional[str] = None
+
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "TouchStartPayload":
+        if not isinstance(d, dict):
+            raise ValueError(f"TouchStartPayload must be object, got: {type(d)}")
+
         target = PartRef.from_any(d)
 
         # docs/06 keys (preferred)
@@ -246,24 +315,29 @@ class TouchStartPayload:
         else:
             cf = Vec3.from_dict(d.get("z_direction", {"x": 0, "y": 0, "z": 1}))
 
+        interactionId = str(d["interactionId"]) if "interactionId" in d and d["interactionId"] is not None else None
+
         return TouchStartPayload(
             target=target,
             actionPointLocal=ap,
             fingerPointWorld=fp,
             cameraForwardWorld=cf,
+            interactionId=interactionId,
         )
 
     def to_dict(self) -> Dict[str, Any]:
         # docs/06 준수
-        out = {
+        out: Dict[str, Any] = {
             **self.target.to_target_dict(),
             "actionPointLocal": self.actionPointLocal.to_dict(),
             "fingerPointWorld": self.fingerPointWorld.to_dict(),
             "cameraForwardWorld": self.cameraForwardWorld.to_dict(),
         }
+        if self.interactionId is not None:
+            out["interactionId"] = str(self.interactionId)
         return out
 
-    # 레거시 코드 호환용 프로퍼티 (기존 코드에서 actionPoint 등으로 접근해도 깨지지 않게)
+    # 레거시 코드 호환용 프로퍼티
     @property
     def actionPoint(self) -> Vec3:
         return self.actionPointLocal
@@ -283,8 +357,14 @@ class TouchingPayload:
     fingerPointWorld: Vec3      # WORLD
     cameraForwardWorld: Vec3    # WORLD
 
+    # optional extension (recommended): interaction/session id
+    interactionId: Optional[str] = None
+
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "TouchingPayload":
+        if not isinstance(d, dict):
+            raise ValueError(f"TouchingPayload must be object, got: {type(d)}")
+
         if "fingerPointWorld" in d:
             fp = Vec3.from_dict(d["fingerPointWorld"])
         else:
@@ -295,17 +375,23 @@ class TouchingPayload:
         else:
             cf = Vec3.from_dict(d.get("z_direction", {"x": 0, "y": 0, "z": 1}))
 
+        interactionId = str(d["interactionId"]) if "interactionId" in d and d["interactionId"] is not None else None
+
         return TouchingPayload(
             fingerPointWorld=fp,
             cameraForwardWorld=cf,
+            interactionId=interactionId,
         )
 
     def to_dict(self) -> Dict[str, Any]:
         # docs/06 준수
-        return {
+        out: Dict[str, Any] = {
             "fingerPointWorld": self.fingerPointWorld.to_dict(),
             "cameraForwardWorld": self.cameraForwardWorld.to_dict(),
         }
+        if self.interactionId is not None:
+            out["interactionId"] = str(self.interactionId)
+        return out
 
     # 레거시 코드 호환용 프로퍼티
     @property
@@ -319,12 +405,22 @@ class TouchingPayload:
 
 @dataclass(frozen=True)
 class TouchEndPayload:
+    # optional extension (recommended): interaction/session id
+    interactionId: Optional[str] = None
+
     @staticmethod
-    def from_dict(_: Dict[str, Any]) -> "TouchEndPayload":
-        return TouchEndPayload()
+    def from_dict(d: Dict[str, Any]) -> "TouchEndPayload":
+        if not isinstance(d, dict):
+            # TouchEnd는 payload {}가 일반적이지만, None이면 {}로 취급
+            d = {}
+        interactionId = str(d["interactionId"]) if "interactionId" in d and d["interactionId"] is not None else None
+        return TouchEndPayload(interactionId=interactionId)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {}
+        out: Dict[str, Any] = {}
+        if self.interactionId is not None:
+            out["interactionId"] = str(self.interactionId)
+        return out
 
 
 # ---- Event wrappers (discriminated union) ----
@@ -378,6 +474,9 @@ def user_input_from_dict(d: Dict[str, Any]) -> UserInput:
     런타임 입력 dict(JSON)을 UserInput 타입으로 파싱하는 단일 엔트리.
     서버/엔진 코드에서는 이 함수만 호출하면 됨.
     """
+    if not isinstance(d, dict):
+        raise ValueError(f"UserInput must be object, got: {type(d)}")
+
     t = d.get("type")
     if t == "TouchStart":
         return TouchStartEvent.from_dict(d)
@@ -406,11 +505,16 @@ def resolve_target_part_name(
     - part_names는 SimState.parts와 동일한 순서의 이름 배열(엔진이 제공/합의)
     """
     if isinstance(event, TouchStartEvent):
+        # name 우선(권장), 없으면 index fallback
+        if event.payload.target.partName:
+            return event.payload.target.partName
+
         idx = event.payload.target.partIndex
         if idx is None:
-            return event.payload.target.partName
+            return None
         if 0 <= idx < len(part_names):
             return part_names[idx]
         return None
+
     # Touching/TouchEnd는 target을 포함하지 않는 설계이므로 None
     return None

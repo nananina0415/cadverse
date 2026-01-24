@@ -11,8 +11,7 @@
 # Notes:
 # - No hidden inference by default: auto is allowed ONLY when metadata explicitly says collision == "auto"/{kind:"auto"}.
 # - Visual mesh is for visualization only; collision uses primitives.
-# - Auto-approx currently assumes OBJ vertices are already in the correct (scaled) units.
-#   (It DOES NOT apply visual.scale / visual.offset to the vertices yet.)
+# - Auto-approx now applies visual.scale and visual.offset to OBJ vertices (mesh-local -> body-local).
 
 from __future__ import annotations
 
@@ -105,6 +104,70 @@ def _make_contact_material_nsc(mu: float, restitution: float) -> chrono.ChContac
 
 
 # ---------------------------------------------------------------------
+# Basic math helpers (tuples)
+# ---------------------------------------------------------------------
+
+
+def _dot(a, b) -> float:
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _sub(a, b):
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def _add(a, b):
+    return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
+
+
+def _mul(a, s: float):
+    return (a[0] * s, a[1] * s, a[2] * s)
+
+
+def _hadamard(a, b):
+    # elementwise multiply
+    return (a[0] * b[0], a[1] * b[1], a[2] * b[2])
+
+
+def _norm(a) -> float:
+    return m.sqrt(_dot(a, a))
+
+
+def _normalize(a):
+    n = _norm(a) + 1e-12
+    return (a[0] / n, a[1] / n, a[2] / n)
+
+
+def _cross(a, b):
+    return (
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    )
+
+
+def _quat_conj(q: Quat) -> Quat:
+    return Quat(q.w, -q.x, -q.y, -q.z)
+
+
+def _quat_mul(a: Quat, b: Quat) -> Quat:
+    # (w,x,y,z)
+    return Quat(
+        a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+        a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+        a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+        a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+    )
+
+
+def _rotate_vec_by_quat(v: Tuple[float, float, float], q: Quat) -> Tuple[float, float, float]:
+    # v' = q * (0,v) * q_conj
+    p = Quat(0.0, v[0], v[1], v[2])
+    qq = _quat_mul(_quat_mul(q, p), _quat_conj(q))
+    return (qq.x, qq.y, qq.z)
+
+
+# ---------------------------------------------------------------------
 # OBJ auto-approx utilities
 # ---------------------------------------------------------------------
 
@@ -120,6 +183,30 @@ def _load_obj_vertices(obj_path: str) -> List[Tuple[float, float, float]]:
     if not verts:
         raise ValueError(f"[auto] OBJ '{obj_path}'에서 vertex(v ...)를 찾지 못했습니다.")
     return verts
+
+
+def _apply_visual_to_vertices(
+    verts_mesh_local: List[Tuple[float, float, float]],
+    *,
+    scale: Vec3,
+    offset: Pose,
+) -> List[Tuple[float, float, float]]:
+    """
+    OBJ vertices (mesh-local) -> body-local
+
+    v_body = R(offset.rot) * (v_mesh ⊙ scale) + offset.pos
+    """
+    s = (float(scale.x), float(scale.y), float(scale.z))
+    t = (float(offset.pos.x), float(offset.pos.y), float(offset.pos.z))
+    q = offset.rot  # wxyz
+
+    out: List[Tuple[float, float, float]] = []
+    for v in verts_mesh_local:
+        vs = _hadamard(v, s)
+        vr = _rotate_vec_by_quat(vs, q)
+        vb = _add(vr, t)
+        out.append(vb)
+    return out
 
 
 def _compute_aabb(verts: List[Tuple[float, float, float]]):
@@ -158,35 +245,6 @@ def _pca_main_axis(verts: List[Tuple[float, float, float]]) -> Tuple[float, floa
     return (vx, vy, vz)
 
 
-def _dot(a, b) -> float:
-    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-
-
-def _sub(a, b):
-    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
-
-
-def _mul(a, s: float):
-    return (a[0] * s, a[1] * s, a[2] * s)
-
-
-def _norm(a) -> float:
-    return m.sqrt(_dot(a, a))
-
-
-def _normalize(a):
-    n = _norm(a) + 1e-12
-    return (a[0] / n, a[1] / n, a[2] / n)
-
-
-def _cross(a, b):
-    return (
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    )
-
-
 def _quat_from_two_vectors(v_from: Tuple[float, float, float], v_to: Tuple[float, float, float]) -> Quat:
     a = _normalize(v_from)
     b = _normalize(v_to)
@@ -203,15 +261,14 @@ def _quat_from_two_vectors(v_from: Tuple[float, float, float], v_to: Tuple[float
     return Quat(w / qn, c[0] / qn, c[1] / qn, c[2] / qn)
 
 
-def _approx_base_from_obj(obj_path: str) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
-    verts = _load_obj_vertices(obj_path)
-    _, _, center, half_ext = _compute_aabb(verts)
+def _approx_base_from_obj(verts_body_local: List[Tuple[float, float, float]]):
+    _, _, center, half_ext = _compute_aabb(verts_body_local)
     size = (half_ext[0] * 2, half_ext[1] * 2, half_ext[2] * 2)
     return center, size
 
 
-def _approx_shaft_with_hub_from_obj(obj_path: str):
-    verts = _load_obj_vertices(obj_path)
+def _approx_shaft_with_hub_from_obj(verts_body_local: List[Tuple[float, float, float]]):
+    verts = verts_body_local
     _, _, center, _ = _compute_aabb(verts)
 
     axis = _normalize(_pca_main_axis(verts))
@@ -331,7 +388,6 @@ def _add_collision_sphere(
 
 
 def _reset_collision_model(body: chrono.ChBody) -> None:
-    # Chrono 버전에 따라 필요/불필요하지만 안전하게 초기화
     try:
         if hasattr(body, "GetCollisionModel"):
             cm = body.GetCollisionModel()
@@ -415,94 +471,50 @@ def _auto_collision_from_obj(bdef: BodyDef, auto: CollisionAuto) -> List[Collisi
         raise ValueError(f"Body '{bdef.name}': collision.auto requires geometry.visual.kind='mesh' and visual.file")
 
     obj_file = str(vis.file)
+
+    # 1) load mesh-local vertices
+    verts_mesh = _load_obj_vertices(obj_file)
+
+    # 2) mesh-local -> body-local (apply visual.scale + visual.offset)
+    verts = _apply_visual_to_vertices(
+        verts_mesh,
+        scale=vis.scale,
+        offset=vis.offset,
+    )
+
     strategy = str(auto.strategy)
     cat = str(getattr(bdef, "category", "generic"))
 
     # ---- strategy overrides ----
     if strategy in ("aabb_box", "base_aabb"):
-        verts = _load_obj_vertices(obj_file)
         _, _, _, half_ext = _compute_aabb(verts)
-        return [
-            CollisionPrimitive(
-                kind="box",
-                hx=float(half_ext[0]),
-                hy=float(half_ext[1]),
-                hz=float(half_ext[2]),
-                offset=Pose.identity(),
-            )
-        ]
+        return [CollisionPrimitive(kind="box", hx=float(half_ext[0]), hy=float(half_ext[1]), hz=float(half_ext[2]), offset=Pose.identity())]
 
     if strategy == "shaft_pca_hub2cyl":
-        _, axis, L, R, hub = _approx_shaft_with_hub_from_obj(obj_file)
+        _, axis, L, R, hub = _approx_shaft_with_hub_from_obj(verts)
         q = _quat_from_two_vectors((0.0, 0.0, 1.0), (axis[0], axis[1], axis[2]))
-        prims = [
-            CollisionPrimitive(
-                kind="cylinder",
-                radius=float(R),
-                length=float(L),
-                offset=Pose(pos=Pose.identity().pos, rot=q),
-            )
-        ]
+        prims = [CollisionPrimitive(kind="cylinder", radius=float(R), length=float(L), offset=Pose(pos=Pose.identity().pos, rot=q))]
         if hub and float(hub.get("length", 0.0)) > 1e-5 and float(hub.get("radius", 0.0)) > float(R) * 1.2:
-            prims.append(
-                CollisionPrimitive(
-                    kind="cylinder",
-                    radius=float(hub["radius"]),
-                    length=float(hub["length"]),
-                    offset=Pose(pos=Pose.identity().pos, rot=q),
-                )
-            )
+            prims.append(CollisionPrimitive(kind="cylinder", radius=float(hub["radius"]), length=float(hub["length"]), offset=Pose(pos=Pose.identity().pos, rot=q)))
         return prims
 
     # ---- default behavior (category-based) ----
     if cat == "base":
-        _, size = _approx_base_from_obj(obj_file)
+        _, size = _approx_base_from_obj(verts)
         hx, hy, hz = 0.5 * size[0], 0.5 * size[1], 0.5 * size[2]
-        return [
-            CollisionPrimitive(
-                kind="box",
-                hx=float(hx),
-                hy=float(hy),
-                hz=float(hz),
-                offset=Pose.identity(),
-            )
-        ]
+        return [CollisionPrimitive(kind="box", hx=float(hx), hy=float(hy), hz=float(hz), offset=Pose.identity())]
 
     if cat == "shaft":
-        # same as shaft_pca_hub2cyl
-        _, axis, L, R, hub = _approx_shaft_with_hub_from_obj(obj_file)
+        _, axis, L, R, hub = _approx_shaft_with_hub_from_obj(verts)
         q = _quat_from_two_vectors((0.0, 0.0, 1.0), (axis[0], axis[1], axis[2]))
-        prims = [
-            CollisionPrimitive(
-                kind="cylinder",
-                radius=float(R),
-                length=float(L),
-                offset=Pose(pos=Pose.identity().pos, rot=q),
-            )
-        ]
+        prims = [CollisionPrimitive(kind="cylinder", radius=float(R), length=float(L), offset=Pose(pos=Pose.identity().pos, rot=q))]
         if hub and float(hub.get("length", 0.0)) > 1e-5 and float(hub.get("radius", 0.0)) > float(R) * 1.2:
-            prims.append(
-                CollisionPrimitive(
-                    kind="cylinder",
-                    radius=float(hub["radius"]),
-                    length=float(hub["length"]),
-                    offset=Pose(pos=Pose.identity().pos, rot=q),
-                )
-            )
+            prims.append(CollisionPrimitive(kind="cylinder", radius=float(hub["radius"]), length=float(hub["length"]), offset=Pose(pos=Pose.identity().pos, rot=q)))
         return prims
 
     # fallback: aabb box
-    verts = _load_obj_vertices(obj_file)
     _, _, _, half_ext = _compute_aabb(verts)
-    return [
-        CollisionPrimitive(
-            kind="box",
-            hx=float(half_ext[0]),
-            hy=float(half_ext[1]),
-            hz=float(half_ext[2]),
-            offset=Pose.identity(),
-        )
-    ]
+    return [CollisionPrimitive(kind="box", hx=float(half_ext[0]), hy=float(half_ext[1]), hz=float(half_ext[2]), offset=Pose.identity())]
 
 
 # ---------------------------------------------------------------------
@@ -543,20 +555,15 @@ def _build_body(sys: chrono.ChSystemNSC, bdef: BodyDef) -> chrono.ChBody:
 
     col = bdef.geometry.collision
 
-    # 1) auto
     if isinstance(col, CollisionAuto):
         prims = _auto_collision_from_obj(bdef, col)
         for p in prims:
             _apply_collision_primitive(body, mat, p)
-
-    # 2) list of primitives
     elif isinstance(col, list):
         if not col:
             raise ValueError(f"Body '{bdef.name}': collision list is empty")
         for prim in col:
             _apply_collision_primitive(body, mat, prim)
-
-    # 3) single primitive
     else:
         _apply_collision_primitive(body, mat, col)
 
@@ -629,10 +636,7 @@ def _build_gear_pair(
     ratio = (rA / rB) * float(gp.ratio_sign)
 
     link = chrono.ChLinkLockGear()
-    if gp.meshFrame is not None:
-        fr = _to_chframe(gp.meshFrame)
-    else:
-        fr = _to_chframe(bodies[gp.gearA].meta.pose)
+    fr = _to_chframe(gp.meshFrame) if gp.meshFrame is not None else _to_chframe(bodies[gp.gearA].meta.pose)
 
     link.Initialize(gearA, gearB, fr)
     link.SetTransmissionRatio(float(ratio))

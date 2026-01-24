@@ -7,6 +7,12 @@
 # - SimInfo는 메타(SceneMeta)를 들고, dt 등 운영 옵션만 추가한다.
 # - builder(sim_builder.py)는 SceneMeta를 받으므로 info.scene을 넘긴다.
 # -----------------------------------------------------------------------------
+#
+# [UPDATED]
+# - schema-06/07의 PartIndex 안정성을 위해 partNames(=part_index_to_name) 제공을 더 명확히 함
+# - body_order가 None이면 scene.bodies 순서 사용(기존 유지)
+# - (선택) 출력 메시지에 partNames를 항상 포함할지 정책 플래그 추가 (기본 False: 기존 호환)
+#   -> main.py에서 SimState(partNames=...)를 넣고 싶으면 이 플래그를 True로 두면 됨
 
 from __future__ import annotations
 
@@ -29,10 +35,16 @@ class SimOptions:
     - dt: integration timestep [s]
     - allow_obj_auto_approx: collision이 비었을 때 OBJ로 근사 허용(디버그용)
     - strict_no_inference: 메타에 없는 정보는 추론하지 않음(프로덕션 원칙)
+
+    (schema-07 optional)
+    - emit_part_names: SimState에 partNames 배열을 포함할지 여부
+      - True면 client가 partIndex를 안정적으로 해석 가능(권장)
+      - False면 네트워크는 조금 더 가벼움(기존 호환)
     """
     dt: float = 1e-3
     allow_obj_auto_approx: bool = False
     strict_no_inference: bool = True
+    emit_part_names: bool = False
 
 
 # -----------------------------------------------------------------------------
@@ -69,6 +81,13 @@ class SimInfo:
     @property
     def dt(self) -> float:
         return float(self.options.dt)
+
+    @property
+    def part_names(self) -> List[str]:
+        """
+        schema-07 optional의 partNames로 그대로 내보내기 좋은 "고정 순서 이름 배열".
+        """
+        return list(self.part_index_to_name)
 
     # -----------------------------------------------------------------
     # Constructors
@@ -163,3 +182,17 @@ class SimInfo:
 
         self.part_index_to_name = order
         self.part_name_to_index = {name: i for i, name in enumerate(order)}
+
+    # -----------------------------------------------------------------
+    # Optional helpers
+    # -----------------------------------------------------------------
+    def resolve_part_name(self, part_index: int) -> Optional[str]:
+        """partIndex -> name (범위 밖이면 None)"""
+        i = int(part_index)
+        if 0 <= i < len(self.part_index_to_name):
+            return self.part_index_to_name[i]
+        return None
+
+    def resolve_part_index(self, part_name: str) -> Optional[int]:
+        """name -> partIndex (없으면 None)"""
+        return self.part_name_to_index.get(str(part_name))

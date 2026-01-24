@@ -108,6 +108,28 @@ Field Meaning
   - 이 배열의 순서는 "PartIndex 기반 입력"의 기준이 될 수 있다.
 
 --------------------------------------------------
+Message Metadata (Recommended, Optional)
+--------------------------------------------------
+
+네트워크 동기/디버깅/정렬 안정성을 위해,
+출력 메시지에 아래 필드를 선택적으로 포함하는 것을 권장한다.
+
+{
+  "sim_time": 0.0,
+  "seq": 120,
+  "server_time_sec": 1730000000.123,
+  "parts": [ ... ]
+}
+
+- seq (integer, optional)
+  - 서버가 전송하는 상태 메시지 시퀀스 번호(증가)
+  - 클라이언트에서 드롭/역순 수신 감지에 사용
+
+- server_time_sec (number, optional)
+  - 서버 기준 wall-clock timestamp(초)
+  - 클라이언트에서 지연 측정/보간에 활용 가능
+
+--------------------------------------------------
 Part Index Agreement (Optional)
 --------------------------------------------------
 
@@ -137,8 +159,13 @@ Notes
 -----
 
 - 위 방식은 네트워크 비용을 줄이면서도 index 안정성을 확보한다.
-- 이 프로젝트는 향후 name 기반 입력을 우선으로 두되,
+- 이 프로젝트는 name 기반 입력을 우선으로 두되,
   index 기반도 병행 지원하는 것을 권장한다.
+
+권장 규칙(중요):
+- 서버는 가능하면 partNames를 "초기 1회" 또는 "변경 시"에만 보내고,
+  평상시에는 parts만 보내는 방식도 가능하다.
+  (네트워크 절감 + 안정성 확보)
 
 --------------------------------------------------
 Design Rules
@@ -152,12 +179,17 @@ Design Rules
 - Quaternion ordering은 반드시 (w,x,y,z)로 고정한다.
   (Rust/Unity 등에서 (x,y,z,w) 관습이 있으므로 특히 주의)
 
+- 입력(target)과의 합의
+  - 클라이언트 입력은 partName 우선(권장), partIndex는 보조(fallback)로 사용한다.
+  - partIndex를 쓸 경우, Output의 parts 순서 또는 partNames 합의가 반드시 필요하다.
+
 --------------------------------------------------
 Future Extensions (Optional)
 --------------------------------------------------
 
 - velocities
   - 선속도/각속도 포함
+  - 예: lin_vel_world, ang_vel_world
 
 - forces
   - 접촉력, 모터 토크 등 디버깅용 물리량 포함
@@ -165,3 +197,6 @@ Future Extensions (Optional)
 - contacts
   - 충돌 접촉점 정보 (디버그/시각화 목적)
 
+- selection/interaction debug (선택)
+  - 서버가 현재 어떤 part를 조작 중인지 표시하는 디버그 필드
+  - 예: activeInteraction { interactionId, partName }

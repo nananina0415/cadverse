@@ -44,6 +44,12 @@ class Vec3:
             return Vec3(float(v["x"]), float(v["y"]), float(v["z"]))
         raise ValueError(f"Vec3 must be list or dict, got: {type(v)}")
 
+    def to_list(self) -> List[float]:
+        return [float(self.x), float(self.y), float(self.z)]
+
+    def to_dict(self) -> Dict[str, float]:
+        return {"x": float(self.x), "y": float(self.y), "z": float(self.z)}
+
 
 @dataclass(frozen=True)
 class Quat:
@@ -68,6 +74,12 @@ class Quat:
             return Quat(float(q["w"]), float(q["x"]), float(q["y"]), float(q["z"]))
         raise ValueError(f"Quat must be list or dict, got: {type(q)}")
 
+    def to_list(self) -> List[float]:
+        return [float(self.w), float(self.x), float(self.y), float(self.z)]
+
+    def to_dict(self) -> Dict[str, float]:
+        return {"w": float(self.w), "x": float(self.x), "y": float(self.y), "z": float(self.z)}
+
 
 @dataclass(frozen=True)
 class Pose:
@@ -86,6 +98,8 @@ class Pose:
     def from_dict(d: Dict[str, Any]) -> "Pose":
         if not isinstance(d, dict):
             raise ValueError(f"Pose must be object, got: {d}")
+        if "pos" not in d or "rot" not in d:
+            raise ValueError(f"Pose must have 'pos' and 'rot', got keys={list(d.keys())}")
         return Pose(
             pos=Vec3.from_any(d["pos"]),
             rot=Quat.from_any(d["rot"]),
@@ -97,10 +111,12 @@ class Pose:
             return Pose.identity()
         if not isinstance(d, dict):
             raise ValueError(f"Pose must be object, got: {d}")
-        # allow missing fields with defaults
         pos = d.get("pos", [0.0, 0.0, 0.0])
         rot = d.get("rot", [1.0, 0.0, 0.0, 0.0])
         return Pose(pos=Vec3.from_any(pos), rot=Quat.from_any(rot))
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"pos": self.pos.to_list(), "rot": self.rot.to_list()}
 
 
 # =========================
@@ -123,6 +139,8 @@ class VisualMesh:
             raise ValueError(f"geometry.visual must be object, got: {type(d)}")
         if d.get("kind") != "mesh":
             raise ValueError(f"visual.kind must be 'mesh', got: {d.get('kind')}")
+        if "file" not in d:
+            raise ValueError("visual.file is required")
         scale = d.get("scale", [1, 1, 1])
         offset = d.get("offset", {"pos": [0, 0, 0], "rot": [1, 0, 0, 0]})
         return VisualMesh(
@@ -131,6 +149,14 @@ class VisualMesh:
             scale=Vec3.from_any(scale),
             offset=Pose.from_dict(offset),
         )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "kind": "mesh",
+            "file": str(self.file),
+            "scale": self.scale.to_list(),
+            "offset": self.offset.to_dict(),
+        }
 
 
 # ---- Collision (UPDATED) ----
@@ -170,6 +196,8 @@ class CollisionPrimitive:
         offset = Pose.from_optional_dict(d.get("offset"))
 
         if kind == "box":
+            if "hx" not in d or "hy" not in d or "hz" not in d:
+                raise ValueError("collision.box requires hx, hy, hz")
             return CollisionPrimitive(
                 kind="box",
                 offset=offset,
@@ -179,6 +207,8 @@ class CollisionPrimitive:
             )
 
         if kind == "cylinder":
+            if "radius" not in d or "length" not in d:
+                raise ValueError("collision.cylinder requires radius, length")
             return CollisionPrimitive(
                 kind="cylinder",
                 offset=offset,
@@ -187,11 +217,26 @@ class CollisionPrimitive:
             )
 
         # sphere
+        if "radius" not in d:
+            raise ValueError("collision.sphere requires radius")
         return CollisionPrimitive(
             kind="sphere",
             offset=offset,
             radius=float(d["radius"]),
         )
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {"kind": self.kind}
+        if self.offset != Pose.identity():
+            out["offset"] = self.offset.to_dict()
+
+        if self.kind == "box":
+            out.update({"hx": float(self.hx or 0.0), "hy": float(self.hy or 0.0), "hz": float(self.hz or 0.0)})
+        elif self.kind == "cylinder":
+            out.update({"radius": float(self.radius or 0.0), "length": float(self.length or 0.0)})
+        elif self.kind == "sphere":
+            out.update({"radius": float(self.radius or 0.0)})
+        return out
 
 
 CollisionStrategy = Literal["default", "base_aabb", "shaft_pca_hub2cyl", "aabb_box"]
@@ -205,9 +250,6 @@ class CollisionAuto:
     허용 입력 형태:
     - "auto"
     - {"kind":"auto", "strategy":"default"}
-
-    NOTE:
-    - 실제 OBJ 추정은 builder/runtime 옵션에서 허용될 때만 수행 (스키마는 의도만 표현)
     """
     kind: Literal["auto"] = "auto"
     strategy: CollisionStrategy = "default"
@@ -229,10 +271,13 @@ class CollisionAuto:
                 raise ValueError(
                     f"collision.auto.strategy must be one of {sorted(_ALLOWED_COLLISION_STRATEGIES)}, got: {strategy}"
                 )
-
             return CollisionAuto(strategy=strategy)  # type: ignore[arg-type]
 
         raise ValueError(f"collision auto must be 'auto' or object, got: {type(v)}")
+
+    def to_dict(self) -> Dict[str, Any]:
+        # 항상 object로 내보내고 싶으면 이걸 쓰면 됨
+        return {"kind": "auto", "strategy": str(self.strategy)}
 
 
 # collision can be:
@@ -255,7 +300,6 @@ class Geometry:
         if "visual" not in d:
             raise ValueError("geometry.visual is required")
         if "collision" not in d:
-            # opt-in 원칙을 강제: omission은 허용하지 않음
             raise ValueError(
                 "geometry.collision is required. "
                 "Use an explicit primitive, a list of primitives, or opt-in auto as "
@@ -284,6 +328,16 @@ class Geometry:
 
         raise ValueError(f"geometry.collision must be object | list | 'auto', got: {type(col_raw)}")
 
+    def to_dict(self) -> Dict[str, Any]:
+        if isinstance(self.collision, list):
+            col = [p.to_dict() for p in self.collision]
+        elif isinstance(self.collision, CollisionAuto):
+            col = self.collision.to_dict()
+        else:
+            col = self.collision.to_dict()
+
+        return {"visual": self.visual.to_dict(), "collision": col}
+
 
 # =========================
 # Mechanical
@@ -300,11 +354,16 @@ class Inertia:
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "Inertia":
+        if not isinstance(d, dict):
+            raise ValueError(f"inertia must be object, got: {type(d)}")
+
         mode = d.get("mode", "explicit")
         if mode not in ("explicit", "auto_from_collision"):
             raise ValueError(f"inertia.mode must be explicit|auto_from_collision, got: {mode}")
 
         if mode == "explicit":
+            if "Ixx" not in d or "Iyy" not in d or "Izz" not in d:
+                raise ValueError("inertia(mode=explicit) requires Ixx, Iyy, Izz")
             return Inertia(
                 mode="explicit",
                 Ixx=float(d["Ixx"]),
@@ -312,6 +371,11 @@ class Inertia:
                 Izz=float(d["Izz"]),
             )
         return Inertia(mode="auto_from_collision")
+
+    def to_dict(self) -> Dict[str, Any]:
+        if self.mode == "explicit":
+            return {"mode": "explicit", "Ixx": float(self.Ixx or 0.0), "Iyy": float(self.Iyy or 0.0), "Izz": float(self.Izz or 0.0)}
+        return {"mode": "auto_from_collision"}
 
 
 @dataclass(frozen=True)
@@ -321,10 +385,15 @@ class Contact:
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "Contact":
+        if not isinstance(d, dict):
+            raise ValueError(f"contact must be object, got: {type(d)}")
         return Contact(
             friction=float(d.get("friction", 0.4)),
             restitution=float(d.get("restitution", 0.05)),
         )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"friction": float(self.friction), "restitution": float(self.restitution)}
 
 
 DampingType = Literal["viscous_torque"]
@@ -337,10 +406,15 @@ class Damping:
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "Damping":
+        if not isinstance(d, dict):
+            raise ValueError(f"damping must be object, got: {type(d)}")
         dtype = d.get("type", "viscous_torque")
         if dtype != "viscous_torque":
             raise ValueError(f"damping.type currently supports only viscous_torque, got: {dtype}")
         return Damping(type="viscous_torque", coef=float(d.get("coef", 0.0)))
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"type": "viscous_torque", "coef": float(self.coef)}
 
 
 @dataclass(frozen=True)
@@ -352,11 +426,18 @@ class GearProps:
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "GearProps":
+        if not isinstance(d, dict):
+            raise ValueError(f"gearProps must be object, got: {type(d)}")
+        if "module" not in d or "teeth" not in d:
+            raise ValueError("gearProps requires module and teeth")
         return GearProps(
             module=float(d["module"]),
             teeth=int(d["teeth"]),
             face_width=float(d.get("face_width", 0.0)),
         )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"module": float(self.module), "teeth": int(self.teeth), "face_width": float(self.face_width)}
 
 
 @dataclass(frozen=True)
@@ -370,6 +451,8 @@ class Mechanical:
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "Mechanical":
+        if not isinstance(d, dict):
+            raise ValueError(f"mechanical must be object, got: {type(d)}")
         return Mechanical(
             mass=float(d.get("mass", 1.0)),
             fixed=bool(d.get("fixed", False)),
@@ -378,6 +461,19 @@ class Mechanical:
             damping=Damping.from_dict(d["damping"]) if "damping" in d else None,
             gearProps=GearProps.from_dict(d["gearProps"]) if "gearProps" in d else None,
         )
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {
+            "mass": float(self.mass),
+            "fixed": bool(self.fixed),
+            "inertia": self.inertia.to_dict(),
+            "contact": self.contact.to_dict(),
+        }
+        if self.damping is not None:
+            out["damping"] = self.damping.to_dict()
+        if self.gearProps is not None:
+            out["gearProps"] = self.gearProps.to_dict()
+        return out
 
 
 BodyCategory = Literal["gear", "shaft", "base", "link", "generic"]
@@ -393,6 +489,18 @@ class BodyDef:
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "BodyDef":
+        if not isinstance(d, dict):
+            raise ValueError(f"body must be object, got: {type(d)}")
+
+        if "name" not in d:
+            raise ValueError("body.name is required")
+        if "geometry" not in d:
+            raise ValueError(f"Body '{d.get('name','?')}': geometry is required")
+        if "mechanical" not in d:
+            raise ValueError(f"Body '{d.get('name','?')}': mechanical is required")
+        if "pose" not in d:
+            raise ValueError(f"Body '{d.get('name','?')}': pose is required")
+
         cat = d.get("category", "generic")
         if cat is None:
             cat = "generic"
@@ -408,6 +516,15 @@ class BodyDef:
             pose=Pose.from_dict(d["pose"]),
         )
 
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": str(self.name),
+            "category": str(self.category),
+            "geometry": self.geometry.to_dict(),
+            "mechanical": self.mechanical.to_dict(),
+            "pose": self.pose.to_dict(),
+        }
+
 
 # =========================
 # Joints
@@ -422,7 +539,12 @@ class JointLimits:
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "JointLimits":
+        if not isinstance(d, dict):
+            raise ValueError(f"limits must be object, got: {type(d)}")
         return JointLimits(lower=float(d["lower"]), upper=float(d["upper"]))
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"lower": float(self.lower), "upper": float(self.upper)}
 
 
 @dataclass(frozen=True)
@@ -436,9 +558,16 @@ class JointDef:
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "JointDef":
+        if not isinstance(d, dict):
+            raise ValueError(f"joint must be object, got: {type(d)}")
+
+        if "name" not in d or "type" not in d:
+            raise ValueError("joint requires name and type")
         jtype = d.get("type")
         if jtype not in ("revolute", "prismatic", "fixed"):
             raise ValueError(f"joint.type must be revolute|prismatic|fixed, got: {jtype}")
+        if "body1" not in d or "body2" not in d:
+            raise ValueError(f"Joint '{d.get('name','?')}': body1/body2 required")
 
         return JointDef(
             name=str(d["name"]),
@@ -448,6 +577,18 @@ class JointDef:
             frame=Pose.from_dict(d["frame"]),
             limits=JointLimits.from_dict(d["limits"]) if "limits" in d else None,
         )
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {
+            "name": str(self.name),
+            "type": str(self.type),
+            "body1": str(self.body1),
+            "body2": str(self.body2),
+            "frame": self.frame.to_dict(),
+        }
+        if self.limits is not None:
+            out["limits"] = self.limits.to_dict()
+        return out
 
 
 # =========================
@@ -461,10 +602,15 @@ class GearPairProps:
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "GearPairProps":
+        if not isinstance(d, dict):
+            raise ValueError(f"gearProps must be object, got: {type(d)}")
         return GearPairProps(
             efficiency=float(d.get("efficiency", 1.0)),
             backlash=float(d.get("backlash", 0.0)),
         )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"efficiency": float(self.efficiency), "backlash": float(self.backlash)}
 
 
 @dataclass(frozen=True)
@@ -479,6 +625,11 @@ class GearPairDef:
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "GearPairDef":
+        if not isinstance(d, dict):
+            raise ValueError(f"gearPair must be object, got: {type(d)}")
+        if "name" not in d or "gearA" not in d or "gearB" not in d:
+            raise ValueError("gearPair requires name, gearA, gearB")
+
         return GearPairDef(
             name=str(d["name"]),
             gearA=str(d["gearA"]),
@@ -488,6 +639,20 @@ class GearPairDef:
             meshFrame=Pose.from_dict(d["meshFrame"]) if "meshFrame" in d else None,
             gearProps=GearPairProps.from_dict(d["gearProps"]) if "gearProps" in d else None,
         )
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {
+            "name": str(self.name),
+            "gearA": str(self.gearA),
+            "gearB": str(self.gearB),
+            "ratio_sign": int(self.ratio_sign),
+            "enforcePhase": bool(self.enforcePhase),
+        }
+        if self.meshFrame is not None:
+            out["meshFrame"] = self.meshFrame.to_dict()
+        if self.gearProps is not None:
+            out["gearProps"] = self.gearProps.to_dict()
+        return out
 
 
 # =========================
@@ -503,9 +668,14 @@ class TorqueModelConst:
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "TorqueModelConst":
+        if not isinstance(d, dict):
+            raise ValueError(f"torqueModel must be object, got: {type(d)}")
         if d.get("type") != "const":
             raise ValueError(f"torqueModel.type currently supports only 'const', got: {d.get('type')}")
         return TorqueModelConst(type="const", value=float(d["value"]))
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"type": "const", "value": float(self.value)}
 
 
 TorqueModel = Union[TorqueModelConst]
@@ -516,18 +686,21 @@ class ActuatorDef:
     name: str
     type: ActuatorType
     targetJoint: str
-    # speed actuator
     speed: Optional[float] = None
-    # torque actuator
     torqueModel: Optional[TorqueModel] = None
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "ActuatorDef":
+        if not isinstance(d, dict):
+            raise ValueError(f"actuator must be object, got: {type(d)}")
+
         atype = d.get("type")
         if atype not in ("rotation_speed", "rotation_torque"):
             raise ValueError(f"actuator.type must be rotation_speed|rotation_torque, got: {atype}")
 
         if atype == "rotation_speed":
+            if "speed" not in d:
+                raise ValueError("rotation_speed actuator requires 'speed'")
             return ActuatorDef(
                 name=str(d["name"]),
                 type="rotation_speed",
@@ -535,12 +708,23 @@ class ActuatorDef:
                 speed=float(d["speed"]),
             )
 
+        # rotation_torque
+        if "torqueModel" not in d:
+            raise ValueError("rotation_torque actuator requires 'torqueModel'")
         return ActuatorDef(
             name=str(d["name"]),
             type="rotation_torque",
             targetJoint=str(d["targetJoint"]),
             torqueModel=TorqueModelConst.from_dict(d["torqueModel"]),
         )
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {"name": str(self.name), "type": str(self.type), "targetJoint": str(self.targetJoint)}
+        if self.type == "rotation_speed":
+            out["speed"] = float(self.speed or 0.0)
+        else:
+            out["torqueModel"] = self.torqueModel.to_dict() if self.torqueModel is not None else {"type": "const", "value": 0.0}
+        return out
 
 
 # =========================
@@ -558,13 +742,25 @@ class SceneMeta:
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "SceneMeta":
+        if not isinstance(d, dict):
+            raise ValueError(f"SceneMeta must be object, got: {type(d)}")
+
+        bodies = [BodyDef.from_dict(x) for x in d.get("bodies", [])]
+        joints = [JointDef.from_dict(x) for x in d.get("joints", [])]
+        gearPairs = [GearPairDef.from_dict(x) for x in d.get("gearPairs", [])]
+        actuators = [ActuatorDef.from_dict(x) for x in d.get("actuators", [])]
+
+        # 여기서도 최소한의 sanity check는 해두면 디버깅이 빨라짐
+        if len(bodies) == 0:
+            raise ValueError("SceneMeta.bodies must not be empty")
+
         return SceneMeta(
             sceneName=str(d.get("sceneName", "unnamed_scene")),
             gravity=Vec3.from_any(d.get("gravity", [0.0, -9.81, 0.0])),
-            bodies=[BodyDef.from_dict(x) for x in d.get("bodies", [])],
-            joints=[JointDef.from_dict(x) for x in d.get("joints", [])],
-            gearPairs=[GearPairDef.from_dict(x) for x in d.get("gearPairs", [])],
-            actuators=[ActuatorDef.from_dict(x) for x in d.get("actuators", [])],
+            bodies=bodies,
+            joints=joints,
+            gearPairs=gearPairs,
+            actuators=actuators,
         )
 
     @staticmethod
@@ -576,6 +772,16 @@ class SceneMeta:
         with open(path, "r", encoding=encoding) as f:
             return SceneMeta.from_dict(json.load(f))
 
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "sceneName": str(self.sceneName),
+            "gravity": self.gravity.to_list(),
+            "bodies": [b.to_dict() for b in self.bodies],
+            "joints": [j.to_dict() for j in self.joints],
+            "gearPairs": [g.to_dict() for g in self.gearPairs],
+            "actuators": [a.to_dict() for a in self.actuators],
+        }
+
 
 # =========================
 # Minimal validation helpers (optional)
@@ -584,7 +790,6 @@ class SceneMeta:
 def validate_scene(meta: SceneMeta) -> None:
     """기본적인 참조 무결성 검증. (필요 시 확장)"""
 
-    # ---- uniqueness checks (schema design rule) ----
     body_names_list = [b.name for b in meta.bodies]
     joint_names_list = [j.name for j in meta.joints]
     gearpair_names_list = [g.name for g in meta.gearPairs]
