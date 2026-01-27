@@ -1,9 +1,86 @@
-Assets\Scripts\QrScan\QrScanner.cs(155,9): error CS1519: Invalid token 'catch' in class, record, struct, or interface member declaration
-Assets\Scripts\QrScan\QrScanner.cs(155,28): error CS8124: Tuple must contain at least two elements.
-Assets\Scripts\QrScan\QrScanner.cs(156,9): error CS1519: Invalid token '{' in class, record, struct, or interface member declaration
-Assets\Scripts\QrScan\QrScanner.cs(159,29): error CS1519: Invalid token '(' in class, record, struct, or interface member declaration
-Assets\Scripts\QrScan\QrScanner.cs(159,30): error CS1031: Type expected
-Assets\Scripts\QrScan\QrScanner.cs(159,30): error CS8124: Tuple must contain at least two elements.
-Assets\Scripts\QrScan\QrScanner.cs(159,30): error CS1026: ) expected
-Assets\Scripts\QrScan\QrScanner.cs(159,30): error CS1519: Invalid token '$"[QrScanner] Decode error: {ex.Message}"' in class, record, struct, or interface member declaration
-Assets\Scripts\QrScan\QrScanner.cs(171,1): error CS1022: Type or namespace definition, or end-of-file expected
+Assets\Scripts\QrScan\QrScanMain.cs(11,13): error CS1519: Invalid token 'if' in class, record, struct, or interface member declaration
+
+Assets\Scripts\QrScan\QrScanMain.cs(11,28): error CS8124: Tuple must contain at least two elements.
+
+Assets\Scripts\QrScan\QrScanMain.cs(11,28): error CS1026: ) expected
+
+Assets\Scripts\QrScan\QrScanMain.cs(11,28): error CS1519: Invalid token '==' in class, record, struct, or interface member declaration
+
+Assets\Scripts\QrScan\QrScanMain.cs(13,34): error CS1519: Invalid token '(' in class, record, struct, or interface member declaration
+
+Assets\Scripts\QrScan\QrScanMain.cs(13,35): error CS1031: Type expected
+
+Assets\Scripts\QrScan\QrScanMain.cs(13,35): error CS8124: Tuple must contain at least two elements.
+
+Assets\Scripts\QrScan\QrScanMain.cs(13,35): error CS1026: ) expected
+
+Assets\Scripts\QrScan\QrScanMain.cs(13,35): error CS1519: Invalid token '"ARSession 컴포넌트를 찾을 수 없습니다! 씬에 추가되었는지 확인하세요."' in class, record, struct, or interface member declaration
+
+Assets\Scripts\QrScan\QrScanMain.cs(14,31): error CS1519: Invalid token '(' in class, record, struct, or interface member declaration
+
+Assets\Scripts\QrScan\QrScanMain.cs(14,32): error CS1031: Type expected
+
+Assets\Scripts\QrScan\QrScanMain.cs(14,32): error CS8124: Tuple must contain at least two elements.
+
+Assets\Scripts\QrScan\QrScanMain.cs(14,32): error CS1026: ) expected
+
+Assets\Scripts\QrScan\QrScanMain.cs(14,32): error CS1519: Invalid token '"[QrScanMain] ARSession 컴포넌트를 찾을 수 없습니다! 씬에 추가되었는지 확인하세요."' in class, record, struct, or interface member declaration
+
+Assets\Scripts\QrScan\QrScanMain.cs(17,13): error CS1022: Type or namespace definition, or end-of-file expected
+
+Assets\Scripts\QrScan\QrScanMain.cs(17,27): error CS8124: Tuple must contain at least two elements.
+
+Assets\Scripts\QrScan\QrScanMain.cs(17,27): error CS1026: ) expected
+
+Assets\Scripts\QrScan\QrScanMain.cs(17,27): error CS1022: Type or namespace definition, or end-of-file expected
+
+Assets\Scripts\QrScan\QrScanMain.cs(19,17): error CS0116: A namespace cannot directly contain members such as fields, methods or statements
+
+Assets\Scripts\QrScan\QrScanMain.cs(19,27): error CS1022: Type or namespace definition, or end-of-file expected
+
+Assets\Scripts\QrScan\QrScanMain.cs(19,60): error CS0116: A namespace cannot directly contain members such as fields, methods or statements
+
+Assets\Scripts\QrScan\QrScanMain.cs(19,62): error CS8124: Tuple must contain at least two elements.
+
+Assets\Scripts\QrScan\QrScanMain.cs(19,63): error CS1022: Type or namespace definition, or end-of-file expected
+
+Assets\Scripts\QrScan\QrScanMain.cs(20,31): error CS8124: Tuple must contain at least two elements.
+
+Assets\Scripts\QrScan\QrScanMain.cs(20,31): error CS1026: ) expected
+
+Assets\Scripts\QrScan\QrScanMain.cs(20,31): error CS1022: Type or namespace definition, or end-of-file expected
+
+Assets\Scripts\QrScan\QrScanMain.cs(22,34): error CS0116: A namespace cannot directly contain members such as fields, methods or statements
+
+Assets\Scripts\QrScan\QrScanMain.cs(22,39): error CS1031: Type expected
+
+Assets\Scripts\QrScan\QrScanMain.cs(22,39): error CS8124: Tuple must contain at least two elements.
+
+Assets\Scripts\QrScan\QrScanMain.cs(22,39): error CS1026: ) expected
+
+Assets\Scripts\QrScan\QrScanMain.cs(22,39): error CS1022: Type or namespace definition, or end-of-file expected
+
+Assets\Scripts\QrScan\QrScanMain.cs(23,27): error CS0116: A namespace cannot directly contain members such as fields, methods or statements
+
+Assets\Scripts\QrScan\QrScanMain.cs(23,36): error CS1031: Type expected
+
+Assets\Scripts\QrScan\QrScanMain.cs(23,36): error CS8124: Tuple must contain at least two elements.
+
+Assets\Scripts\QrScan\QrScanMain.cs(23,36): error CS1026: ) expected
+
+Assets\Scripts\QrScan\QrScanMain.cs(23,36): error CS1022: Type or namespace definition, or end-of-file expected
+
+Assets\Scripts\QrScan\QrScanMain.cs(26,13): error CS1022: Type or namespace definition, or end-of-file expected
+
+Assets\Scripts\QrScan\QrScanMain.cs(29,13): error CS8803: Top-level statements must precede namespace and type declarations.
+
+Assets\Scripts\QrScan\QrScanMain.cs(35,9): error CS1022: Type or namespace definition, or end-of-file expected
+
+Assets\Scripts\QrScan\QrScanMain.cs(57,9): error CS0106: The modifier 'private' is not valid for this item
+
+Assets\Scripts\QrScan\QrScanMain.cs(65,9): error CS0106: The modifier 'private' is not valid for this item
+
+Assets\Scripts\QrScan\QrScanMain.cs(80,5): error CS1022: Type or namespace definition, or end-of-file expected
+
+Assets\Scripts\QrScan\QrScanMain.cs(81,1): error CS1022: Type or namespace definition, or end-of-file expected
+

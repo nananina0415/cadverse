@@ -1,19 +1,29 @@
+using System;
+using System.Threading;
+using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Rendering.Universal;
-using CADverse.QrScan;
 using CADverse.Utils; // For AndroidToast
 using UnityEngine.XR.ARFoundation; // For ARSession
 
-namespace CADverse.Main
+namespace CADverse.Main // 네임스페이스를 CADverse.Main으로 변경
 {
     public class QrScanMain : MonoBehaviour
     {
-            if (_arSession == null)
-            {
-                AndroidToast.Show("ARSession 컴포넌트를 찾을 수 없습니다! 씬에 추가되었는지 확인하세요.", true);
-                Debug.LogError("[QrScanMain] ARSession 컴포넌트를 찾을 수 없습니다! 씬에 추가되었는지 확인하세요.");
-            }
+        [SerializeField] private QrScanner qrScanner;
+        private CancellationTokenSource _cancellationTokenSource; // 스캔 취소 토큰
 
+        void Start()
+        {
+            // URP 카메라 데이터 자동 추가 (안전장치)
+            var cam = Camera.main;
+            if (cam != null && cam.GetComponent<UniversalAdditionalCameraData>() == null)
+            {
+                Debug.Log("[QrScanMain] Adding missing UniversalAdditionalCameraData to Main Camera.");
+                cam.gameObject.AddComponent<UniversalAdditionalCameraData>();
+            }
+            
+            // QrScanner 컴포넌트 찾기 및 연결 확인
             if (qrScanner == null)
             {
                 qrScanner = FindFirstObjectByType<QrScanner>();
@@ -24,58 +34,63 @@ namespace CADverse.Main
                     return;
                 }
             }
-
-            // 이벤트 구독
-            qrScanner.OnQrCodeScanned += HandleQrCodeScanned;
-            qrScanner.OnScanError += HandleScanError;
-
-            // 스캔 시작
-            qrScanner.StartScanning();
-            Debug.Log("[QrScanMain] QrScanner 스캔 시작 명령");
-        }
-
-        void Update()
-        {
-            // ARSession 상태 주기적으로 토스트로 표시 (디버깅용)
-            if (Time.time - _lastSessionStateToastTime > _sessionStateToastMinInterval)
-            {
-                AndroidToast.Show($"ARSession 상태: {ARSession.state}", false);
-                _lastSessionStateToastTime = Time.time;
-            }
-
-            // ARSession이 Tracking 상태에 도달하면 초점 모드를 한 번만 설정 (현재 비활성화)
-            // if (!_focusModeSet && ARSession.state == ARSessionState.Tracking)
-            // {
-            //     if (qrScanner != null)
-            //     {
-            //         qrScanner.SetCameraFocusModeContinuous();
-            //         _focusModeSet = true; // 한 번 설정했으므로 다시 설정하지 않음
-            //     }
-            // }
-        }
-
-        private void HandleQrCodeScanned(string text, Texture2D image)
-        {
-            Debug.Log($"[QrScanMain] QR 코드 스캔 성공: {text}");
-            AndroidToast.Show($"QR 스캔 성공: {text}", true);
             
-            // TODO: 스캔된 텍스트와 이미지를 사용하여 다음 로직 처리 (예: 서버 연결, 이미지 표시)
+            // 비동기 스캔 루프 시작
+            _cancellationTokenSource = new CancellationTokenSource();
+            _ = StartScanLoop(_cancellationTokenSource.Token); // Task 반환값을 무시하고 비동기 루프 시작
+            Debug.Log("[QrScanMain] 비동기 스캔 루프 시작.");
+            AndroidToast.Show("QR 스캔 루프 시작", false);
         }
 
-        private void HandleScanError(string error)
+        private async Task StartScanLoop(CancellationToken token)
         {
-            Debug.LogError($"[QrScanMain] QR 코드 스캔 오류: {error}");
-            AndroidToast.Show($"스캔 오류: {error}", true);
+            while (!token.IsCancellationRequested)
+            {
+                AndroidToast.Show("QR 스캔 대기 중...", false);
+                try
+                {
+                    // ARSessionState.SessionTracking 대기 로직 제거 (사용자 요청)
+
+                    AndroidToast.Show("QR 스캔 시작 (ScanOnceAsync 호출)...", false);
+                    // QrScanner의 ScanOnceAsync 호출 (타임아웃은 QrScanner 내부에서 처리)
+                    string qrPayload = await qrScanner.ScanOnceAsync(token);
+
+                    if (!string.IsNullOrEmpty(qrPayload))
+                    {
+                        AndroidToast.Show($"QR 스캔 성공: {qrPayload}", true); // 파싱 값 출력
+                        Debug.Log($"[QrScanMain] QR 스캔 성공: {qrPayload}");
+                        // TODO: 스캔 성공 후 추가 작업 (예: 서버 연결 등)
+                        
+                        // 성공 후에는 잠시 멈췄다가 다시 스캔 (지속 재시도)
+                        await Task.Delay(5000, token); // 5초 대기 후 다시 스캔 시도
+                    }
+                    else // ScanOnceAsync가 null을 반환한 경우 (내부 타임아웃 등)
+                    {
+                        AndroidToast.Show("QR 스캔 실패 (결과 없음). 재시도 중...", false);
+                        Debug.LogWarning("[QrScanMain] QR 스캔 실패 (결과 없음).");
+                        await Task.Delay(1000, token); // 1초 대기 후 재시도
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    AndroidToast.Show("QR 스캔 루프 취소됨.", false);
+                    Debug.Log("[QrScanMain] QR 스캔 루프 취소됨.");
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    AndroidToast.Show($"QR 스캔 중 오류 발생: {ex.Message}. 재시도 중...", true);
+                    Debug.LogError($"[QrScanMain] QR 스캔 루프 오류: {ex.Message}");
+                    await Task.Delay(3000, token); // 3초 대기 후 재시도
+                }
+            }
         }
 
         void OnDestroy()
         {
-            // 이벤트 구독 해제
-            if (qrScanner != null)
-            {
-                qrScanner.OnQrCodeScanned -= HandleQrCodeScanned;
-                qrScanner.OnScanError -= HandleScanError;
-            }
+            // 씬 파괴 시 스캔 루프 취소
+            _cancellationTokenSource?.Cancel();
+            _cancellationTokenSource?.Dispose();
         }
     }
 }
