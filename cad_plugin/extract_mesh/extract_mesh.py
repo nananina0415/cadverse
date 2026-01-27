@@ -1,49 +1,33 @@
-# 모든 부품의 형상정보를 obj 데이터로 반환
 import adsk.core, adsk.fusion, traceback
 import os
-import json
 
-def run(context):
-    ui = None
-    try:
-        app = adsk.core.Application.get()
-        ui  = app.userInterface
-        design = app.activeProduct
-        exportMgr = design.exportManager
+# [핵심 수정] main에서 넘겨준 save_folder를 받을 수 있도록 인자 추가
+def run(context, save_folder):
+    app = adsk.core.Application.get()
+    design = app.activeProduct
+    exportMgr = design.exportManager
+    root = design.rootComponent
 
-        # 1. 저장 경로 설정 (바탕화면 > AR_Project)
-        user_home = os.path.expanduser("~")
-        base_folder = os.path.join(user_home, "Desktop", "AR_Project")
-        mesh_folder = os.path.join(base_folder, "meshes")
+    # 1. meshes 폴더 생성 (OBJ 파일 저장용)
+    mesh_folder = os.path.join(save_folder, "meshes")
+    if not os.path.exists(mesh_folder):
+        os.makedirs(mesh_folder)
 
-        if not os.path.exists(mesh_folder):
-            os.makedirs(mesh_folder)
+    transform_data = {}
 
-        root = design.rootComponent
-        transform_map = {}
-        count = 0
+    # 2. 모든 부품 순회 및 데이터 추출
+    for occ in root.allOccurrences:
+        # 파일명 및 ID로 쓸 이름 정리
+        comp_name = occ.component.name.replace(':', '_').replace(' ', '_')
 
-        # 2. 모든 부품 순회 및 데이터 추출
-        for occ in root.allOccurrences:
-            # 이름 정리 (공백/특수문자 제거)
-            comp_name = occ.component.name.replace(':', '_').replace(' ', '_')
+        # (A) OBJ 파일은 여기서 즉시 저장
+        filename = os.path.join(mesh_folder, f"{comp_name}.obj")
+        objOpt = exportMgr.createOBJExportOptions(occ, filename)
+        exportMgr.execute(objOpt)
 
-            # [A] OBJ 파일 내보내기
-            filename = os.path.join(mesh_folder, f"{comp_name}.obj")
-            objOpt = exportMgr.createOBJExportOptions(occ, filename)
-            exportMgr.execute(objOpt)
+        # (B) 위치 정보(Matrix)는 딕셔너리에 담기 (저장 X)
+        # 4x4 행렬을 리스트 형태로 변환하여 저장
+        transform_data[comp_name] = occ.transform.asArray()
 
-            # [B] 위치 행렬(Matrix) 추출
-            transform_map[comp_name] = occ.transform.asArray()
-            count += 1
-
-        # 3. 위치 정보 JSON 저장
-        json_path = os.path.join(base_folder, "transforms.json")
-        with open(json_path, "w") as f:
-            json.dump(transform_map, f, indent=2)
-
-        ui.messageBox(f'완료: 총 {count}개 부품 저장됨')
-
-    except:
-        if ui:
-            ui.messageBox('Error:\n{}'.format(traceback.format_exc()))
+    # 3. 수집한 위치 데이터를 main.py에게 반환(Return)
+    return transform_data
