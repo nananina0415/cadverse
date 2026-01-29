@@ -58,8 +58,8 @@ async fn main() -> Result<()> {
 
     sim_manager::start(buffer_for_sim, input_buffer_for_sim);
 
-    // QR 코드 출력
-    if let Err(e) = qr_display::display_qr_code(3000) {
+    // QR 코드 GUI 창 출력 (5cm 크기, DPI 자동 감지)
+    if let Err(e) = qr_display::display_qr_code(3000, Some(5.0)) {
         eprintln!("Failed to display QR code: {}", e);
     }
 

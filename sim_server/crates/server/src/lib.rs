@@ -44,10 +44,12 @@ pub async fn start_server(state_buffer: StateBuffer, input_buffer: InputBuffer<T
         .route("/cadverse/object", get(routes::get_object_list))
         // 메쉬 파일 다운로드 API
         .route("/cadverse/object/{name}", get(routes::get_object_mesh))
+        // QR 패턴 API
+        .route("/cadverse/qr", get(routes::get_qr_pattern))
         // Axum state로 server_state 전달
         .with_state(server_state);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+    let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
     info!("Server listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

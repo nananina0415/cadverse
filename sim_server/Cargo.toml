@@ -20,6 +20,8 @@ arc-swap = { workspace = true }
 serde = { workspace = true }
 qrcode = "0.14"
 local-ip-address = "0.6"
+minifb = "0.27"
+image = "0.25"
 
 [workspace]
 members = [

@@ -7,6 +7,8 @@ use axum::{
 use crate::models::ObjectList;
 use tracing::{info, error};
 use std::path::PathBuf;
+use qrcode::{QrCode, EcLevel};
+use local_ip_address::local_ip;
 
 /// GET /cadverse/object - 오브젝트 리스트 반환
 pub async fn get_object_list() -> Json<ObjectList> {
@@ -65,4 +67,73 @@ pub async fn get_object_mesh(Path(name): Path<String>) -> Response {
                 .into_response()
         }
     }
+}
+
+/// GET /cadverse/qr - QR 코드 패턴을 0/1 텍스트로 반환
+///
+/// 응답 형식:
+/// 첫 줄: 모듈 수 (예: "25")
+/// 이후: 0과 1로 이루어진 행 (0=흰색, 1=검정)
+///
+/// 서버의 qr_display와 동일한 설정 (EcLevel::M, as_bytes)으로 생성
+pub async fn get_qr_pattern() -> Response {
+    info!("Request: GET /cadverse/qr");
+
+    let ip = match local_ip() {
+        Ok(ip) => ip.to_string(),
+        Err(e) => {
+            error!("Failed to get local IP: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "text/plain")],
+                "Failed to get local IP".to_string(),
+            )
+                .into_response();
+        }
+    };
+
+    let server_info = format!("{}:{}", ip, 3000);
+    info!("QR content: {}", server_info);
+
+    let code = match QrCode::with_error_correction_level(server_info.as_bytes(), EcLevel::M) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to generate QR code: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "text/plain")],
+                "Failed to generate QR code".to_string(),
+            )
+                .into_response();
+        }
+    };
+
+    // QR 모듈을 0/1 문자열로 변환
+    let modules = code.to_colors();
+    let width = code.width();
+
+    let mut output = String::new();
+    // 첫 줄: 모듈 수
+    output.push_str(&format!("{}\n", width));
+
+    // 각 행을 0/1로 출력
+    for row in modules.chunks(width) {
+        for &module in row {
+            if module == qrcode::Color::Dark {
+                output.push('1');
+            } else {
+                output.push('0');
+            }
+        }
+        output.push('\n');
+    }
+
+    info!("QR pattern: {}x{} modules", width, width);
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/plain")],
+        output,
+    )
+        .into_response()
 }

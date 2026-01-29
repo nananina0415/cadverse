@@ -4,7 +4,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using Unity.Collections;
 using UnityEngine;
-using UnityEngine.UI;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
 
@@ -17,13 +16,12 @@ namespace CADverse.Utils
 {
     /// <summary>
     /// 단발성 QR 스캔을 담당하는 유틸리티. 카메라 권한 확보 → 프레임 캡처 → QR 해석까지 관리한다.
-    /// 실제 디코더는 ZXing 등을 Scripting Define Symbol(CADVERSE_ENABLE_ZXING)로 활성화했을 때 동작한다.
+    /// QR 이미지는 서버에서 직접 다운로드하므로 여기서는 텍스트 디코딩만 담당한다.
     /// </summary>
     public sealed class QrScanner : MonoBehaviour
     {
         [Header("AR Camera Dependency")]
         [SerializeField] private ARCameraManager cameraManager;
-        [SerializeField] private RawImage previewImage;
 
         [Header("Behaviour")]
         [SerializeField]
@@ -33,11 +31,10 @@ namespace CADverse.Utils
 
         [Header("Editor Mock")]
         [SerializeField] private bool allowEditorMock = true;
-        [SerializeField][TextArea] private string editorMockPayload = "http://127.0.0.1:8000/cadverse";
+        [SerializeField][TextArea] private string editorMockPayload = "192.168.0.1:3000";
 
         private TaskCompletionSource<string> _scanCompletion;
         private CancellationTokenSource _scanCancellation;
-        private Texture2D _previewTexture;
 
         public bool IsScanning => _scanCompletion != null && !_scanCompletion.Task.IsCompleted;
 
@@ -81,11 +78,7 @@ namespace CADverse.Utils
             if (requestCameraPermission)
             {
                 yield return EnsureCameraPermission();
-                if (!_scanCompletion.TrySetCanceledIfRequested(token))
-                {
-                    // continue
-                }
-                else
+                if (_scanCompletion.TrySetCanceledIfRequested(token))
                 {
                     CleanupScan();
                     yield break;
@@ -93,21 +86,23 @@ namespace CADverse.Utils
             }
 
 #if UNITY_EDITOR
-        if (allowEditorMock && !string.IsNullOrEmpty(editorMockPayload))
-        {
-            _scanCompletion.TrySetResult(editorMockPayload);
-            CleanupScan();
-            yield break;
-        }
+            if (allowEditorMock && !string.IsNullOrEmpty(editorMockPayload))
+            {
+                Debug.Log($"[QrScanner] Editor Mock: {editorMockPayload}");
+                _scanCompletion.TrySetResult(editorMockPayload);
+                CleanupScan();
+                yield break;
+            }
 #endif
 
             var startTime = Time.realtimeSinceStartup;
 
             while (!token.IsCancellationRequested)
             {
-                string decodedText = TryDecodeLatestFrame(out bool updatedPreview);
+                string decodedText = TryDecodeLatestFrame();
                 if (!string.IsNullOrEmpty(decodedText))
                 {
+                    Debug.Log($"[QrScanner] 디코딩 성공: {decodedText}");
                     _scanCompletion.TrySetResult(decodedText);
                     CleanupScan();
                     yield break;
@@ -130,19 +125,17 @@ namespace CADverse.Utils
         private IEnumerator EnsureCameraPermission()
         {
 #if (UNITY_ANDROID || UNITY_IOS) && !UNITY_EDITOR
-        if (!Application.HasUserAuthorization(UserAuthorization.WebCam))
-        {
-            yield return Application.RequestUserAuthorization(UserAuthorization.WebCam);
-        }
+            if (!Application.HasUserAuthorization(UserAuthorization.WebCam))
+            {
+                yield return Application.RequestUserAuthorization(UserAuthorization.WebCam);
+            }
 #else
             yield break;
 #endif
         }
 
-        private string TryDecodeLatestFrame(out bool previewUpdated)
+        private string TryDecodeLatestFrame()
         {
-            previewUpdated = false;
-
             if (!cameraManager.TryAcquireLatestCpuImage(out var cpuImage))
             {
                 return null;
@@ -162,9 +155,6 @@ namespace CADverse.Utils
                 var buffer = new NativeArray<byte>(bufferSize, Allocator.Temp);
                 cpuImage.Convert(conversionParams, buffer);
 
-                UpdatePreview(buffer, conversionParams.outputDimensions.x, conversionParams.outputDimensions.y);
-                previewUpdated = previewImage != null;
-
                 string decodedText = DecodeBuffer(buffer, conversionParams.outputDimensions.x, conversionParams.outputDimensions.y);
                 buffer.Dispose();
 
@@ -172,58 +162,39 @@ namespace CADverse.Utils
             }
         }
 
-        private void UpdatePreview(NativeArray<byte> buffer, int width, int height)
-        {
-            if (previewImage == null)
-            {
-                return;
-            }
-
-            if (_previewTexture == null || _previewTexture.width != width || _previewTexture.height != height)
-            {
-                _previewTexture = new Texture2D(width, height, TextureFormat.R8, false);
-                previewImage.texture = _previewTexture;
-            }
-
-            _previewTexture.LoadRawTextureData(buffer);
-            _previewTexture.Apply();
-        }
-
         private string DecodeBuffer(NativeArray<byte> buffer, int width, int height)
         {
 #if CADVERSE_ENABLE_ZXING
-        byte[] managedBuffer = new byte[buffer.Length];
-        buffer.CopyTo(managedBuffer);
+            byte[] managedBuffer = new byte[buffer.Length];
+            buffer.CopyTo(managedBuffer);
 
-        // Create luminance source from grayscale image data
-        var luminanceSource = new RGBLuminanceSource(managedBuffer, width, height, RGBLuminanceSource.BitmapFormat.Gray8);
-        var binarizer = new HybridBinarizer(luminanceSource);
-        var binaryBitmap = new BinaryBitmap(binarizer);
+            var luminanceSource = new RGBLuminanceSource(managedBuffer, width, height, RGBLuminanceSource.BitmapFormat.Gray8);
+            var binarizer = new HybridBinarizer(luminanceSource);
+            var binaryBitmap = new BinaryBitmap(binarizer);
 
-        // Use MultiFormatReader directly
-        var reader = new MultiFormatReader();
-        var hints = new System.Collections.Generic.Dictionary<DecodeHintType, object>
-        {
-            { DecodeHintType.POSSIBLE_FORMATS, new System.Collections.Generic.List<BarcodeFormat> { BarcodeFormat.QR_CODE } },
-            { DecodeHintType.TRY_HARDER, true },
-            { DecodeHintType.ALSO_INVERTED, true } // 사용자 요청: 반전된 QR 코드 인식을 위해 추가
-        };
+            var reader = new MultiFormatReader();
+            var hints = new System.Collections.Generic.Dictionary<DecodeHintType, object>
+            {
+                { DecodeHintType.POSSIBLE_FORMATS, new System.Collections.Generic.List<BarcodeFormat> { BarcodeFormat.QR_CODE } },
+                { DecodeHintType.TRY_HARDER, true },
+                { DecodeHintType.ALSO_INVERTED, true }
+            };
 
-        try
-        {
-            var result = reader.decode(binaryBitmap, hints);
-            return result?.Text;
-        }
-        catch
-        {
-            return null;
-        }
+            try
+            {
+                var result = reader.decode(binaryBitmap, hints);
+                return result?.Text;
+            }
+            catch
+            {
+                return null;
+            }
 #else
 #if UNITY_EDITOR
-        if (allowEditorMock && !string.IsNullOrEmpty(editorMockPayload))
-        {
-            return editorMockPayload;
-        }
+            if (allowEditorMock && !string.IsNullOrEmpty(editorMockPayload))
+            {
+                return editorMockPayload;
+            }
 #endif
             return null;
 #endif
