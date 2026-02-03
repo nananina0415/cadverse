@@ -16,6 +16,19 @@ namespace CADverse.Communication
         // WebSocket으로 시뮬레이션 상태 수신 시 이벤트
         public event Action<SimulationState> OnSimulationStateReceived;
 
+        // 메인 스레드로 디스패치할 상태 큐
+        private readonly System.Collections.Concurrent.ConcurrentQueue<SimulationState> _stateQueue
+            = new System.Collections.Concurrent.ConcurrentQueue<SimulationState>();
+
+        void Update()
+        {
+            // 메인 스레드에서 수신된 상태 처리
+            while (_stateQueue.TryDequeue(out SimulationState state))
+            {
+                OnSimulationStateReceived?.Invoke(state);
+            }
+        }
+
         /// <summary>
         /// 서버 주소로 초기화합니다.
         /// QR 코드에서 읽은 주소 (예: "192.168.1.100:3000/cadverse")
@@ -199,11 +212,15 @@ namespace CADverse.Communication
                             string message = messageBuilder.ToString();
                             messageBuilder.Clear();
 
+                            Debug.Log($"[ServerProxy] WebSocket 수신: {message}");
+
                             // SimulationState 파싱
                             try
                             {
                                 SimulationState state = JsonUtility.FromJson<SimulationState>(message);
-                                OnSimulationStateReceived?.Invoke(state);
+                                Debug.Log($"[ServerProxy] SimulationState 파싱됨: {state.objects?.Count ?? 0}개 오브젝트");
+                                // 메인 스레드로 디스패치하기 위해 큐에 추가
+                                _stateQueue.Enqueue(state);
                             }
                             catch (Exception ex)
                             {

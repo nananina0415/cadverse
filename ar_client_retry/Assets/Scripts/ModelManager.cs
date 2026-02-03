@@ -11,6 +11,7 @@ namespace CADverse.Model
     public class ModelManager : MonoBehaviour
     {
         [SerializeField] private ServerProxy _serverProxy;
+        [SerializeField] private float recalibrationDelaySeconds = 5f; // 재보정 대기 시간
 
         // 로드된 모델 (objectName -> GameObject)
         private readonly Dictionary<string, GameObject> _loadedModels = new Dictionary<string, GameObject>();
@@ -20,6 +21,13 @@ namespace CADverse.Model
 
         // 모델이 마커에 배치되었는지 여부
         private bool _isModelPlaced = false;
+
+        // 재보정 필요 플래그
+        private bool _needsRecalibration = false;
+        private float _lastPlacementTime = 0f;
+
+        // 월드 앵커 (마커 위치 기준점)
+        private GameObject _worldAnchor;
 
         // 루트 모델 오브젝트 (모든 파트를 담는 부모)
         private GameObject _rootModelObject;
@@ -80,6 +88,20 @@ namespace CADverse.Model
 
             // 4. 전체 모델의 바운딩 박스 계산 및 중심 정렬
             CenterModelAtOrigin();
+
+            // 5. 각 모델에 MeshCollider 추가 (레이캐스트용)
+            foreach (var model in _loadedModels.Values)
+            {
+                MeshFilter meshFilter = model.GetComponent<MeshFilter>();
+                if (meshFilter != null && meshFilter.mesh != null)
+                {
+                    MeshCollider collider = model.AddComponent<MeshCollider>();
+                    collider.sharedMesh = meshFilter.mesh;
+                }
+            }
+
+            // 6. 시뮬레이션 상태 이벤트 구독
+            _serverProxy.OnSimulationStateReceived += OnSimulationStateReceived;
 
             Debug.Log($"[ModelManager] 총 {_loadedModels.Count}개 모델 초기화 완료.");
         }
@@ -175,35 +197,58 @@ namespace CADverse.Model
             }
         }
 
+        void Update()
+        {
+            // 배치 후 일정 시간이 지나면 재보정 플래그 활성화
+            if (_isModelPlaced && !_needsRecalibration)
+            {
+                if (Time.time - _lastPlacementTime > recalibrationDelaySeconds)
+                {
+                    _needsRecalibration = true;
+                    Debug.Log("[ModelManager] 재보정 가능 상태");
+                }
+            }
+        }
+
         /// <summary>
         /// AR 마커 위치에 모델을 배치합니다.
         /// </summary>
         public void PlaceModelAtMarker(TrackableId trackableId, Transform markerTransform)
         {
-            // 이미 배치된 경우 위치만 업데이트
-            if (_spawnedModelInstances.TryGetValue(trackableId, out GameObject existingInstance))
-            {
-                if (!existingInstance.activeSelf)
-                {
-                    existingInstance.SetActive(true);
-                }
-                return;
-            }
-
-            // 아직 모델이 배치되지 않았으면 배치
+            // 첫 배치
             if (!_isModelPlaced && _rootModelObject != null)
             {
-                // 마커의 자식으로 설정
-                _rootModelObject.transform.SetParent(markerTransform, false);
-                _rootModelObject.transform.localPosition = Vector3.zero;
+                // 월드 앵커 생성
+                _worldAnchor = new GameObject("CADverse_WorldAnchor");
+                _worldAnchor.transform.position = markerTransform.position;
+                _worldAnchor.transform.rotation = markerTransform.rotation;
+
+                // 루트 모델을 앵커의 자식으로 설정 (QR 마커에서 5cm 위로 오프셋)
+                _rootModelObject.transform.SetParent(_worldAnchor.transform, false);
+                _rootModelObject.transform.localPosition = new Vector3(0f, 0.05f, 0f); // 5cm 위
                 _rootModelObject.transform.localRotation = Quaternion.identity;
 
                 _rootModelObject.SetActive(true);
-                _spawnedModelInstances.Add(trackableId, _rootModelObject);
+                _spawnedModelInstances.Add(trackableId, _worldAnchor);
                 _isModelPlaced = true;
+                _lastPlacementTime = Time.time;
+                _needsRecalibration = false;
 
-                Debug.Log($"[ModelManager] Model placed at AR marker: {trackableId}");
+                Debug.Log($"[ModelManager] Model placed at world position: {markerTransform.position}");
                 AndroidToast.Show("모델 배치 완료!", false);
+                return;
+            }
+
+            // 재보정 필요 시 앵커 위치만 업데이트
+            if (_needsRecalibration && _worldAnchor != null)
+            {
+                _worldAnchor.transform.position = markerTransform.position;
+                _worldAnchor.transform.rotation = markerTransform.rotation;
+                _lastPlacementTime = Time.time;
+                _needsRecalibration = false;
+
+                Debug.Log($"[ModelManager] 위치 재보정: {markerTransform.position}");
+                AndroidToast.Show("위치 재보정됨", false);
             }
         }
 
@@ -212,14 +257,27 @@ namespace CADverse.Model
         /// </summary>
         private void OnSimulationStateReceived(SimulationState state)
         {
-            if (state.objects == null) return;
+            if (state.objects == null)
+            {
+                Debug.LogWarning("[ModelManager] SimulationState.objects is null");
+                return;
+            }
+
+            Debug.Log($"[ModelManager] SimulationState 수신: {state.objects.Count}개 오브젝트");
 
             foreach (var objTransform in state.objects)
             {
+                Debug.Log($"[ModelManager] 오브젝트: {objTransform.name}, pos={objTransform.GetPosition()}, rot={objTransform.GetRotation()}");
+
                 if (_loadedModels.TryGetValue(objTransform.name, out GameObject modelObject))
                 {
                     modelObject.transform.localPosition = objTransform.GetPosition();
                     modelObject.transform.localRotation = objTransform.GetRotation();
+                    Debug.Log($"[ModelManager] {objTransform.name} 트랜스폼 업데이트됨");
+                }
+                else
+                {
+                    Debug.LogWarning($"[ModelManager] 모델을 찾을 수 없음: {objTransform.name}");
                 }
             }
         }
@@ -243,16 +301,14 @@ namespace CADverse.Model
                 _serverProxy.OnSimulationStateReceived -= OnSimulationStateReceived;
             }
 
-            foreach (var instance in _spawnedModelInstances.Values)
-            {
-                if (instance != null)
-                {
-                    Destroy(instance);
-                }
-            }
             _spawnedModelInstances.Clear();
 
-            if (_rootModelObject != null)
+            // worldAnchor를 삭제하면 자식인 rootModelObject도 함께 삭제됨
+            if (_worldAnchor != null)
+            {
+                Destroy(_worldAnchor);
+            }
+            else if (_rootModelObject != null)
             {
                 Destroy(_rootModelObject);
             }

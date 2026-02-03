@@ -590,78 +590,6 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 666253686}
   m_CullTransparentMesh: 1
---- !u!1 &702857074
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 702857077}
-  - component: {fileID: 702857076}
-  - component: {fileID: 702857075}
-  m_Layer: 5
-  m_Name: CroppedQRPreview
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!114 &702857075
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 702857074}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 1344c3c82d62a2a41a3576d8abb8e3ea, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: UnityEngine.UI::UnityEngine.UI.RawImage
-  m_Material: {fileID: 0}
-  m_Color: {r: 1, g: 1, b: 1, a: 1}
-  m_RaycastTarget: 1
-  m_RaycastPadding: {x: 0, y: 0, z: 0, w: 0}
-  m_Maskable: 1
-  m_OnCullStateChanged:
-    m_PersistentCalls:
-      m_Calls: []
-  m_Texture: {fileID: 0}
-  m_UVRect:
-    serializedVersion: 2
-    x: 0
-    y: 0
-    width: 1
-    height: 1
---- !u!222 &702857076
-CanvasRenderer:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 702857074}
-  m_CullTransparentMesh: 1
---- !u!224 &702857077
-RectTransform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 702857074}
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 1775998838}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
-  m_AnchorMin: {x: 1, y: 0}
-  m_AnchorMax: {x: 1, y: 0}
-  m_AnchoredPosition: {x: -120, y: 120}
-  m_SizeDelta: {x: 200, y: 200}
-  m_Pivot: {x: 0.5, y: 0.5}
 --- !u!1 &770181387
 GameObject:
   m_ObjectHideFlags: 0
@@ -974,12 +902,10 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CADverse.QrScan.QrScanner
   cameraManager: {fileID: 1936302008}
-  previewImage: {fileID: 702857075}
   scanTimeoutSeconds: 15
   requestCameraPermission: 1
   allowEditorMock: 1
   editorMockPayload: http://127.0.0.1:8000/cadverse
-  croppedPreviewImage: {fileID: 0}
 --- !u!4 &1629781570
 Transform:
   m_ObjectHideFlags: 0
@@ -1008,6 +934,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CADverse.Model.ModelManager
   _serverProxy: {fileID: 1629781573}
+  recalibrationDelaySeconds: 5
 --- !u!114 &1629781572
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1047,12 +974,10 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CADverse.Utils.QrScanner
   cameraManager: {fileID: 1936302008}
-  previewImage: {fileID: 702857075}
   scanTimeoutSeconds: 15
   requestCameraPermission: 1
   allowEditorMock: 0
   editorMockPayload: http://192.168,219.100:3000/cadverse
-  croppedPreviewImage: {fileID: 702857075}
 --- !u!1 &1775998834
 GameObject:
   m_ObjectHideFlags: 0
@@ -1065,6 +990,7 @@ GameObject:
   - component: {fileID: 1775998837}
   - component: {fileID: 1775998836}
   - component: {fileID: 1775998835}
+  - component: {fileID: 1775998839}
   m_Layer: 5
   m_Name: Canvas
   m_TagString: Untagged
@@ -1148,7 +1074,6 @@ RectTransform:
   m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 331023186}
-  - {fileID: 702857077}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0, y: 0}
@@ -1156,6 +1081,23 @@ RectTransform:
   m_AnchoredPosition: {x: 0, y: 0}
   m_SizeDelta: {x: 0, y: 0}
   m_Pivot: {x: 0, y: 0}
+--- !u!114 &1775998839
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1775998834}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 5895f1dee6f54b443badd63e974131f8, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::CADverse.Input.TouchInputController
+  _serverProxy: {fileID: 1629781573}
+  _arCamera: {fileID: 1936302010}
+  _modelLayerMask:
+    serializedVersion: 2
+    m_Bits: 4294967295
 --- !u!1 &1936302003
 GameObject:
   m_ObjectHideFlags: 0

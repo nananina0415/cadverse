@@ -150,6 +150,10 @@ namespace CADverse.QrScan
                     // 5. 서버 QR 이미지를 AR 마커로 등록
                     arManager.RegisterARMarker(serverQrImage, qrPayload, modelManager);
                     LogAndShowToast("모델 로드 완료. QR을 비추세요.", true);
+
+                    // 6. WebSocket 연결 시작 (시뮬레이션 상태 수신용)
+                    await serverProxy.ConnectWebSocketAsync();
+                    Debug.Log("[QrScanMain] WebSocket 연결됨.");
                 }
                 catch (Exception ex)
                 {

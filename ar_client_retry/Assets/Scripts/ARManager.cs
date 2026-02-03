@@ -115,9 +115,6 @@ namespace CADverse.AR
                 string msg = $"마커등록 OK! {qrImage.width}x{qrImage.height}, {qrPhysicalSizeMeters*100}cm";
                 Debug.Log($"[ARManager] {msg}");
                 AndroidToast.Show(msg, false);
-
-                // 추적 상태 모니터링 시작
-                StartCoroutine(MonitorTrackingStatus());
             }
             else
             {
@@ -142,16 +139,7 @@ namespace CADverse.AR
             // 새로 추가된 이미지 처리
             foreach (var trackedImage in eventArgs.added)
             {
-                // 카메라와 마커 사이 거리 계산
-                float distanceToCamera = Vector3.Distance(Camera.main.transform.position, trackedImage.transform.position);
-                float detectedSizeCm = trackedImage.size.x * 100f;
-                float registeredSizeCm = qrPhysicalSizeMeters * 100f;
-
-                // 토스트로 핵심 정보 표시
-                string msg = $"등록:{registeredSizeCm:F0}cm 감지:{detectedSizeCm:F1}cm 거리:{distanceToCamera * 100:F0}cm";
-                AndroidToast.Show(msg, false);
-
-                Debug.Log($"[ARManager] {msg}");
+                Debug.Log($"[ARManager] 이미지 감지: {trackedImage.referenceImage.name}, 상태: {trackedImage.trackingState}");
 
                 if (trackedImage.trackingState == TrackingState.Tracking)
                 {
@@ -180,30 +168,6 @@ namespace CADverse.AR
                 {
                     _modelManager.OnMarkerLost(removed.Key);
                 }
-            }
-        }
-
-        private IEnumerator MonitorTrackingStatus()
-        {
-            float elapsed = 0f;
-            while (elapsed < 60f) // 60초간 모니터링
-            {
-                elapsed += 3f;
-
-                int trackableCount = 0;
-                foreach (var t in _arTrackedImageManager.trackables)
-                {
-                    trackableCount++;
-                }
-
-                bool subsystemRunning = _arTrackedImageManager.subsystem?.running ?? false;
-                string status = $"[{elapsed:F0}s] 추적:{trackableCount} sub:{subsystemRunning}";
-                Debug.Log($"[ARManager] {status}");
-
-                // 항상 토스트 표시 (디버깅용)
-                AndroidToast.Show(status, false);
-
-                yield return new WaitForSeconds(3f);
             }
         }
 

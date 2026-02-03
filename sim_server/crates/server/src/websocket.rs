@@ -31,7 +31,7 @@ async fn handle_socket(mut socket: WebSocket, server_state: ServerState) {
             },
             ObjectTransform {
                 name: "shaft".to_string(),
-                position: [0.0, 1.0, 0.0],
+                position: [0.0, 0.0, 0.0],  // 초기 위치는 원점 (OBJ 자체 위치 유지)
                 rotation: [0.0, 0.0, 0.0, 1.0],
             },
         ],

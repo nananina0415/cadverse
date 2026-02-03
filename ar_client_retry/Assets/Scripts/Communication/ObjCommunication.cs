@@ -103,44 +103,8 @@ namespace CADverse.Communication
             GameObject obj = new GameObject(objectName);
             obj.AddComponent<MeshFilter>().mesh = mesh;
 
-            // Resources 폴더에서 미리 만든 Material 로드 (더 안정적)
-            Material material = Resources.Load<Material>("Materials/DefaultModelMaterial");
-
-            if (material == null)
-            {
-                Debug.LogWarning("[ObjCommunication] Resources/Materials/DefaultModelMaterial을 찾을 수 없습니다. 기본 Material을 생성합니다.");
-
-                // Fallback: Shader로 Material 생성
-                Shader shader = Shader.Find("Universal Render Pipeline/Lit");
-                if (shader == null)
-                {
-                    shader = Shader.Find("Universal Render Pipeline/Simple Lit");
-                }
-                if (shader == null)
-                {
-                    shader = Shader.Find("Universal Render Pipeline/Unlit");
-                }
-                if (shader == null)
-                {
-                    shader = Shader.Find("Standard"); // Built-in fallback
-                }
-                if (shader == null)
-                {
-                    // 최후의 수단: UI 쉐이더는 항상 존재함
-                    shader = Shader.Find("UI/Default");
-                    Debug.LogWarning("[ObjCommunication] URP Shader를 찾을 수 없어 UI/Default를 사용합니다!");
-                }
-
-                if (shader == null)
-                {
-                    // 이건 절대 발생하지 않아야 함
-                    throw new System.InvalidOperationException("[ObjCommunication] 사용 가능한 Shader를 전혀 찾을 수 없습니다!");
-                }
-
-                material = new Material(shader);
-                material.color = Color.white;
-            }
-
+            // Material 생성 - 부품별 색상 적용
+            Material material = CreateMaterial(objectName);
             obj.AddComponent<MeshRenderer>().material = material;
 
             return obj;
@@ -158,6 +122,78 @@ namespace CADverse.Communication
             }
 
             return int.TryParse(components[0], out index);
+        }
+
+        // 부품별 색상표 (구분하기 쉬운 색상)
+        private static readonly Color[] PartColors = new Color[]
+        {
+            new Color(0.3f, 0.5f, 0.8f),   // 파란색 (base)
+            new Color(0.9f, 0.4f, 0.2f),   // 주황색 (shaft)
+            new Color(0.2f, 0.7f, 0.3f),   // 초록색
+            new Color(0.8f, 0.2f, 0.5f),   // 분홍색
+            new Color(0.6f, 0.6f, 0.2f),   // 올리브
+            new Color(0.5f, 0.3f, 0.7f),   // 보라색
+        };
+        private static int _colorIndex = 0;
+
+        /// <summary>
+        /// 부품별 Material을 생성한다.
+        /// </summary>
+        private static Material CreateMaterial(string objectName)
+        {
+            Shader shader = Shader.Find("Universal Render Pipeline/Lit");
+            if (shader == null)
+            {
+                shader = Shader.Find("Universal Render Pipeline/Simple Lit");
+            }
+            if (shader == null)
+            {
+                shader = Shader.Find("Standard");
+            }
+            if (shader == null)
+            {
+                shader = Shader.Find("UI/Default");
+            }
+
+            if (shader == null)
+            {
+                throw new System.InvalidOperationException("[ObjCommunication] 사용 가능한 Shader를 찾을 수 없습니다!");
+            }
+
+            Material material = new Material(shader);
+
+            // 부품 이름에 따른 색상 지정 또는 순차 색상
+            Color partColor;
+            if (objectName.ToLower().Contains("base"))
+            {
+                partColor = PartColors[0]; // 파란색
+            }
+            else if (objectName.ToLower().Contains("shaft"))
+            {
+                partColor = PartColors[1]; // 주황색
+            }
+            else
+            {
+                partColor = PartColors[_colorIndex % PartColors.Length];
+                _colorIndex++;
+            }
+
+            // URP Lit/Simple Lit 또는 Standard에 색상 적용
+            if (material.HasProperty("_BaseColor"))
+            {
+                material.SetColor("_BaseColor", partColor);
+            }
+            else if (material.HasProperty("_Color"))
+            {
+                material.SetColor("_Color", partColor);
+            }
+            else
+            {
+                material.color = partColor;
+            }
+
+            Debug.Log($"[ObjCommunication] {objectName} 색상: RGB({partColor.r:F2}, {partColor.g:F2}, {partColor.b:F2})");
+            return material;
         }
     }
 }
