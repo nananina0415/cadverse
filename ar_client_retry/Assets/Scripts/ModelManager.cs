@@ -211,6 +211,32 @@ namespace CADverse.Model
         }
 
         /// <summary>
+        /// 마커 rotation에서 yaw(Y축 회전)만 추출하고 up은 중력 방향으로 강제합니다.
+        /// ARCore 이미지 트래킹 pose에 포함된 tilt를 제거하여 모델이 기울어지지 않게 합니다.
+        /// </summary>
+        private Quaternion GetGravityAlignedRotation(Transform markerTransform)
+        {
+            // 마커의 forward 벡터를 수평면에 투영하여 yaw만 추출
+            Vector3 forward = markerTransform.forward;
+            forward.y = 0f; // 수직 성분 제거 → 수평면 투영
+
+            if (forward.sqrMagnitude < 0.001f)
+            {
+                // forward가 거의 수직인 경우 (마커가 바닥에 있을 때) → right 벡터 사용
+                forward = markerTransform.right;
+                forward.y = 0f;
+            }
+
+            if (forward.sqrMagnitude < 0.001f)
+            {
+                return Quaternion.identity;
+            }
+
+            // up = 중력 반대 방향(월드 Y+), forward = 수평면에 투영된 마커 forward
+            return Quaternion.LookRotation(forward.normalized, Vector3.up);
+        }
+
+        /// <summary>
         /// AR 마커 위치에 모델을 배치합니다.
         /// </summary>
         public void PlaceModelAtMarker(TrackableId trackableId, Transform markerTransform)
@@ -218,10 +244,13 @@ namespace CADverse.Model
             // 첫 배치
             if (!_isModelPlaced && _rootModelObject != null)
             {
+                // 마커 pose에서 중력 정렬된 rotation 계산 (tilt 제거)
+                Quaternion gravityAlignedRot = GetGravityAlignedRotation(markerTransform);
+
                 // 월드 앵커 생성
                 _worldAnchor = new GameObject("CADverse_WorldAnchor");
                 _worldAnchor.transform.position = markerTransform.position;
-                _worldAnchor.transform.rotation = markerTransform.rotation;
+                _worldAnchor.transform.rotation = gravityAlignedRot;
 
                 // 루트 모델을 앵커의 자식으로 설정 (QR 마커에서 5cm 위로 오프셋)
                 _rootModelObject.transform.SetParent(_worldAnchor.transform, false);
@@ -234,7 +263,9 @@ namespace CADverse.Model
                 _lastPlacementTime = Time.time;
                 _needsRecalibration = false;
 
-                Debug.Log($"[ModelManager] Model placed at world position: {markerTransform.position}");
+                Debug.Log($"[ModelManager] Model placed at world position: {markerTransform.position}, " +
+                          $"marker rot: {markerTransform.rotation.eulerAngles}, " +
+                          $"gravity-aligned rot: {gravityAlignedRot.eulerAngles}");
                 AndroidToast.Show("모델 배치 완료!", false);
                 return;
             }
@@ -242,8 +273,9 @@ namespace CADverse.Model
             // 재보정 필요 시 앵커 위치만 업데이트
             if (_needsRecalibration && _worldAnchor != null)
             {
+                Quaternion gravityAlignedRot = GetGravityAlignedRotation(markerTransform);
                 _worldAnchor.transform.position = markerTransform.position;
-                _worldAnchor.transform.rotation = markerTransform.rotation;
+                _worldAnchor.transform.rotation = gravityAlignedRot;
                 _lastPlacementTime = Time.time;
                 _needsRecalibration = false;
 

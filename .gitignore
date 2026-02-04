@@ -122,6 +122,10 @@ interface/codegen/client/obj/
 
 # Unity solution files (generated)
 ar_client/*.slnx
+ar_client_retry/*.slnx
+
+# Windows reserved device names
+nul
 
 # Scripts (optional, remove from ignore if you want to commit them)
 # clean_temp.bat

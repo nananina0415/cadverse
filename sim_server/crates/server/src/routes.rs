@@ -1,18 +1,21 @@
 use axum::{
-    extract::Path,
+    extract::{Path, ConnectInfo},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
     Json,
 };
 use crate::models::ObjectList;
 use tracing::{info, error};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use qrcode::{QrCode, EcLevel};
 use local_ip_address::local_ip;
 
 /// GET /cadverse/object - 오브젝트 리스트 반환
-pub async fn get_object_list() -> Json<ObjectList> {
-    info!("Request: GET /cadverse/object");
+pub async fn get_object_list(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Json<ObjectList> {
+    info!("Request: GET /cadverse/object from client {}", addr);
 
     // model 폴더에서 .obj 파일 목록 읽기
     let model_dir = PathBuf::from("model");
@@ -38,8 +41,11 @@ pub async fn get_object_list() -> Json<ObjectList> {
 }
 
 /// GET /cadverse/object/:name - OBJ 메쉬 파일 반환
-pub async fn get_object_mesh(Path(name): Path<String>) -> Response {
-    info!("Request: GET /cadverse/object/{}", name);
+pub async fn get_object_mesh(
+    Path(name): Path<String>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Response {
+    info!("Request: GET /cadverse/object/{} from client {}", name, addr);
 
     // .obj 확장자 제거
     let object_name = name.trim_end_matches(".obj");
@@ -76,8 +82,10 @@ pub async fn get_object_mesh(Path(name): Path<String>) -> Response {
 /// 이후: 0과 1로 이루어진 행 (0=흰색, 1=검정)
 ///
 /// 서버의 qr_display와 동일한 설정 (EcLevel::M, as_bytes)으로 생성
-pub async fn get_qr_pattern() -> Response {
-    info!("Request: GET /cadverse/qr");
+pub async fn get_qr_pattern(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Response {
+    info!("Request: GET /cadverse/qr from client {}", addr);
 
     let ip = match local_ip() {
         Ok(ip) => ip.to_string(),

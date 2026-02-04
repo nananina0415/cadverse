@@ -6,10 +6,13 @@ use anyhow::Result;
 use axum::{
     Router,
     routing::get,
+    http::Request,
+    body::Body,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tracing::info;
+use tower_http::trace::TraceLayer;
+use tracing::{info, warn};
 
 // SimStateBuffer를 외부에서 전달받기 위한 타입 재export
 // (sim_state_buffer는 루트 크레이트에 있음)
@@ -47,13 +50,33 @@ pub async fn start_server(state_buffer: StateBuffer, input_buffer: InputBuffer<T
         // QR 패턴 API
         .route("/cadverse/qr", get(routes::get_qr_pattern))
         // Axum state로 server_state 전달
-        .with_state(server_state);
+        .with_state(server_state)
+        // 모든 HTTP 요청/응답 로깅
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &Request<Body>| {
+                    tracing::info_span!(
+                        "http_request",
+                        method = %request.method(),
+                        uri = %request.uri(),
+                    )
+                })
+                .on_request(|request: &Request<Body>, _span: &tracing::Span| {
+                    info!("→ {} {}", request.method(), request.uri());
+                })
+                .on_response(|response: &axum::http::Response<Body>, latency: std::time::Duration, _span: &tracing::Span| {
+                    info!("← {} ({:?})", response.status(), latency);
+                })
+                .on_failure(|error: tower_http::classify::ServerErrorsFailureClass, latency: std::time::Duration, _span: &tracing::Span| {
+                    warn!("✗ {} ({:?})", error, latency);
+                }),
+        );
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
     info!("Server listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
 
     Ok(())
 }
