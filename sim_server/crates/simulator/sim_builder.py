@@ -168,6 +168,45 @@ def _rotate_vec_by_quat(v: Tuple[float, float, float], q: Quat) -> Tuple[float, 
 
 
 # ---------------------------------------------------------------------
+# Joint collision policy helper
+# ---------------------------------------------------------------------
+
+
+def _disable_collision_between_linked_bodies(link: chrono.ChLinkBase) -> None:
+    """
+    Common stability policy:
+    - If two bodies are directly connected by a kinematic joint (revolute/prismatic/fixed),
+      disable collision between those two bodies.
+
+    Notes:
+    - This does NOT disable body collisions globally.
+    - Only the linked pair's mutual collision is disabled (Chrono link-side flag).
+    - Binding API names can differ across Chrono/PyChrono versions; try multiple options.
+    """
+    # Most Chrono links expose SetCollide(bool)
+    try:
+        if hasattr(link, "SetCollide"):
+            link.SetCollide(False)
+            return
+    except Exception:
+        pass
+
+    # Some bindings may expose alternate names
+    for fn_name, arg in (
+        ("SetCollisionDisabled", True),
+        ("SetDisableCollision", True),
+        ("SetCollideBodies", False),
+    ):
+        try:
+            fn = getattr(link, fn_name, None)
+            if callable(fn):
+                fn(arg)
+                return
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------
 # OBJ auto-approx utilities
 # ---------------------------------------------------------------------
 
@@ -591,18 +630,24 @@ def _build_joint(sys: chrono.ChSystemNSC, jdef: JointDef, bodyA: chrono.ChBody, 
     if jdef.type == "revolute":
         link = chrono.ChLinkLockRevolute()
         link.Initialize(bodyA, bodyB, fr)
+        # ✅ stability: disable collision between joint-linked bodies
+        _disable_collision_between_linked_bodies(link)
         sys.AddLink(link)
         return link
 
     if jdef.type == "prismatic":
         link = chrono.ChLinkLockPrismatic()
         link.Initialize(bodyA, bodyB, fr)
+        # ✅ stability: disable collision between joint-linked bodies
+        _disable_collision_between_linked_bodies(link)
         sys.AddLink(link)
         return link
 
     if jdef.type == "fixed":
         link = chrono.ChLinkLockLock()
         link.Initialize(bodyA, bodyB, fr)
+        # ✅ stability: disable collision between joint-linked bodies
+        _disable_collision_between_linked_bodies(link)
         sys.AddLink(link)
         return link
 
