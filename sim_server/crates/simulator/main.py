@@ -26,6 +26,12 @@
 # - 일부 PyChrono 바인딩에서 AccumulateForce/Torque가 step마다 자동 초기화되지 않을 수 있음
 #   -> Simulator.step()에서 DoStepDynamics 전에 EmptyAccumulators(우선)로 누적값을 clear
 #
+# ✅ 추가 보강 3 (이번 “덜컹/부호반전” 해결 핵심)
+# - anti-flip clamp가 제대로 동작하려면 Ieff(축 등가 관성)가 필요함
+# - PyChrono 바인딩에 따라 GetInertiaXX 등이 없을 수 있으므로,
+#   Simulator.__init__에서 Scene metadata의 explicit inertia(Ixx,Iyy,Izz)를 body에 캐시(_inertia_diag_local)로 부착
+#   -> 작은 관성에서 damping 토크가 “한 스텝에 속도를 뒤집지 않도록” 정확히 제한 가능
+#
 # 테스트 커버리지(현재까지)
 # - Spring minimal physics (headless) ✅
 # - Rotate shaft-base physics (SimInfo + sim_builder + revolute) ✅
@@ -304,8 +310,21 @@ def _get_body_inertia_diag_local(body: chrono.ChBody) -> Optional[chrono.ChVecto
     """
     body 좌표계(local)에서의 관성 대각(Ixx,Iyy,Izz) 추정.
     바인딩 차이를 흡수하기 위해 여러 후보 API를 시도한다.
+
+    ✅ 보강:
+    - 일부 바인딩은 inertia getter가 거의 없음
+    - Simulator.__init__에서 scene metadata explicit inertia를 body에 _inertia_diag_local로 캐시해두면
+      여기서 그 값을 우선 사용한다.
     """
-    # 가장 흔한: GetInertiaXX() -> ChVector3d(Ixx,Iyy,Izz)
+    # ✅ (1) metadata cache (가장 신뢰도 높음: 우리가 넣어준 값)
+    try:
+        cached = getattr(body, "_inertia_diag_local", None)
+        if isinstance(cached, chrono.ChVector3d):
+            return cached
+    except Exception:
+        pass
+
+    # (2) 흔한 API: GetInertiaXX() -> ChVector3d(Ixx,Iyy,Izz)
     for fn in ("GetInertiaXX", "GetInertiaDiag", "GetInertiaDiagonal"):
         try:
             if hasattr(body, fn):
@@ -315,11 +334,10 @@ def _get_body_inertia_diag_local(body: chrono.ChBody) -> Optional[chrono.ChVecto
         except Exception:
             pass
 
-    # 어떤 버전은 GetInertia() -> ChMatrix33
+    # (3) 어떤 버전은 GetInertia() -> ChMatrix33
     try:
         if hasattr(body, "GetInertia"):
             I = body.GetInertia()
-            # ChMatrix33d 처리가 가능한 경우만
             if I is not None and hasattr(I, "GetElement"):
                 Ixx = float(I.GetElement(0, 0))
                 Iyy = float(I.GetElement(1, 1))
@@ -433,16 +451,16 @@ class _ARInteractionController:
     DRAG_ANGLE_REF = m.pi / 6.0
 
     # ---- Rotate damping (torque-based) ----
-    ROT_DAMP_CW = 1.5
+    # ✅ 튜닝(덜컹/부호반전 완화): 기본값을 "안전한 1차"로 변경
+    ROT_DAMP_CW = 1.0
 
-    # 스냅은 "감쇠 ON/OFF"의 기준이니 너무 크게 잡지 말되
-    # 작은 관성에서 플립플롭을 줄이려면 약간 여유가 있는 편이 좋음
-    VEL_EPS_SNAP_ROT = 0.03
+    # ✅ 작은 속도 영역에서 덜컹/플립플롭을 끊기 위해 SNAP을 약간 올림
+    VEL_EPS_SNAP_ROT = 0.10
 
-    # ---- rotate damping torque clamp (safety) ----
-    ROT_DAMP_TAU_MAX = 5.0
+    # ✅ 큰 속도에서 감쇠 토크가 과하게 들어가 반전하는 걸 줄이기 위해 상한을 낮춤
+    ROT_DAMP_TAU_MAX = 1.5
 
-    # ✅ 추가: "한 스텝에서 w 부호가 뒤집히지 않도록" 안전계수
+    # ✅ "한 스텝에서 w 부호가 뒤집히지 않도록" 안전계수
     # tau_noflip = Ieff * |w| / dt  (여기에 safety를 곱해 살짝 덜 감쇠)
     ROT_DAMP_NOFLIP_SAFETY = 0.95
 
@@ -460,7 +478,6 @@ class _ARInteractionController:
         self._last_dynamic_target: Optional[str] = None
         self._mode: str = self.MODE_ROTATE
         self._prev_finger_world: Optional[chrono.ChVector3d] = None
-
         self._prev_rotate_finger_world: Optional[chrono.ChVector3d] = None
 
     def ingest(self, user_input: UserInput, *, part_names: List[str], sim: "Simulator") -> None:
@@ -622,7 +639,7 @@ class _ARInteractionController:
         tau_mag = abs(self.ROT_DAMP_CW * w_along)
         tau_mag = min(tau_mag, float(self.ROT_DAMP_TAU_MAX))
 
-        # ✅ 핵심 수정: anti-flip clamp
+        # ✅ 핵심: anti-flip clamp
         # 한 스텝에서 w를 0 넘어 반대로 뒤집지 못하게 제한
         Ieff = _effective_inertia_about_axis_world(body, axis_world)
         tau_noflip = (Ieff * abs(w_along) / float(dt)) * float(self.ROT_DAMP_NOFLIP_SAFETY)
@@ -700,6 +717,36 @@ class Simulator:
 
         self._ar = _ARInteractionController()
         self._released_drive_actuators: set[str] = set()
+
+        # ✅ [중요 보강] metadata의 explicit inertia를 chrono body에 캐시
+        # - PyChrono 바인딩에서 inertia getter가 없으면 Ieff를 못 구해서 anti-flip clamp가 무력화됨
+        # - 특히 shaft처럼 Izz=0.0002 같은 작은 관성에서 damping 토크가 쉽게 “반전/덜컹”을 만들 수 있음
+        try:
+            for bm in getattr(info.scene, "bodies", []):
+                try:
+                    name = getattr(bm, "name", None)
+                    if not name or name not in self.bodies:
+                        continue
+
+                    mech = getattr(bm, "mechanical", None)
+                    inert = getattr(mech, "inertia", None) if mech is not None else None
+                    mode = getattr(inert, "mode", None) if inert is not None else None
+                    if str(mode) != "explicit":
+                        continue
+
+                    Ixx = float(getattr(inert, "Ixx", 0.0))
+                    Iyy = float(getattr(inert, "Iyy", 0.0))
+                    Izz = float(getattr(inert, "Izz", 0.0))
+
+                    b = self.bodies[name].body
+                    try:
+                        setattr(b, "_inertia_diag_local", chrono.ChVector3d(Ixx, Iyy, Izz))
+                    except Exception:
+                        pass
+                except Exception:
+                    continue
+        except Exception:
+            pass
 
     @classmethod
     def create(cls, info: SimInfo) -> "Simulator":
