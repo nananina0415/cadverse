@@ -142,12 +142,15 @@ class VisualMesh:
         if "file" not in d:
             raise ValueError("visual.file is required")
         scale = d.get("scale", [1, 1, 1])
-        offset = d.get("offset", {"pos": [0, 0, 0], "rot": [1, 0, 0, 0]})
+
+        # [FIX] offset은 pos/rot 부분 생략이 가능해야 함 -> from_optional_dict 사용
+        offset = d.get("offset", None)
+
         return VisualMesh(
             kind="mesh",
             file=str(d["file"]),
             scale=Vec3.from_any(scale),
-            offset=Pose.from_dict(offset),
+            offset=Pose.from_optional_dict(offset),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -230,12 +233,22 @@ class CollisionPrimitive:
         if self.offset != Pose.identity():
             out["offset"] = self.offset.to_dict()
 
+        # [FIX] None을 0.0으로 "채우지" 않고, 유효성 보장(깨진 충돌 형상 방지)
         if self.kind == "box":
-            out.update({"hx": float(self.hx or 0.0), "hy": float(self.hy or 0.0), "hz": float(self.hz or 0.0)})
+            if self.hx is None or self.hy is None or self.hz is None:
+                raise ValueError("CollisionPrimitive(box) missing hx/hy/hz")
+            out.update({"hx": float(self.hx), "hy": float(self.hy), "hz": float(self.hz)})
+
         elif self.kind == "cylinder":
-            out.update({"radius": float(self.radius or 0.0), "length": float(self.length or 0.0)})
+            if self.radius is None or self.length is None:
+                raise ValueError("CollisionPrimitive(cylinder) missing radius/length")
+            out.update({"radius": float(self.radius), "length": float(self.length)})
+
         elif self.kind == "sphere":
-            out.update({"radius": float(self.radius or 0.0)})
+            if self.radius is None:
+                raise ValueError("CollisionPrimitive(sphere) missing radius")
+            out.update({"radius": float(self.radius)})
+
         return out
 
 
@@ -271,7 +284,8 @@ class CollisionAuto:
                 raise ValueError(
                     f"collision.auto.strategy must be one of {sorted(_ALLOWED_COLLISION_STRATEGIES)}, got: {strategy}"
                 )
-            return CollisionAuto(strategy=strategy)  # type: ignore[arg-type]
+            # [FIX] type: ignore 제거 (검증 후 문자열이므로 OK)
+            return CollisionAuto(strategy=strategy)
 
         raise ValueError(f"collision auto must be 'auto' or object, got: {type(v)}")
 
@@ -374,7 +388,12 @@ class Inertia:
 
     def to_dict(self) -> Dict[str, Any]:
         if self.mode == "explicit":
-            return {"mode": "explicit", "Ixx": float(self.Ixx or 0.0), "Iyy": float(self.Iyy or 0.0), "Izz": float(self.Izz or 0.0)}
+            return {
+                "mode": "explicit",
+                "Ixx": float(self.Ixx or 0.0),
+                "Iyy": float(self.Iyy or 0.0),
+                "Izz": float(self.Izz or 0.0),
+            }
         return {"mode": "auto_from_collision"}
 
 
@@ -723,7 +742,9 @@ class ActuatorDef:
         if self.type == "rotation_speed":
             out["speed"] = float(self.speed or 0.0)
         else:
-            out["torqueModel"] = self.torqueModel.to_dict() if self.torqueModel is not None else {"type": "const", "value": 0.0}
+            out["torqueModel"] = (
+                self.torqueModel.to_dict() if self.torqueModel is not None else {"type": "const", "value": 0.0}
+            )
         return out
 
 
@@ -829,6 +850,11 @@ def validate_scene(meta: SceneMeta) -> None:
         gearB_def = next((b for b in meta.bodies if b.name == gp.gearB), None)
         if gearA_def is None or gearB_def is None:
             continue
+
+        # [ADD] docs 규칙: gearPair가 참조하는 바디는 category="gear" 여야 함
+        if gearA_def.category != "gear" or gearB_def.category != "gear":
+            raise ValueError(f"GearPair {gp.name}: gearA/gearB must have category='gear'")
+
         if gearA_def.mechanical.gearProps is None or gearB_def.mechanical.gearProps is None:
             raise ValueError(f"GearPair {gp.name}: gear bodies must have mechanical.gearProps")
 

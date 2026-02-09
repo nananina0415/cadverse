@@ -45,6 +45,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 
 import math as m
+import time
 import pychrono as chrono
 
 from .SimInfo import SimInfo
@@ -394,13 +395,16 @@ def _coerce_user_input_any(user_input_any: Any) -> Optional[UserInput]:
         return user_input_any
 
     if isinstance(user_input_any, dict):
+        # ✅ runtime_types의 단일 엔트리 함수를 우선 사용
         try:
-            if hasattr(UserInput, "from_dict"):
-                return UserInput.from_dict(user_input_any)  # type: ignore[attr-defined]
+            out = rt.user_input_from_dict(user_input_any)
+            if isinstance(out, (TouchStartEvent, TouchingEvent, TouchEndEvent)):
+                return out
         except Exception:
             pass
 
-        for fn_name in ("parse_user_input", "user_input_from_dict", "parse", "from_dict"):
+        # 호환/확장 시도 (예전 함수명들 fallback)
+        for fn_name in ("parse_user_input", "parse", "from_dict"):
             try:
                 fn = getattr(rt, fn_name, None)
                 if callable(fn):
@@ -410,6 +414,7 @@ def _coerce_user_input_any(user_input_any: Any) -> Optional[UserInput]:
             except Exception:
                 pass
 
+        # 마지막: type 보고 직접 파싱 시도
         t = str(user_input_any.get("type", "")).strip()
         try:
             if t == "TouchStart" and hasattr(TouchStartEvent, "from_dict"):
@@ -704,6 +709,7 @@ class Simulator:
         self.actuators = built.actuators
 
         self.sim_time: float = 0.0
+        self._seq: int = 0
 
         if getattr(info, "body_order", None):
             self._body_order = list(info.body_order)  # type: ignore[attr-defined]
@@ -773,12 +779,24 @@ class Simulator:
         self.sys.DoStepDynamics(dt)
         self.sim_time += dt
 
+        self._seq += 1
+
         parts: List[PartState] = []
         for name in self._body_order:
             b = self.bodies[name].body
             parts.append(PartState.from_chrono_body(b, name=name))
 
-        return SimState(sim_time=self.sim_time, parts=parts)
+        # ✅ schema-07 optional fields
+        partNames = self._body_order if bool(getattr(self.info.options, "emit_part_names", False)) else None
+        server_time_sec = float(time.time())
+
+        return SimState(
+            sim_time=self.sim_time,
+            parts=parts,
+            partNames=list(partNames) if partNames is not None else None,
+            seq=int(self._seq),
+            server_time_sec=server_time_sec,
+        )
 
     def close(self) -> None:
         try:
@@ -935,9 +953,13 @@ class Simulator:
                     pass
 
                 if act_type == "rotation_speed":
+                    # ✅ None이 크래시나는 바인딩이 있어 fallback을 둔다
                     try:
                         if hasattr(motor, "SetSpeedFunction"):
-                            motor.SetSpeedFunction(None)  # type: ignore[arg-type]
+                            try:
+                                motor.SetSpeedFunction(None)  # type: ignore[arg-type]
+                            except Exception:
+                                motor.SetSpeedFunction(chrono.ChFunctionConst(0.0))
                             done = True
                     except Exception:
                         pass

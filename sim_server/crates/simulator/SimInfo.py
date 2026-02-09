@@ -71,6 +71,10 @@ class SimInfo:
     part_index_to_name: List[str] = field(init=False, default_factory=list)
 
     def __post_init__(self) -> None:
+        # dt sanity
+        if float(self.options.dt) <= 0.0:
+            raise ValueError(f"SimOptions.dt must be > 0, got: {self.options.dt}")
+
         # 메타 참조 무결성 검증(바로 fail)
         validate_scene(self.scene)
         self._rebuild_part_index()
@@ -148,8 +152,15 @@ class SimInfo:
         existing_list = [b.name for b in self.scene.bodies]
         existing_set = set(existing_list)
 
-        if self.body_order:
+        # ⚠️ body_order가 "빈 리스트([])"로 들어오는 경우도 명시적 입력으로 간주해서 에러를 내는 게 안전
+        if self.body_order is not None:
             order = list(self.body_order)
+
+            if len(order) == 0:
+                raise ValueError(
+                    "body_order is provided but empty. "
+                    "Use body_order=None to follow scene.bodies order."
+                )
 
             # 유효성: body_order가 있으면
             # - 모든 name이 실제 bodies에 존재해야 하고
