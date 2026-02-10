@@ -91,6 +91,10 @@ def _pitch_radius_from_gearprops(module_m: float, teeth: int) -> float:
     return 0.5 * float(module_m) * float(teeth)
 
 
+def _pose_from_center_rot(center: Tuple[float, float, float], rot: Quat) -> Pose:
+    return Pose(pos=Vec3(float(center[0]), float(center[1]), float(center[2])), rot=rot)
+
+
 # ---------------------------------------------------------------------
 # Contact material (NSC)
 # ---------------------------------------------------------------------
@@ -165,6 +169,45 @@ def _rotate_vec_by_quat(v: Tuple[float, float, float], q: Quat) -> Tuple[float, 
     p = Quat(0.0, v[0], v[1], v[2])
     qq = _quat_mul(_quat_mul(q, p), _quat_conj(q))
     return (qq.x, qq.y, qq.z)
+
+
+# ---------------------------------------------------------------------
+# Joint collision policy helper
+# ---------------------------------------------------------------------
+
+
+def _disable_collision_between_linked_bodies(link: chrono.ChLinkBase) -> None:
+    """
+    Common stability policy:
+    - If two bodies are directly connected by a kinematic joint (revolute/prismatic/fixed),
+      disable collision between those two bodies.
+
+    Notes:
+    - This does NOT disable body collisions globally.
+    - Only the linked pair's mutual collision is disabled (Chrono link-side flag).
+    - Binding API names can differ across Chrono/PyChrono versions; try multiple options.
+    """
+    # Most Chrono links expose SetCollide(bool)
+    try:
+        if hasattr(link, "SetCollide"):
+            link.SetCollide(False)
+            return
+    except Exception:
+        pass
+
+    # Some bindings may expose alternate names
+    for fn_name, arg in (
+        ("SetCollisionDisabled", True),
+        ("SetDisableCollision", True),
+        ("SetCollideBodies", False),
+    ):
+        try:
+            fn = getattr(link, fn_name, None)
+            if callable(fn):
+                fn(arg)
+                return
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------
@@ -268,11 +311,20 @@ def _approx_base_from_obj(verts_body_local: List[Tuple[float, float, float]]):
 
 
 def _approx_shaft_with_hub_from_obj(verts_body_local: List[Tuple[float, float, float]]):
+    """
+    Returns:
+      center_c:  AABB center (body-local)
+      axis:      main axis unit vector (body-local)
+      length:    projected length along axis (full length)
+      radius:    baseline shaft radius
+      s_center:  center position along axis in coordinate where s=dot(p-c,axis)
+      hub:       optional dict {length, radius, s_center}
+    """
     verts = verts_body_local
-    _, _, center, _ = _compute_aabb(verts)
+    _, _, center_c, _ = _compute_aabb(verts)
 
     axis = _normalize(_pca_main_axis(verts))
-    c = center
+    c = center_c
 
     ss: List[float] = []
     rs: List[float] = []
@@ -286,12 +338,15 @@ def _approx_shaft_with_hub_from_obj(verts_body_local: List[Tuple[float, float, f
 
     smin, smax = min(ss), max(ss)
     length = smax - smin
+    s_center = 0.5 * (smin + smax)
+
     if length < 1e-6:
+        # fallback: use AABB
         _, _, cc, half_ext = _compute_aabb(verts)
         lx, ly, lz = half_ext[0] * 2, half_ext[1] * 2, half_ext[2] * 2
         L = max(lx, ly, lz)
         R = 0.5 * sorted([lx, ly, lz])[1]
-        return cc, (0.0, 0.0, 1.0), L, R, None
+        return cc, (0.0, 0.0, 1.0), L, R, 0.0, None
 
     nbins = 40
     bins: List[List[float]] = [[] for _ in range(nbins)]
@@ -312,7 +367,7 @@ def _approx_shaft_with_hub_from_obj(verts_body_local: List[Tuple[float, float, f
     med_sorted = sorted([v for v in med if v > 1e-9])
     if not med_sorted:
         R = sorted(rs)[int(0.5 * len(rs))]
-        return center, axis, length, R, None
+        return center_c, axis, length, R, s_center, None
 
     k = max(1, int(0.2 * len(med_sorted)))
     baseline = sum(med_sorted[:k]) / k
@@ -340,10 +395,11 @@ def _approx_shaft_with_hub_from_obj(verts_body_local: List[Tuple[float, float, f
         hs1 = smin + ((i1 + 1) / nbins) * length
         hub_len = max(0.0, hs1 - hs0)
         hub_r = max(med[i0 : i1 + 1])
-        hub = {"length": hub_len, "radius": hub_r}
+        hub_s_center = 0.5 * (hs0 + hs1)
+        hub = {"length": hub_len, "radius": hub_r, "s_center": hub_s_center}
 
     shaft_r = max(1e-4, baseline)
-    return center, axis, length, shaft_r, hub
+    return center_c, axis, length, shaft_r, s_center, hub
 
 
 # ---------------------------------------------------------------------
@@ -372,6 +428,7 @@ def _add_collision_cylinder(
     frame: Optional[chrono.ChFramed] = None,
 ) -> None:
     fr = frame if frame is not None else chrono.ChFramed()
+    # Chrono cylinder takes (radius, half_length)
     shape = chrono.ChCollisionShapeCylinder(mat, float(radius), float(0.5 * length))
     body.AddCollisionShape(shape, fr)
 
@@ -487,34 +544,80 @@ def _auto_collision_from_obj(bdef: BodyDef, auto: CollisionAuto) -> List[Collisi
 
     # ---- strategy overrides ----
     if strategy in ("aabb_box", "base_aabb"):
-        _, _, _, half_ext = _compute_aabb(verts)
-        return [CollisionPrimitive(kind="box", hx=float(half_ext[0]), hy=float(half_ext[1]), hz=float(half_ext[2]), offset=Pose.identity())]
+        _, _, center, half_ext = _compute_aabb(verts)
+        off = _pose_from_center_rot(center, Quat(1.0, 0.0, 0.0, 0.0))
+        return [
+            CollisionPrimitive(
+                kind="box",
+                hx=float(half_ext[0]),
+                hy=float(half_ext[1]),
+                hz=float(half_ext[2]),
+                offset=off,
+            )
+        ]
 
     if strategy == "shaft_pca_hub2cyl":
-        _, axis, L, R, hub = _approx_shaft_with_hub_from_obj(verts)
+        c, axis, L, R, s_center, hub = _approx_shaft_with_hub_from_obj(verts)
         q = _quat_from_two_vectors((0.0, 0.0, 1.0), (axis[0], axis[1], axis[2]))
-        prims = [CollisionPrimitive(kind="cylinder", radius=float(R), length=float(L), offset=Pose(pos=Pose.identity().pos, rot=q))]
+
+        center_main = _add(c, _mul(axis, float(s_center)))
+        prims = [
+            CollisionPrimitive(
+                kind="cylinder",
+                radius=float(R),
+                length=float(L),
+                offset=_pose_from_center_rot(center_main, q),
+            )
+        ]
+
         if hub and float(hub.get("length", 0.0)) > 1e-5 and float(hub.get("radius", 0.0)) > float(R) * 1.2:
-            prims.append(CollisionPrimitive(kind="cylinder", radius=float(hub["radius"]), length=float(hub["length"]), offset=Pose(pos=Pose.identity().pos, rot=q)))
+            hub_center = _add(c, _mul(axis, float(hub.get("s_center", 0.0))))
+            prims.append(
+                CollisionPrimitive(
+                    kind="cylinder",
+                    radius=float(hub["radius"]),
+                    length=float(hub["length"]),
+                    offset=_pose_from_center_rot(hub_center, q),
+                )
+            )
         return prims
 
     # ---- default behavior (category-based) ----
     if cat == "base":
-        _, size = _approx_base_from_obj(verts)
+        center, size = _approx_base_from_obj(verts)
         hx, hy, hz = 0.5 * size[0], 0.5 * size[1], 0.5 * size[2]
-        return [CollisionPrimitive(kind="box", hx=float(hx), hy=float(hy), hz=float(hz), offset=Pose.identity())]
+        off = _pose_from_center_rot(center, Quat(1.0, 0.0, 0.0, 0.0))
+        return [CollisionPrimitive(kind="box", hx=float(hx), hy=float(hy), hz=float(hz), offset=off)]
 
     if cat == "shaft":
-        _, axis, L, R, hub = _approx_shaft_with_hub_from_obj(verts)
+        c, axis, L, R, s_center, hub = _approx_shaft_with_hub_from_obj(verts)
         q = _quat_from_two_vectors((0.0, 0.0, 1.0), (axis[0], axis[1], axis[2]))
-        prims = [CollisionPrimitive(kind="cylinder", radius=float(R), length=float(L), offset=Pose(pos=Pose.identity().pos, rot=q))]
+
+        center_main = _add(c, _mul(axis, float(s_center)))
+        prims = [
+            CollisionPrimitive(
+                kind="cylinder",
+                radius=float(R),
+                length=float(L),
+                offset=_pose_from_center_rot(center_main, q),
+            )
+        ]
         if hub and float(hub.get("length", 0.0)) > 1e-5 and float(hub.get("radius", 0.0)) > float(R) * 1.2:
-            prims.append(CollisionPrimitive(kind="cylinder", radius=float(hub["radius"]), length=float(hub["length"]), offset=Pose(pos=Pose.identity().pos, rot=q)))
+            hub_center = _add(c, _mul(axis, float(hub.get("s_center", 0.0))))
+            prims.append(
+                CollisionPrimitive(
+                    kind="cylinder",
+                    radius=float(hub["radius"]),
+                    length=float(hub["length"]),
+                    offset=_pose_from_center_rot(hub_center, q),
+                )
+            )
         return prims
 
     # fallback: aabb box
-    _, _, _, half_ext = _compute_aabb(verts)
-    return [CollisionPrimitive(kind="box", hx=float(half_ext[0]), hy=float(half_ext[1]), hz=float(half_ext[2]), offset=Pose.identity())]
+    _, _, center, half_ext = _compute_aabb(verts)
+    off = _pose_from_center_rot(center, Quat(1.0, 0.0, 0.0, 0.0))
+    return [CollisionPrimitive(kind="box", hx=float(half_ext[0]), hy=float(half_ext[1]), hz=float(half_ext[2]), offset=off)]
 
 
 # ---------------------------------------------------------------------
@@ -591,18 +694,24 @@ def _build_joint(sys: chrono.ChSystemNSC, jdef: JointDef, bodyA: chrono.ChBody, 
     if jdef.type == "revolute":
         link = chrono.ChLinkLockRevolute()
         link.Initialize(bodyA, bodyB, fr)
+        # ✅ stability: disable collision between joint-linked bodies
+        _disable_collision_between_linked_bodies(link)
         sys.AddLink(link)
         return link
 
     if jdef.type == "prismatic":
         link = chrono.ChLinkLockPrismatic()
         link.Initialize(bodyA, bodyB, fr)
+        # ✅ stability: disable collision between joint-linked bodies
+        _disable_collision_between_linked_bodies(link)
         sys.AddLink(link)
         return link
 
     if jdef.type == "fixed":
         link = chrono.ChLinkLockLock()
         link.Initialize(bodyA, bodyB, fr)
+        # ✅ stability: disable collision between joint-linked bodies
+        _disable_collision_between_linked_bodies(link)
         sys.AddLink(link)
         return link
 

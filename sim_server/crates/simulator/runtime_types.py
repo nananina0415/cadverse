@@ -234,6 +234,7 @@ class SimState:
 
 PartIndex = int
 
+
 @dataclass(frozen=True)
 class PartRef:
     """
@@ -280,6 +281,34 @@ class PartRef:
         return {"target": t}
 
 
+# ---- Common optional meta fields (docs/06 Recommended) ----
+
+@dataclass(frozen=True)
+class InputMeta:
+    interactionId: Optional[str] = None
+    timestampSec: Optional[float] = None
+    seq: Optional[int] = None
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "InputMeta":
+        if not isinstance(d, dict):
+            raise ValueError(f"InputMeta must be object, got: {type(d)}")
+        interactionId = str(d["interactionId"]) if "interactionId" in d and d["interactionId"] is not None else None
+        timestampSec = float(d["timestampSec"]) if "timestampSec" in d and d["timestampSec"] is not None else None
+        seq = int(d["seq"]) if "seq" in d and d["seq"] is not None else None
+        return InputMeta(interactionId=interactionId, timestampSec=timestampSec, seq=seq)
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        if self.interactionId is not None:
+            out["interactionId"] = str(self.interactionId)
+        if self.timestampSec is not None:
+            out["timestampSec"] = float(self.timestampSec)
+        if self.seq is not None:
+            out["seq"] = int(self.seq)
+        return out
+
+
 @dataclass(frozen=True)
 class TouchStartPayload:
     # docs/06
@@ -288,8 +317,8 @@ class TouchStartPayload:
     fingerPointWorld: Vec3        # WORLD
     cameraForwardWorld: Vec3      # WORLD (camera forward)
 
-    # optional extension (recommended): interaction/session id
-    interactionId: Optional[str] = None
+    # docs/06 recommended optional fields
+    meta: InputMeta = InputMeta()
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "TouchStartPayload":
@@ -315,14 +344,14 @@ class TouchStartPayload:
         else:
             cf = Vec3.from_dict(d.get("z_direction", {"x": 0, "y": 0, "z": 1}))
 
-        interactionId = str(d["interactionId"]) if "interactionId" in d and d["interactionId"] is not None else None
+        meta = InputMeta.from_dict(d)
 
         return TouchStartPayload(
             target=target,
             actionPointLocal=ap,
             fingerPointWorld=fp,
             cameraForwardWorld=cf,
-            interactionId=interactionId,
+            meta=meta,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -332,12 +361,23 @@ class TouchStartPayload:
             "actionPointLocal": self.actionPointLocal.to_dict(),
             "fingerPointWorld": self.fingerPointWorld.to_dict(),
             "cameraForwardWorld": self.cameraForwardWorld.to_dict(),
+            **self.meta.to_dict(),
         }
-        if self.interactionId is not None:
-            out["interactionId"] = str(self.interactionId)
         return out
 
     # 레거시 코드 호환용 프로퍼티
+    @property
+    def interactionId(self) -> Optional[str]:
+        return self.meta.interactionId
+
+    @property
+    def timestampSec(self) -> Optional[float]:
+        return self.meta.timestampSec
+
+    @property
+    def seq(self) -> Optional[int]:
+        return self.meta.seq
+
     @property
     def actionPoint(self) -> Vec3:
         return self.actionPointLocal
@@ -357,8 +397,9 @@ class TouchingPayload:
     fingerPointWorld: Vec3      # WORLD
     cameraForwardWorld: Vec3    # WORLD
 
-    # optional extension (recommended): interaction/session id
-    interactionId: Optional[str] = None
+    # docs/06 recommended: target or interactionId
+    target: Optional[PartRef] = None
+    meta: InputMeta = InputMeta()
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "TouchingPayload":
@@ -375,12 +416,15 @@ class TouchingPayload:
         else:
             cf = Vec3.from_dict(d.get("z_direction", {"x": 0, "y": 0, "z": 1}))
 
-        interactionId = str(d["interactionId"]) if "interactionId" in d and d["interactionId"] is not None else None
+        # target is optional (recommended in docs/06)
+        target = PartRef.from_any(d) if ("target" in d or "targetPartIndex" in d or "targetPartName" in d or "partIndex" in d or "partName" in d) else None
+        meta = InputMeta.from_dict(d)
 
         return TouchingPayload(
             fingerPointWorld=fp,
             cameraForwardWorld=cf,
-            interactionId=interactionId,
+            target=target,
+            meta=meta,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -388,12 +432,25 @@ class TouchingPayload:
         out: Dict[str, Any] = {
             "fingerPointWorld": self.fingerPointWorld.to_dict(),
             "cameraForwardWorld": self.cameraForwardWorld.to_dict(),
+            **self.meta.to_dict(),
         }
-        if self.interactionId is not None:
-            out["interactionId"] = str(self.interactionId)
+        if self.target is not None:
+            out.update(self.target.to_target_dict())
         return out
 
     # 레거시 코드 호환용 프로퍼티
+    @property
+    def interactionId(self) -> Optional[str]:
+        return self.meta.interactionId
+
+    @property
+    def timestampSec(self) -> Optional[float]:
+        return self.meta.timestampSec
+
+    @property
+    def seq(self) -> Optional[int]:
+        return self.meta.seq
+
     @property
     def fingerPoint(self) -> Vec3:
         return self.fingerPointWorld
@@ -405,27 +462,46 @@ class TouchingPayload:
 
 @dataclass(frozen=True)
 class TouchEndPayload:
-    # optional extension (recommended): interaction/session id
-    interactionId: Optional[str] = None
+    # docs/06 recommended: target or interactionId
+    target: Optional[PartRef] = None
+    meta: InputMeta = InputMeta()
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "TouchEndPayload":
         if not isinstance(d, dict):
             # TouchEnd는 payload {}가 일반적이지만, None이면 {}로 취급
             d = {}
-        interactionId = str(d["interactionId"]) if "interactionId" in d and d["interactionId"] is not None else None
-        return TouchEndPayload(interactionId=interactionId)
+
+        target = PartRef.from_any(d) if ("target" in d or "targetPartIndex" in d or "targetPartName" in d or "partIndex" in d or "partName" in d) else None
+        meta = InputMeta.from_dict(d)
+
+        return TouchEndPayload(target=target, meta=meta)
 
     def to_dict(self) -> Dict[str, Any]:
-        out: Dict[str, Any] = {}
-        if self.interactionId is not None:
-            out["interactionId"] = str(self.interactionId)
+        out: Dict[str, Any] = {
+            **self.meta.to_dict(),
+        }
+        if self.target is not None:
+            out.update(self.target.to_target_dict())
         return out
+
+    @property
+    def interactionId(self) -> Optional[str]:
+        return self.meta.interactionId
+
+    @property
+    def timestampSec(self) -> Optional[float]:
+        return self.meta.timestampSec
+
+    @property
+    def seq(self) -> Optional[int]:
+        return self.meta.seq
 
 
 # ---- Event wrappers (discriminated union) ----
 
 TouchEventType = Literal["TouchStart", "Touching", "TouchEnd"]
+
 
 @dataclass(frozen=True)
 class TouchStartEvent:
@@ -504,8 +580,8 @@ def resolve_target_part_name(
     PartIndex 기반 입력을 name으로 해석하고 싶을 때 사용.
     - part_names는 SimState.parts와 동일한 순서의 이름 배열(엔진이 제공/합의)
     """
+    # TouchStart: payload.target
     if isinstance(event, TouchStartEvent):
-        # name 우선(권장), 없으면 index fallback
         if event.payload.target.partName:
             return event.payload.target.partName
 
@@ -516,5 +592,30 @@ def resolve_target_part_name(
             return part_names[idx]
         return None
 
-    # Touching/TouchEnd는 target을 포함하지 않는 설계이므로 None
+    # Touching: optional payload.target
+    if isinstance(event, TouchingEvent):
+        if event.payload.target is None:
+            return None
+        if event.payload.target.partName:
+            return event.payload.target.partName
+        idx = event.payload.target.partIndex
+        if idx is None:
+            return None
+        if 0 <= idx < len(part_names):
+            return part_names[idx]
+        return None
+
+    # TouchEnd: optional payload.target
+    if isinstance(event, TouchEndEvent):
+        if event.payload.target is None:
+            return None
+        if event.payload.target.partName:
+            return event.payload.target.partName
+        idx = event.payload.target.partIndex
+        if idx is None:
+            return None
+        if 0 <= idx < len(part_names):
+            return part_names[idx]
+        return None
+
     return None

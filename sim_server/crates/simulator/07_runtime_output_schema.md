@@ -30,6 +30,10 @@ Global Notes
   - Server → Client ModelState: 10 Hz (100 ms)
   - (필요 시) 더 높은 주파수는 네트워크/성능을 보고 조정
 
+- Simulation Authority
+  - 물리 상태의 단일 진실원(Source of Truth)은 서버 시뮬레이션이다.
+  - 클라이언트는 상태를 보간(interpolation)하여 렌더링한다.
+
 --------------------------------------------------
 Core Types (02_core_types.md와 동일)
 --------------------------------------------------
@@ -122,12 +126,11 @@ Message Metadata (Recommended, Optional)
 }
 
 - seq (integer, optional)
-  - 서버가 전송하는 상태 메시지 시퀀스 번호(증가)
-  - 클라이언트에서 드롭/역순 수신 감지에 사용
+  - 상태 메시지 시퀀스 번호
+  - 드롭/역순 수신 감지
 
 - server_time_sec (number, optional)
-  - 서버 기준 wall-clock timestamp(초)
-  - 클라이언트에서 지연 측정/보간에 활용 가능
+  - 서버 wall-clock timestamp
 
 --------------------------------------------------
 Part Index Agreement (Optional)
@@ -137,12 +140,12 @@ Part Index Agreement (Optional)
 target.partIndex를 사용할 경우, 서버/클라이언트는
 parts 배열의 순서를 항상 합의해야 한다.
 
-권장 방식 1) parts를 "고정 순서"로 유지
-- 서버는 항상 같은 순서로 parts를 출력한다.
-- 예: metadata bodies의 순서, 또는 name 정렬 순서
+권장 방식 1) 고정 순서 유지
 
-권장 방식 2) partNames 테이블을 함께 제공 (더 안전)
-- parts는 여전히 배열이지만, index→name 매핑을 명시한다.
+- metadata bodies 순서 기반
+- 또는 name 정렬
+
+권장 방식 2) partNames 매핑 제공
 
 {
   "sim_time": 0.0,
@@ -155,48 +158,108 @@ parts 배열의 순서를 항상 합의해야 한다.
   ]
 }
 
-Notes
------
+--------------------------------------------------
+Extended Telemetry (UPDATED, Optional)
+--------------------------------------------------
 
-- 위 방식은 네트워크 비용을 줄이면서도 index 안정성을 확보한다.
-- 이 프로젝트는 name 기반 입력을 우선으로 두되,
-  index 기반도 병행 지원하는 것을 권장한다.
+교육용 시뮬레이터 및 디버깅 목적에서,
+다음 물리량을 선택적으로 출력할 수 있다.
 
-권장 규칙(중요):
-- 서버는 가능하면 partNames를 "초기 1회" 또는 "변경 시"에만 보내고,
-  평상시에는 parts만 보내는 방식도 가능하다.
-  (네트워크 절감 + 안정성 확보)
+### Velocities
+
+{
+  "name": "shaft",
+  "pos": {...},
+  "rot": {...},
+
+  "lin_vel_world": { "x": 0.0, "y": 0.0, "z": 0.0 },
+  "ang_vel_world": { "x": 0.0, "y": 5.0, "z": 0.0 }
+}
+
+- PyChrono
+  - GetPos_dt()
+  - GetAngVelParent() or converted world angvel
+
+### Reaction Forces (Joint)
+
+{
+  "jointName": "rev_shaft_base",
+  "reaction_force_world": {...},
+  "reaction_torque_world": {...}
+}
+
+- ChLink.GetReactionForce()
+- ChLink.GetReactionTorque()
+
+### Motor Telemetry
+
+{
+  "actuatorName": "shaft_motor",
+  "applied_torque": 2.5,
+  "angular_speed": 4.8
+}
+
+교육 시각화 / 그래프 / UI 피드백용
+
+--------------------------------------------------
+Contact / Collision Debug (UPDATED, Optional)
+--------------------------------------------------
+
+충돌 구현 이후 디버그/교육 목적 출력 확장 가능.
+
+예:
+
+{
+  "contacts": [
+    {
+      "bodyA": "gear_A",
+      "bodyB": "gear_B",
+      "point_world": { "x": 0.01, "y": 0.03, "z": 0.02 },
+      "normal_world": { "x": 1.0, "y": 0.0, "z": 0.0 },
+      "normal_force": 12.5
+    }
+  ]
+}
+
+용도:
+
+- 접촉 시각화
+- 기어 맞물림 교육
+- 충돌 디버깅
+
+--------------------------------------------------
+Interaction Debug (Optional)
+--------------------------------------------------
+
+AR 상호작용 디버그용 출력 확장.
+
+{
+  "activeInteraction": {
+    "interactionId": "uuid",
+    "partName": "shaft",
+    "mode": "rotate"
+  }
+}
+
+- 현재 조작 대상 표시
+- rotate / spring 모드 시각화 가능
 
 --------------------------------------------------
 Design Rules
 --------------------------------------------------
 
-- 출력은 "렌더링 가능한 포즈"를 제공하는 것이 목적이다.
-  (충돌/접촉/힘/토크 등 상세 물리량은 기본 스키마에서 제외)
-
-- name은 메타데이터(bodies[*].name)와 1:1 매핑되어야 한다.
-
-- Quaternion ordering은 반드시 (w,x,y,z)로 고정한다.
-  (Rust/Unity 등에서 (x,y,z,w) 관습이 있으므로 특히 주의)
-
-- 입력(target)과의 합의
-  - 클라이언트 입력은 partName 우선(권장), partIndex는 보조(fallback)로 사용한다.
-  - partIndex를 쓸 경우, Output의 parts 순서 또는 partNames 합의가 반드시 필요하다.
+- 출력은 렌더링 가능한 포즈 제공이 1차 목적
+- 물리 상세값은 optional telemetry로 확장
+- name은 metadata와 1:1 매핑
+- quaternion ordering은 (w,x,y,z) 고정
+- 서버 상태가 authoritative
 
 --------------------------------------------------
-Future Extensions (Optional)
+Future Extensions
 --------------------------------------------------
 
-- velocities
-  - 선속도/각속도 포함
-  - 예: lin_vel_world, ang_vel_world
-
-- forces
-  - 접촉력, 모터 토크 등 디버깅용 물리량 포함
-
-- contacts
-  - 충돌 접촉점 정보 (디버그/시각화 목적)
-
-- selection/interaction debug (선택)
-  - 서버가 현재 어떤 part를 조작 중인지 표시하는 디버그 필드
-  - 예: activeInteraction { interactionId, partName }
+- constraint forces visualization
+- energy / power telemetry
+- gear mesh slip detection
+- collision heatmap
+- educational overlay data
