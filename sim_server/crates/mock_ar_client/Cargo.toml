@@ -1,0 +1,18 @@
+[package]
+name = "mock_ar_client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+axum = { workspace = true }
+
+# 같은 워크스페이스의 server 모델 재사용
+server = { path = "../server" }
+sim_manager = { path = "../sim_manager" }
+
+[lib]
+name = "mock_ar_client"
+path = "src/lib.rs"

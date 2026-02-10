@@ -23,11 +23,20 @@ local-ip-address = "0.6"
 minifb = "0.27"
 image = "0.25"
 
+[dev-dependencies]
+mock_ar_client = { path = "crates/mock_ar_client" }
+tokio = { version = "1.42", features = ["full"] }
+tokio-tungstenite = "0.26"
+futures-util = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { version = "0.12", features = ["json"] }
+
 [workspace]
 members = [
     "crates/server",
     "crates/sim_manager",
-    "crates/data_loader"
+    "crates/data_loader",
+    "crates/mock_ar_client"
 ]
 resolver = "2"
 

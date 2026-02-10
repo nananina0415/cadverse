@@ -29,29 +29,14 @@ pub struct ServerState {
     pub input_buffer: InputBuffer<TouchRaycastInput>,
 }
 
-/// WebSocket 서버 초기화 및 시작
-///
-/// ## 인자
-/// - `state_buffer`: 시뮬레이션 프레임 버퍼 (Arc<SimStateBuffer>)
-/// - `input_buffer`: 입력 메시지 버퍼 (InputBuffer<TouchRaycastInput>)
-pub async fn start_server(state_buffer: StateBuffer, input_buffer: InputBuffer<TouchRaycastInput>) -> Result<()> {
-    let server_state = ServerState {
-        state_buffer,
-        input_buffer,
-    };
-
-    let app = Router::new()
-        // WebSocket 엔드포인트
+/// 서버 라우터 빌드 (테스트에서도 사용 가능)
+pub fn build_router(server_state: ServerState) -> Router {
+    Router::new()
         .route("/cadverse", get(websocket::websocket_handler))
-        // 오브젝트 리스트 API
         .route("/cadverse/object", get(routes::get_object_list))
-        // 메쉬 파일 다운로드 API
         .route("/cadverse/object/{name}", get(routes::get_object_mesh))
-        // QR 패턴 API
         .route("/cadverse/qr", get(routes::get_qr_pattern))
-        // Axum state로 server_state 전달
         .with_state(server_state)
-        // 모든 HTTP 요청/응답 로깅
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(|request: &Request<Body>| {
@@ -70,7 +55,17 @@ pub async fn start_server(state_buffer: StateBuffer, input_buffer: InputBuffer<T
                 .on_failure(|error: tower_http::classify::ServerErrorsFailureClass, latency: std::time::Duration, _span: &tracing::Span| {
                     warn!("✗ {} ({:?})", error, latency);
                 }),
-        );
+        )
+}
+
+/// WebSocket 서버 초기화 및 시작
+pub async fn start_server(state_buffer: StateBuffer, input_buffer: InputBuffer<TouchRaycastInput>) -> Result<()> {
+    let server_state = ServerState {
+        state_buffer,
+        input_buffer,
+    };
+
+    let app = build_router(server_state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
     info!("Server listening on {}", addr);
