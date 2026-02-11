@@ -42,7 +42,7 @@ namespace CADverse.Utils
         {
             if (cameraManager == null)
             {
-                cameraManager = FindObjectOfType<ARCameraManager>();
+                cameraManager = FindFirstObjectByType<ARCameraManager>();
             }
         }
 

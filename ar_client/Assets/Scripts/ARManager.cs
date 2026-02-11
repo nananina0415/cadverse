@@ -17,7 +17,6 @@ namespace CADverse.AR
         private MutableRuntimeReferenceImageLibrary _runtimeReferenceImageLibrary;
         private ModelManager _modelManager;
         private string _registeredMarkerName;
-        private bool _imageRegistered = false;
 
         void Awake()
         {
@@ -100,7 +99,6 @@ namespace CADverse.AR
             if (jobState.status == AddReferenceImageJobStatus.Success)
             {
                 Debug.Log($"[ARManager] 이미지 등록 성공: {qrContent}");
-                _imageRegistered = true;
 
                 // 라이브러리 할당 및 활성화
                 _arTrackedImageManager.referenceLibrary = _runtimeReferenceImageLibrary;
