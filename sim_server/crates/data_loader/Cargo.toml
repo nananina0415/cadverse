@@ -7,6 +7,11 @@ edition = "2021"
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+tracing = { workspace = true }
+notify = "7"
+notify-debouncer-mini = "0.5"
+crossbeam-channel = "0.5"
+rfd = "0.15"
 
 [lib]
 name = "cad_data_loader"

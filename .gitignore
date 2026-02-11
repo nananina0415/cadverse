@@ -136,3 +136,30 @@ model/*_original.obj
 
 # Legacy Unity folder (renamed to ar_client)
 ar_client_retry/
+
+clean_temp.sh
+clean_temp.bat
+
+GEMINI.md
+.claude/
+# ========================================
+# 추가 패턴 (2025-02-11 정리)
+# ========================================
+
+# APK 파일 (모든 위치)
+*.apk
+**/*.apk
+
+# 모델 백업 파일 (모든 위치)
+**/*_original.obj
+
+# Unity Build 폴더 (prototype 포함)
+**/[Bb]uild/
+**/[Bb]uilds/
+
+# C# 프로젝트 파일 (자동 생성)
+**/*.csproj
+**/*.sln
+
+# Utility 스크립트 (필요시 git show로 복구)
+convert_obj_scale.py

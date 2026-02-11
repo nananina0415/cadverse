@@ -22,6 +22,7 @@ qrcode = "0.14"
 local-ip-address = "0.6"
 minifb = "0.27"
 image = "0.25"
+crossbeam-channel = "0.5"
 
 [dev-dependencies]
 mock_ar_client = { path = "crates/mock_ar_client" }
@@ -30,6 +31,9 @@ tokio-tungstenite = "0.26"
 futures-util = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { version = "0.12", features = ["json"] }
+tempfile = "3.13"
+crossbeam-channel = "0.5"
+cad_data_loader = { path = "crates/data_loader" }
 
 [workspace]
 members = [

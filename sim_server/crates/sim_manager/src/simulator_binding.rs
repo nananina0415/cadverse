@@ -5,7 +5,6 @@
 // - new(): Python Simulator 인스턴스를 생성
 // - step(): Python Simulator.step(None) 호출 -> Rust SimState로 변환
 
-use std::env;
 use std::sync::Mutex;
 
 use anyhow::{anyhow, Context, Result};
@@ -24,13 +23,10 @@ pub struct Simulator {
 
 impl Simulator {
     /// Python Simulator 생성
-    pub fn new() -> Result<Self> {
-        let scene_path = env::var("SIM_SCENE_JSON").unwrap_or_else(|_| "resources/test_scene.json".to_string());
+    pub fn new(scene_path: &str) -> Result<Self> {
+        let scene_path = scene_path.to_string();
 
-        let dt: f64 = match env::var("SIM_DT") {
-            Ok(v) => v.parse::<f64>().unwrap_or(1e-3),
-            Err(_) => 1e-3,
-        };
+        let dt: f64 = 1e-3;
 
         let py_simulator_obj = Python::with_gil(|py| -> Result<Py<PyAny>> {
             // 1) import simulator.SimInfo.SimInfo
