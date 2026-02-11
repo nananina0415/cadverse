@@ -56,18 +56,12 @@ impl SimLoopControl {
     }
 }
 
-/// make_sim_loop_thread
-/// - 입력 소스 + 출력 싱크를 받아 별도 스레드에서 시뮬레이션을 계속 돈다.
+/// 이미 생성된 Simulator로 시뮬레이션 루프를 시작한다.
 ///
-/// 주의:
-/// - Simulator::new()가 Python 초기화/SimInfo 로딩 등을 내부에서 처리한다고 가정.
-/// - 실제 프로젝트에서는 new()에 config/info를 넘기는 형태가 더 자연스럽다.
-///
-/// 추가로:
-/// - 너무 빠르게 도는 busy loop를 피하려고,
-///   입력이 없거나 step이 즉시 끝나는 경우 sleep을 조금 넣을 수 있다.
-/// - dt 기반 pacing이 필요하면 target_dt 옵션을 써라.
-pub fn make_sim_loop_thread<I, S>(
+/// orchestrator에서 Simulator를 외부에서 생성한 뒤 이 함수에 전달한다.
+/// 1ms 간격으로 step()을 실행하고 결과를 sink로 publish한다.
+pub fn run_sim_loop<I, S>(
+    simulator: Simulator,
     input: Arc<I>,
     sink: Arc<S>,
     target_dt: Option<Duration>,
@@ -82,26 +76,15 @@ where
     };
 
     let handle: JoinHandle<Result<()>> = thread::spawn(move || {
-        // 1) simulator 생성 (Python Simulator 래핑)
-        let simulator = Simulator::new()?;
-
-        // 2) 루프 pacing
         let mut last_tick = Instant::now();
 
-        // 3) main loop
         while !stop_flag.load(Ordering::SeqCst) {
-            // 입력 읽기 (없으면 None)
-            let maybe_in = input.read();
+            let _maybe_in = input.read();
 
-            // step 실행
-            // - Simulator::step는 (Option<Input>)을 받아 SimState를 반환한다고 가정
-            // - Input 타입은 simulator_binding.rs에서 pyo3로 dict 변환/처리하도록 설계
-            let state: SimState = simulator.step(maybe_in)?;
+            let state: SimState = simulator.step()?;
 
-            // 결과 publish
             sink.publish(state);
 
-            // (선택) target_dt pacing
             if let Some(dt) = target_dt {
                 let elapsed = last_tick.elapsed();
                 if elapsed < dt {
@@ -109,8 +92,6 @@ where
                 }
                 last_tick = Instant::now();
             } else {
-                // (선택) 과도한 busy loop 방지: 아주 짧게 양보
-                // 필요 없으면 지워도 됨.
                 thread::sleep(Duration::from_millis(1));
             }
         }
@@ -120,20 +101,3 @@ where
 
     (handle, control)
 }
-
-/* -----------------------------
-   아래는 "팀원 요구 형태"에 더 가까운 최소 예시(참고용)
-   -----------------------------
-
-use std::thread::JoinHandle;
-
-pub fn make_sim_loop_thread_minimal<I: InputSource>(input: Arc<I>) -> JoinHandle<()> {
-    thread::spawn(move || {
-        let simulator = Simulator::new().expect("failed to create Simulator");
-        loop {
-            let _state = simulator.step(input.read()).expect("step failed");
-        }
-    })
-}
-
-*/

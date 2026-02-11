@@ -12,6 +12,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 parking_lot = "0.12"
+crossbeam-channel = "0.5"
+cad_data_loader = { path = "../data_loader" }
 
 [lib]
 name = "sim_manager"

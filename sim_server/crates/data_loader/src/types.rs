@@ -28,6 +28,7 @@ pub struct ObjFileEntry {
 }
 
 /// data_loader → sim_manager 채널 메시지
+#[derive(Debug)]
 pub enum LoaderMessage {
     /// 씬 로드 완료 (초기 또는 리로드)
     SceneLoaded(CadSceneData),
