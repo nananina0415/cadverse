@@ -3,7 +3,7 @@
 // 역할:
 // - Rust(sim_manager)에서 Python(simulator 패키지)의 Simulator를 PyO3로 감싸서 사용
 // - new(): Python Simulator 인스턴스를 생성
-// - step(): Python Simulator.step(None) 호출 -> Rust SimState로 변환
+// - step(user_input): Python Simulator.step(user_input) 호출 -> Rust SimState로 변환
 
 use std::sync::Mutex;
 
@@ -11,13 +11,14 @@ use anyhow::{anyhow, Context, Result};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
+use serde_json::Value;
+
 use crate::sim_state::{PartState, SimState};
 
 pub struct Simulator {
     /// Python side simulator.main.Simulator instance
     py_simulator_obj: Py<PyAny>,
-
-    /// 마지막으로 얻은 상태 (외부에서 step 결과 누적/참조 용)
+    /// 마지막으로 얻은 상태
     prev_state: Mutex<SimState>,
 }
 
@@ -25,7 +26,6 @@ impl Simulator {
     /// Python Simulator 생성
     pub fn new(scene_path: &str) -> Result<Self> {
         let scene_path = scene_path.to_string();
-
         let dt: f64 = 1e-3;
 
         let py_simulator_obj = Python::with_gil(|py| -> Result<Py<PyAny>> {
@@ -39,9 +39,7 @@ impl Simulator {
 
             // 2) info = SimInfo.from_json_file(scene_path, dt=dt)
             let kwargs = PyDict::new(py);
-            kwargs
-                .set_item("dt", dt)
-                .context("Failed to set dt kwarg")?;
+            kwargs.set_item("dt", dt).context("Failed to set dt kwarg")?;
 
             let info_obj = siminfo_cls
                 .call_method("from_json_file", (scene_path.as_str(),), Some(&kwargs))
@@ -70,19 +68,34 @@ impl Simulator {
     }
 
     /// 한 step 진행하고, Rust SimState 반환
-    pub fn step(&self) -> Result<SimState> {
+    ///
+    /// - user_input: runtime_types schema-06 기반 JSON(dict) 형태를 그대로 넣어주면 됨.
+    ///   예) {"type":"TouchStart","payload":{...}}
+    pub fn step(&self, user_input: Option<Value>) -> Result<SimState> {
         let new_state = Python::with_gil(|py| -> Result<SimState> {
             let sim_any = self.py_simulator_obj.bind(py);
 
-            // Python: state = sim.step(None)
+            // ✅ 가장 안정적인 변환:
+            // serde_json::Value -> JSON string -> python json.loads -> dict/list
+            let arg0 = match user_input {
+                None => py.None(),
+                Some(v) => {
+                    let s = serde_json::to_string(&v).context("Failed to serialize user_input to JSON string")?;
+                    let json_mod = py.import("json").context("Failed to import Python module: json")?;
+                    let obj = json_mod
+                        .call_method1("loads", (s,))
+                        .context("Failed to call json.loads(user_input)")?;
+                    obj.into()
+                }
+            };
+
             let state_any = sim_any
-                .call_method1("step", (py.None(),))
-                .context("Failed to call Python Simulator.step(None)")?;
+                .call_method1("step", (arg0,))
+                .context("Failed to call Python Simulator.step(userInput)")?;
 
             py_state_to_rust(&state_any).context("Failed to convert Python SimState -> Rust SimState")
         })?;
 
-        // prev_state 갱신
         if let Ok(mut guard) = self.prev_state.lock() {
             *guard = new_state.clone();
         }
@@ -90,7 +103,6 @@ impl Simulator {
         Ok(new_state)
     }
 
-    /// 필요하면 외부에서 마지막 상태만 가져갈 수 있게(선택)
     #[allow(dead_code)]
     pub fn prev_state(&self) -> SimState {
         self.prev_state
@@ -105,8 +117,7 @@ impl Simulator {
 /// ------------------------------
 
 fn py_state_to_rust(state: &Bound<'_, PyAny>) -> Result<SimState> {
-    let sim_time = get_f64_attr_or_key(state, "sim_time")
-        .context("SimState missing sim_time")?;
+    let sim_time = get_f64_attr_or_key(state, "sim_time").context("SimState missing sim_time")?;
 
     let parts_any = get_attr_or_key(state, "parts").context("SimState missing parts")?;
     let parts_list: &Bound<'_, PyList> = parts_any
@@ -193,5 +204,7 @@ fn quat_from_any(q: &Bound<'_, PyAny>) -> Result<[f64; 4]> {
     ) {
         return Ok([e0, e1, e2, e3]);
     }
-    Err(anyhow!("quat parse failed: expected (w,x,y,z) or attributes w/x/y/z or e0/e1/e2/e3"))
+    Err(anyhow!(
+        "quat parse failed: expected (w,x,y,z) or attributes w/x/y/z or e0/e1/e2/e3"
+    ))
 }
