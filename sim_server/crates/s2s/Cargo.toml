@@ -1,0 +1,16 @@
+[package]
+name = "s2s"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "s2s"
+path = "src/lib.rs"
+
+[[example]]
+name = "demo"
+path = "examples/demo.rs"
+
+[dependencies]
+mdns-sd = "0.18.2"
+thiserror = { workspace = true }
