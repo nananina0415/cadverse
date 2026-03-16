@@ -26,6 +26,56 @@ from typing import Any, Dict, List, Literal, Optional, Union
 
 
 # ============================================================
+# Small utilities
+# ============================================================
+
+def _get_first(d: Dict[str, Any], keys: List[str], default: Any = None) -> Any:
+    """dict에서 여러 후보 키 중 첫 번째로 존재하는 값을 반환."""
+    for k in keys:
+        if k in d and d[k] is not None:
+            return d[k]
+    return default
+
+
+def _float_or_default(x: Any, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return float(default)
+
+
+def _int_or_default(x: Any, default: int = 0) -> int:
+    try:
+        return int(x)
+    except Exception:
+        return int(default)
+
+
+def _chrono_vec_xyz(v: Any) -> Optional[tuple[float, float, float]]:
+    """
+    Chrono 벡터류(ChVector3d)가 바인딩에 따라
+    - v.x / v.y / v.z 가 '속성'이거나
+    - v.x() / v.y() / v.z() 가 '메서드'
+    일 수 있어서 안전하게 (x,y,z)를 추출한다.
+
+    runtime_types는 chrono를 import하지 않으므로 duck-typing만 사용.
+    """
+    if v is None:
+        return None
+    try:
+        if hasattr(v, "x") and hasattr(v, "y") and hasattr(v, "z"):
+            x = getattr(v, "x")
+            y = getattr(v, "y")
+            z = getattr(v, "z")
+            if callable(x):
+                return (float(x()), float(y()), float(z()))
+            return (float(x), float(y), float(z))
+    except Exception:
+        return None
+    return None
+
+
+# ============================================================
 # Core runtime value objects
 # ============================================================
 
@@ -91,6 +141,163 @@ class QuatWXYZ:
 
 
 # ============================================================
+# (1-3) Contact telemetry (optional, minimal)
+# ============================================================
+
+@dataclass(frozen=True)
+class ContactPair:
+    """
+    가장 강한 접촉(또는 대표 접촉)의 pair 정보.
+    - bodyA/bodyB: 파트 이름 (가능하면 SimState의 PartState.name과 동일)
+    """
+    bodyA: str
+    bodyB: str
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "ContactPair":
+        if not isinstance(d, dict):
+            raise ValueError(f"ContactPair must be object, got: {type(d)}")
+
+        # 다양한 레거시 키 허용
+        a = _get_first(d, ["bodyA", "a", "body1", "A", "nameA"], "")
+        b = _get_first(d, ["bodyB", "b", "body2", "B", "nameB"], "")
+        return ContactPair(bodyA=str(a), bodyB=str(b))
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"bodyA": str(self.bodyA), "bodyB": str(self.bodyB)}
+
+
+@dataclass(frozen=True)
+class ContactTelemetry:
+    """
+    docs/07 optional telemetry (최소 기능).
+
+    - contact_count: 이 step에서 관측된 contact 개수(또는 접촉점 개수)
+    - max_contact_force: 관측된 접촉 힘의 최대값 (N) (가능하면 normal force 기반)
+    - max_pair: 최대 접촉을 만든 body pair (가능하면)
+    """
+    contact_count: int
+    max_contact_force: float
+    max_pair: Optional[ContactPair] = None
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "ContactTelemetry":
+        if not isinstance(d, dict):
+            raise ValueError(f"ContactTelemetry must be object, got: {type(d)}")
+
+        # snake_case / camelCase 둘 다 수용
+        cc = _int_or_default(_get_first(d, ["contact_count", "contactCount", "n_contacts", "nContacts"], 0), 0)
+        mf = _float_or_default(_get_first(d, ["max_contact_force", "maxContactForce", "max_force", "maxForce"], 0.0), 0.0)
+
+        mp_raw = _get_first(d, ["max_pair", "maxPair", "pair", "max_contact_pair"], None)
+        mp = ContactPair.from_dict(mp_raw) if isinstance(mp_raw, dict) else None
+
+        return ContactTelemetry(contact_count=int(cc), max_contact_force=float(mf), max_pair=mp)
+
+    def to_dict(self) -> Dict[str, Any]:
+        # docs/07 기본은 snake_case 유지
+        out: Dict[str, Any] = {
+            "contact_count": int(self.contact_count),
+            "max_contact_force": float(self.max_contact_force),
+        }
+        if self.max_pair is not None:
+            out["max_pair"] = self.max_pair.to_dict()
+        return out
+
+
+# ============================================================
+# (3-1.3) Gear telemetry (optional, minimal)
+# ============================================================
+
+@dataclass(frozen=True)
+class GearTelemetry:
+    """
+    3-1.3 gear 관련 최소 telemetry (런타임 디버그/진단용).
+
+    - applied_efficiency: (0~1] 이번 step에서 적용(또는 사용할 예정인) 효율
+    - loss_torque: 효율로 인해 손실로 간주한 토크 (N·m)
+    - backlash_deadband: 백래시 데드밴드(근사에 사용) (rad 또는 main.py에서 합의한 단위)
+    """
+    applied_efficiency: float
+    loss_torque: float
+    backlash_deadband: float
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "GearTelemetry":
+        if not isinstance(d, dict):
+            raise ValueError(f"GearTelemetry must be object, got: {type(d)}")
+
+        ae = _float_or_default(_get_first(d, ["applied_efficiency", "appliedEfficiency", "efficiency"], 1.0), 1.0)
+        lt = _float_or_default(_get_first(d, ["loss_torque", "lossTorque", "loss"], 0.0), 0.0)
+        bd = _float_or_default(_get_first(d, ["backlash_deadband", "backlashDeadband", "deadband", "backlash"], 0.0), 0.0)
+
+        # guardrails (schema-level; main.py에서 추가 clamp 가능)
+        ae = max(0.0, min(1.0, float(ae)))
+        lt = float(lt)  # loss_torque는 부호를 허용(방향 진단용)할 수 있어 clamp 안 함
+        bd = max(0.0, float(bd))
+
+        return GearTelemetry(
+            applied_efficiency=float(ae),
+            loss_torque=float(lt),
+            backlash_deadband=float(bd),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "applied_efficiency": float(self.applied_efficiency),
+            "loss_torque": float(self.loss_torque),
+            "backlash_deadband": float(self.backlash_deadband),
+        }
+
+@dataclass(frozen=True)
+class AssemblyGuideTelemetry:
+    """
+    3-2.3 조립/스냅 보조 상태 telemetry.
+
+    - activeSnap: 현재 이 guide가 활성 스냅 후보인지
+    - snapCandidate: 현재 후보로 판단된 상대/가이드 이름
+    - snapErrorPos: 목표 위치까지의 거리 오차 (m)
+    - snapErrorAngle: 목표 각도까지의 오차 (rad)
+    - snapMode: assist | snap
+    """
+    activeSnap: bool
+    snapCandidate: Optional[str] = None
+    snapErrorPos: float = 0.0
+    snapErrorAngle: float = 0.0
+    snapMode: Optional[str] = None
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "AssemblyGuideTelemetry":
+        if not isinstance(d, dict):
+            raise ValueError(f"AssemblyGuideTelemetry must be object, got: {type(d)}")
+
+        active = bool(_get_first(d, ["activeSnap", "active_snap", "active"], False))
+        cand = _get_first(d, ["snapCandidate", "snap_candidate", "candidate"], None)
+        err_pos = _float_or_default(_get_first(d, ["snapErrorPos", "snap_error_pos", "errorPos"], 0.0), 0.0)
+        err_ang = _float_or_default(_get_first(d, ["snapErrorAngle", "snap_error_angle", "errorAngle"], 0.0), 0.0)
+        mode = _get_first(d, ["snapMode", "snap_mode", "mode"], None)
+
+        return AssemblyGuideTelemetry(
+            activeSnap=bool(active),
+            snapCandidate=str(cand) if cand is not None else None,
+            snapErrorPos=max(0.0, float(err_pos)),
+            snapErrorAngle=max(0.0, float(err_ang)),
+            snapMode=str(mode) if mode is not None else None,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {
+            "activeSnap": bool(self.activeSnap),
+            "snapErrorPos": float(self.snapErrorPos),
+            "snapErrorAngle": float(self.snapErrorAngle),
+        }
+        if self.snapCandidate is not None:
+            out["snapCandidate"] = str(self.snapCandidate)
+        if self.snapMode is not None:
+            out["snapMode"] = str(self.snapMode)
+        return out
+
+# ============================================================
 # Runtime Output (Server -> Client)
 # ============================================================
 
@@ -131,15 +338,27 @@ class PartState:
         - name: docs/07에서 요구하는 bodies[*].name 과 동일한 문자열
         - pos: WORLD (x,y,z)
         - rot: WORLD quaternion (w,x,y,z) == Chrono (e0,e1,e2,e3)
+
+        ✅ FIX:
+        - 바인딩에 따라 p.x가 값이 아니라 p.x()일 수 있어 안전 추출
         """
         p = body.GetPos()
         q = body.GetRot()  # Chrono: e0=w, e1=x, e2=y, e3=z
+
+        xyz = _chrono_vec_xyz(p)
+        if xyz is None:
+            # 최후 fallback
+            px = float(getattr(p, "x", 0.0)) if not callable(getattr(p, "x", None)) else float(p.x())
+            py = float(getattr(p, "y", 0.0)) if not callable(getattr(p, "y", None)) else float(p.y())
+            pz = float(getattr(p, "z", 0.0)) if not callable(getattr(p, "z", None)) else float(p.z())
+        else:
+            px, py, pz = xyz
+
         return PartState(
             name=str(name),
-            pos=Vec3(float(p.x), float(p.y), float(p.z)),
+            pos=Vec3(float(px), float(py), float(pz)),
             rot=QuatWXYZ(float(q.e0), float(q.e1), float(q.e2), float(q.e3)),
         )
-
 
 @dataclass(frozen=True)
 class SimState:
@@ -154,6 +373,18 @@ class SimState:
     - partNames: List[str]  (index 안정성)
     - seq: int              (증가하는 시퀀스)
     - server_time_sec: float (서버 wall-clock timestamp, seconds)
+
+    (1-3) Optional telemetry:
+    - telemetry: ContactTelemetry
+
+    (3-1.3) Optional gear telemetry:
+    - gearTelemetry: Dict[str, GearTelemetry]   # key = gearPair name
+
+    (3-2.3) Optional assembly guide telemetry:
+    - assemblyTelemetry: Dict[str, AssemblyGuideTelemetry]  # key = assembly guide name
+
+    (2-3.4) Optional build warnings:
+    - warnings: List[str]
     """
     sim_time: float
     parts: List[PartState]
@@ -163,6 +394,18 @@ class SimState:
     seq: Optional[int] = None
     server_time_sec: Optional[float] = None
 
+    # (Optional) contact telemetry
+    telemetry: Optional[ContactTelemetry] = None
+
+    # (Optional) gear telemetry (3-1.3)
+    gearTelemetry: Optional[Dict[str, GearTelemetry]] = None
+
+    # (Optional) assembly telemetry (3-2.3)
+    assemblyTelemetry: Optional[Dict[str, AssemblyGuideTelemetry]] = None
+
+    # (Optional) build warnings (e.g., joint limit best-effort unsupported)
+    warnings: Optional[List[str]] = None
+
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "SimState":
         if not isinstance(d, dict):
@@ -170,22 +413,46 @@ class SimState:
 
         sim_time = float(d["sim_time"])
         seq = int(d["seq"]) if "seq" in d and d["seq"] is not None else None
-        server_time_sec = float(d["server_time_sec"]) if "server_time_sec" in d and d["server_time_sec"] is not None else None
+        server_time_sec = (
+            float(d["server_time_sec"]) if "server_time_sec" in d and d["server_time_sec"] is not None else None
+        )
 
         partNames = [str(x) for x in d.get("partNames", [])] if "partNames" in d else None
         raw_parts = d.get("parts", [])
 
-        # ---- Parse parts in two possible modes ----
-        # Mode A) parts = [{name,pos,rot}, ...]
-        # Mode B) partNames = [...], parts = [{pos,rot}, ...] (name omitted, index implied)
+        telemetry = None
+        if "telemetry" in d and d["telemetry"] is not None:
+            telemetry = ContactTelemetry.from_dict(d["telemetry"])
+
+        gear_raw = _get_first(d, ["gearTelemetry", "gear_telemetry", "gear"], None)
+        gearTelemetry: Optional[Dict[str, GearTelemetry]] = None
+        if isinstance(gear_raw, dict):
+            gt: Dict[str, GearTelemetry] = {}
+            for k, v in gear_raw.items():
+                if isinstance(v, dict):
+                    gt[str(k)] = GearTelemetry.from_dict(v)
+            gearTelemetry = gt
+
+        assembly_raw = _get_first(d, ["assemblyTelemetry", "assembly_telemetry", "assembly"], None)
+        assemblyTelemetry: Optional[Dict[str, AssemblyGuideTelemetry]] = None
+        if isinstance(assembly_raw, dict):
+            at: Dict[str, AssemblyGuideTelemetry] = {}
+            for k, v in assembly_raw.items():
+                if isinstance(v, dict):
+                    at[str(k)] = AssemblyGuideTelemetry.from_dict(v)
+            assemblyTelemetry = at
+
+        warnings_raw = _get_first(d, ["warnings", "buildWarnings"], None)
+        warnings: Optional[List[str]] = None
+        if isinstance(warnings_raw, list):
+            warnings = [str(x) for x in warnings_raw if x is not None]
+
         parts: List[PartState] = []
 
         if isinstance(raw_parts, list) and raw_parts:
-            # If first element has "name", assume Mode A.
             if isinstance(raw_parts[0], dict) and "name" in raw_parts[0]:
                 parts = [PartState.from_dict(p) for p in raw_parts]
             else:
-                # Mode B (name omitted) - requires partNames
                 if partNames is None:
                     raise ValueError("SimState.parts has no 'name' field; requires 'partNames' to map indices.")
                 if len(raw_parts) != len(partNames):
@@ -195,7 +462,6 @@ class SimState:
                 for nm, p in zip(partNames, raw_parts):
                     if not isinstance(p, dict):
                         raise ValueError(f"SimState.parts item must be object, got: {type(p)}")
-                    # p expected: {"pos":..., "rot":...}
                     parts.append(
                         PartState(
                             name=str(nm),
@@ -212,6 +478,10 @@ class SimState:
             partNames=partNames,
             seq=seq,
             server_time_sec=server_time_sec,
+            telemetry=telemetry,
+            gearTelemetry=gearTelemetry,
+            assemblyTelemetry=assemblyTelemetry,
+            warnings=warnings,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -225,6 +495,14 @@ class SimState:
             out["seq"] = int(self.seq)
         if self.server_time_sec is not None:
             out["server_time_sec"] = float(self.server_time_sec)
+        if self.telemetry is not None:
+            out["telemetry"] = self.telemetry.to_dict()
+        if self.gearTelemetry is not None:
+            out["gearTelemetry"] = {str(k): v.to_dict() for k, v in self.gearTelemetry.items()}
+        if self.assemblyTelemetry is not None:
+            out["assemblyTelemetry"] = {str(k): v.to_dict() for k, v in self.assemblyTelemetry.items()}
+        if self.warnings is not None:
+            out["warnings"] = [str(x) for x in self.warnings]
         return out
 
 
@@ -417,7 +695,11 @@ class TouchingPayload:
             cf = Vec3.from_dict(d.get("z_direction", {"x": 0, "y": 0, "z": 1}))
 
         # target is optional (recommended in docs/06)
-        target = PartRef.from_any(d) if ("target" in d or "targetPartIndex" in d or "targetPartName" in d or "partIndex" in d or "partName" in d) else None
+        target = (
+            PartRef.from_any(d)
+            if ("target" in d or "targetPartIndex" in d or "targetPartName" in d or "partIndex" in d or "partName" in d)
+            else None
+        )
         meta = InputMeta.from_dict(d)
 
         return TouchingPayload(
@@ -472,7 +754,11 @@ class TouchEndPayload:
             # TouchEnd는 payload {}가 일반적이지만, None이면 {}로 취급
             d = {}
 
-        target = PartRef.from_any(d) if ("target" in d or "targetPartIndex" in d or "targetPartName" in d or "partIndex" in d or "partName" in d) else None
+        target = (
+            PartRef.from_any(d)
+            if ("target" in d or "targetPartIndex" in d or "targetPartName" in d or "partIndex" in d or "partName" in d)
+            else None
+        )
         meta = InputMeta.from_dict(d)
 
         return TouchEndPayload(target=target, meta=meta)
