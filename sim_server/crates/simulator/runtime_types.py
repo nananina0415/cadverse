@@ -298,6 +298,192 @@ class AssemblyGuideTelemetry:
         return out
 
 # ============================================================
+# (3-3.1) Educational measurement / diagnostics telemetry
+# ============================================================
+
+@dataclass(frozen=True)
+class JointTelemetry:
+    """
+    3-3.1 교육용 joint 측정 telemetry.
+
+    - jointType: revolute | prismatic | fixed | ...
+    - angle: revolute 계열 joint의 상대 각도 (rad)
+    - position: prismatic 계열 joint의 상대 변위 (m)
+    - angularVelocity: revolute 계열 상대 각속도 (rad/s)
+    - linearVelocity: prismatic 계열 상대 속도 (m/s)
+    - reactionForce: joint reaction force (WORLD 또는 main.py 합의 기준) (N)
+    - reactionTorque: joint reaction torque (WORLD 또는 main.py 합의 기준) (N·m)
+    - estimatedPower: 교육용 근사 파워
+        * revolute: torque * angularVelocity
+        * prismatic: force * linearVelocity
+    """
+    jointType: Optional[str] = None
+
+    angle: Optional[float] = None
+    position: Optional[float] = None
+
+    angularVelocity: Optional[float] = None
+    linearVelocity: Optional[float] = None
+
+    reactionForce: Optional[Vec3] = None
+    reactionTorque: Optional[Vec3] = None
+
+    estimatedPower: Optional[float] = None
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "JointTelemetry":
+        if not isinstance(d, dict):
+            raise ValueError(f"JointTelemetry must be object, got: {type(d)}")
+
+        joint_type = _get_first(d, ["jointType", "joint_type", "type"], None)
+
+        angle = _get_first(d, ["angle"], None)
+        position = _get_first(d, ["position", "pos"], None)
+
+        angular_velocity = _get_first(d, ["angularVelocity", "angular_velocity", "omega"], None)
+        linear_velocity = _get_first(d, ["linearVelocity", "linear_velocity", "velocity", "vel"], None)
+
+        rf_raw = _get_first(d, ["reactionForce", "reaction_force"], None)
+        rt_raw = _get_first(d, ["reactionTorque", "reaction_torque"], None)
+
+        ep = _get_first(d, ["estimatedPower", "estimated_power", "power"], None)
+
+        return JointTelemetry(
+            jointType=str(joint_type) if joint_type is not None else None,
+            angle=float(angle) if angle is not None else None,
+            position=float(position) if position is not None else None,
+            angularVelocity=float(angular_velocity) if angular_velocity is not None else None,
+            linearVelocity=float(linear_velocity) if linear_velocity is not None else None,
+            reactionForce=Vec3.from_dict(rf_raw) if isinstance(rf_raw, dict) else None,
+            reactionTorque=Vec3.from_dict(rt_raw) if isinstance(rt_raw, dict) else None,
+            estimatedPower=float(ep) if ep is not None else None,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        if self.jointType is not None:
+            out["jointType"] = str(self.jointType)
+        if self.angle is not None:
+            out["angle"] = float(self.angle)
+        if self.position is not None:
+            out["position"] = float(self.position)
+        if self.angularVelocity is not None:
+            out["angularVelocity"] = float(self.angularVelocity)
+        if self.linearVelocity is not None:
+            out["linearVelocity"] = float(self.linearVelocity)
+        if self.reactionForce is not None:
+            out["reactionForce"] = self.reactionForce.to_dict()
+        if self.reactionTorque is not None:
+            out["reactionTorque"] = self.reactionTorque.to_dict()
+        if self.estimatedPower is not None:
+            out["estimatedPower"] = float(self.estimatedPower)
+        return out
+
+
+@dataclass(frozen=True)
+class ActuatorTelemetry:
+    """
+    3-3.1 교육용 actuator 측정 telemetry.
+
+    - actuatorType: rotation_speed | rotation_torque | ...
+    - targetJoint: 연결된 joint 이름
+    - commandedSpeed: 명령 속도 (rad/s 또는 m/s)
+    - commandedTorque: 명령 토크 (N·m)
+    - appliedTorque: 실제/근사 적용 토크 (N·m)
+    - estimatedPower: 교육용 근사 파워
+    """
+    actuatorType: Optional[str] = None
+    targetJoint: Optional[str] = None
+
+    commandedSpeed: Optional[float] = None
+    commandedTorque: Optional[float] = None
+
+    appliedTorque: Optional[float] = None
+    estimatedPower: Optional[float] = None
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "ActuatorTelemetry":
+        if not isinstance(d, dict):
+            raise ValueError(f"ActuatorTelemetry must be object, got: {type(d)}")
+
+        actuator_type = _get_first(d, ["actuatorType", "actuator_type", "type"], None)
+        target_joint = _get_first(d, ["targetJoint", "target_joint", "joint"], None)
+
+        commanded_speed = _get_first(d, ["commandedSpeed", "commanded_speed", "speed"], None)
+        commanded_torque = _get_first(d, ["commandedTorque", "commanded_torque", "torque"], None)
+
+        applied_torque = _get_first(d, ["appliedTorque", "applied_torque"], None)
+        estimated_power = _get_first(d, ["estimatedPower", "estimated_power", "power"], None)
+
+        return ActuatorTelemetry(
+            actuatorType=str(actuator_type) if actuator_type is not None else None,
+            targetJoint=str(target_joint) if target_joint is not None else None,
+            commandedSpeed=float(commanded_speed) if commanded_speed is not None else None,
+            commandedTorque=float(commanded_torque) if commanded_torque is not None else None,
+            appliedTorque=float(applied_torque) if applied_torque is not None else None,
+            estimatedPower=float(estimated_power) if estimated_power is not None else None,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        if self.actuatorType is not None:
+            out["actuatorType"] = str(self.actuatorType)
+        if self.targetJoint is not None:
+            out["targetJoint"] = str(self.targetJoint)
+        if self.commandedSpeed is not None:
+            out["commandedSpeed"] = float(self.commandedSpeed)
+        if self.commandedTorque is not None:
+            out["commandedTorque"] = float(self.commandedTorque)
+        if self.appliedTorque is not None:
+            out["appliedTorque"] = float(self.appliedTorque)
+        if self.estimatedPower is not None:
+            out["estimatedPower"] = float(self.estimatedPower)
+        return out
+
+
+@dataclass(frozen=True)
+class DiagnosticItem:
+    """
+    3-3.1 교육용 진단 항목.
+
+    - code: 기계 판독용 진단 코드
+    - severity: info | warn | error
+    - message: 사람이 읽는 설명
+    - target: 관련 joint/body/actuator 이름 등
+    """
+    code: str
+    severity: str = "info"
+    message: str = ""
+    target: Optional[str] = None
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "DiagnosticItem":
+        if not isinstance(d, dict):
+            raise ValueError(f"DiagnosticItem must be object, got: {type(d)}")
+
+        code = str(_get_first(d, ["code"], ""))
+        severity = str(_get_first(d, ["severity", "level"], "info"))
+        message = str(_get_first(d, ["message", "msg", "description"], ""))
+        target = _get_first(d, ["target", "name", "joint", "body", "actuator"], None)
+
+        return DiagnosticItem(
+            code=code,
+            severity=severity,
+            message=message,
+            target=str(target) if target is not None else None,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {
+            "code": str(self.code),
+            "severity": str(self.severity),
+            "message": str(self.message),
+        }
+        if self.target is not None:
+            out["target"] = str(self.target)
+        return out
+
+# ============================================================
 # Runtime Output (Server -> Client)
 # ============================================================
 
@@ -383,6 +569,11 @@ class SimState:
     (3-2.3) Optional assembly guide telemetry:
     - assemblyTelemetry: Dict[str, AssemblyGuideTelemetry]  # key = assembly guide name
 
+    (3-3.1) Optional educational telemetry:
+    - jointTelemetry: Dict[str, JointTelemetry]      # key = joint name
+    - actuatorTelemetry: Dict[str, ActuatorTelemetry] # key = actuator name
+    - diagnostics: List[DiagnosticItem]
+
     (2-3.4) Optional build warnings:
     - warnings: List[str]
     """
@@ -402,6 +593,13 @@ class SimState:
 
     # (Optional) assembly telemetry (3-2.3)
     assemblyTelemetry: Optional[Dict[str, AssemblyGuideTelemetry]] = None
+
+    # (Optional) joint/actuator telemetry (3-3.1)
+    jointTelemetry: Optional[Dict[str, JointTelemetry]] = None
+    actuatorTelemetry: Optional[Dict[str, ActuatorTelemetry]] = None
+
+    # (Optional) diagnostics (3-3.1)
+    diagnostics: Optional[List[DiagnosticItem]] = None
 
     # (Optional) build warnings (e.g., joint limit best-effort unsupported)
     warnings: Optional[List[str]] = None
@@ -442,6 +640,33 @@ class SimState:
                     at[str(k)] = AssemblyGuideTelemetry.from_dict(v)
             assemblyTelemetry = at
 
+        joint_raw = _get_first(d, ["jointTelemetry", "joint_telemetry", "joints"], None)
+        jointTelemetry: Optional[Dict[str, JointTelemetry]] = None
+        if isinstance(joint_raw, dict):
+            jt: Dict[str, JointTelemetry] = {}
+            for k, v in joint_raw.items():
+                if isinstance(v, dict):
+                    jt[str(k)] = JointTelemetry.from_dict(v)
+            jointTelemetry = jt
+
+        actuator_raw = _get_first(d, ["actuatorTelemetry", "actuator_telemetry", "actuators"], None)
+        actuatorTelemetry: Optional[Dict[str, ActuatorTelemetry]] = None
+        if isinstance(actuator_raw, dict):
+            at2: Dict[str, ActuatorTelemetry] = {}
+            for k, v in actuator_raw.items():
+                if isinstance(v, dict):
+                    at2[str(k)] = ActuatorTelemetry.from_dict(v)
+            actuatorTelemetry = at2
+
+        diagnostics_raw = _get_first(d, ["diagnostics", "diagnosticItems", "diagnostic_items"], None)
+        diagnostics: Optional[List[DiagnosticItem]] = None
+        if isinstance(diagnostics_raw, list):
+            diagnostics = [
+                DiagnosticItem.from_dict(x)
+                for x in diagnostics_raw
+                if isinstance(x, dict)
+            ]
+
         warnings_raw = _get_first(d, ["warnings", "buildWarnings"], None)
         warnings: Optional[List[str]] = None
         if isinstance(warnings_raw, list):
@@ -481,6 +706,9 @@ class SimState:
             telemetry=telemetry,
             gearTelemetry=gearTelemetry,
             assemblyTelemetry=assemblyTelemetry,
+            jointTelemetry=jointTelemetry,
+            actuatorTelemetry=actuatorTelemetry,
+            diagnostics=diagnostics,
             warnings=warnings,
         )
 
@@ -501,6 +729,12 @@ class SimState:
             out["gearTelemetry"] = {str(k): v.to_dict() for k, v in self.gearTelemetry.items()}
         if self.assemblyTelemetry is not None:
             out["assemblyTelemetry"] = {str(k): v.to_dict() for k, v in self.assemblyTelemetry.items()}
+        if self.jointTelemetry is not None:
+            out["jointTelemetry"] = {str(k): v.to_dict() for k, v in self.jointTelemetry.items()}
+        if self.actuatorTelemetry is not None:
+            out["actuatorTelemetry"] = {str(k): v.to_dict() for k, v in self.actuatorTelemetry.items()}
+        if self.diagnostics is not None:
+            out["diagnostics"] = [x.to_dict() for x in self.diagnostics]
         if self.warnings is not None:
             out["warnings"] = [str(x) for x in self.warnings]
         return out

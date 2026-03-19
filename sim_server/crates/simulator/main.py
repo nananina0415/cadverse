@@ -1302,6 +1302,30 @@ class Simulator:
     GEAR_MAX_TORQUE_CAP = 100.0
     GEAR_RATIO_REACTION_CAP = 4.0
 
+    # ---- (3-3.4) diagnostics guardrails / prioritization ----
+    DIAG_MAX_ITEMS = 5
+    DIAG_MIN_PERSIST_STEPS = 2
+
+    DIAG_PRIORITY: Dict[str, int] = {
+        "TARGET_FIXED": 100,
+        "AT_JOINT_LIMIT": 90,
+        "LIKELY_BLOCKED_BY_CONSTRAINT": 80,
+        "ACTUATOR_STALLED": 70,
+        "HIGH_GEAR_LOSS": 50,
+        "ALIGNMENT_IN_PROGRESS": 30,
+        "RESTING_CONTACT": 20,
+    }
+
+    DIAG_DEFAULT_SEVERITY: Dict[str, str] = {
+        "TARGET_FIXED": "warn",
+        "AT_JOINT_LIMIT": "warn",
+        "LIKELY_BLOCKED_BY_CONSTRAINT": "warn",
+        "ACTUATOR_STALLED": "warn",
+        "HIGH_GEAR_LOSS": "info",
+        "ALIGNMENT_IN_PROGRESS": "info",
+        "RESTING_CONTACT": "info",
+    }
+
     def __init__(self, info: SimInfo):
         self.info: SimInfo = info
 
@@ -1404,6 +1428,8 @@ class Simulator:
         self._last_gear_telemetry: Optional[Dict[str, rt.GearTelemetry]] = None
         self._assembly_states: Dict[str, _AssemblyRuntimeState] = self._build_assembly_runtime_states(built)
         self._last_assembly_telemetry: Optional[Dict[str, rt.AssemblyGuideTelemetry]] = None
+        # ✅ (3-3.4) diagnostics persistence / dedupe state
+        self._diag_seen_counts: Dict[str, int] = {}
 
     @classmethod
     def create(cls, info: SimInfo) -> "Simulator":
@@ -1927,6 +1953,588 @@ class Simulator:
 
         return out or None
 
+    def _vec3_from_any(self, v: Any) -> Optional[rt.Vec3]:
+        xyz = self._vec_components_any(v)
+        if xyz is None:
+            return None
+        x, y, z = xyz
+        return rt.Vec3(float(x), float(y), float(z))
+
+    def _compute_joint_telemetry(self) -> Optional[Dict[str, rt.JointTelemetry]]:
+        out: Dict[str, rt.JointTelemetry] = {}
+
+        for jname, built_joint in self.joints.items():
+            try:
+                jm = built_joint.meta
+                link = built_joint.link
+                jtype = str(getattr(jm, "type", "") or "")
+
+                angle: Optional[float] = None
+                position: Optional[float] = None
+                angular_velocity: Optional[float] = None
+                linear_velocity: Optional[float] = None
+                reaction_force_vec: Optional[rt.Vec3] = None
+                reaction_torque_vec: Optional[rt.Vec3] = None
+                estimated_power: Optional[float] = None
+
+                body2_name = getattr(jm, "body2", None)
+                body2 = None
+                if body2_name in self.bodies:
+                    body2 = self.bodies[body2_name].body
+
+                # -------------------------
+                # revolute joint telemetry
+                # -------------------------
+                if jtype == "revolute":
+                    for fn in ("GetRelAngle", "GetRelativeAngle", "GetMotorRot"):
+                        try:
+                            if hasattr(link, fn):
+                                angle = float(getattr(link, fn)())
+                                break
+                        except Exception:
+                            pass
+
+                    if body2 is not None:
+                        try:
+                            axis_world = _normalize(self._infer_revolute_axis_world_for_body(str(body2_name)))
+                            w_world = _get_angvel_world(body2)
+                            angular_velocity = float(_dot(w_world, axis_world))
+                        except Exception:
+                            pass
+
+                # -------------------------
+                # prismatic joint telemetry
+                # -------------------------
+                elif jtype == "prismatic":
+                    for fn in ("GetRelDistance", "GetRelativeDistance", "GetDistance"):
+                        try:
+                            if hasattr(link, fn):
+                                position = float(getattr(link, fn)())
+                                break
+                        except Exception:
+                            pass
+
+                    if body2 is not None:
+                        try:
+                            v_world = _get_linvel_world(body2)
+                            linear_velocity = float(_norm(v_world))
+                        except Exception:
+                            pass
+
+                # -------------------------
+                # reaction force / torque
+                # -------------------------
+                react_force_raw = None
+                react_torque_raw = None
+
+                for fn in ("Get_react_force", "GetReactionForce", "GetReactForce"):
+                    try:
+                        if hasattr(link, fn):
+                            react_force_raw = getattr(link, fn)()
+                            break
+                    except Exception:
+                        pass
+
+                for fn in ("Get_react_torque", "GetReactionTorque", "GetReactTorque"):
+                    try:
+                        if hasattr(link, fn):
+                            react_torque_raw = getattr(link, fn)()
+                            break
+                    except Exception:
+                        pass
+
+                reaction_force_vec = self._vec3_from_any(react_force_raw)
+                reaction_torque_vec = self._vec3_from_any(react_torque_raw)
+
+                # -------------------------
+                # estimated power
+                # revolute: torque * angular_velocity
+                # prismatic: force * linear_velocity
+                # -------------------------
+                if (jtype == "revolute") and (reaction_torque_vec is not None) and (angular_velocity is not None):
+                    torque_mag = m.sqrt(
+                        reaction_torque_vec.x * reaction_torque_vec.x
+                        + reaction_torque_vec.y * reaction_torque_vec.y
+                        + reaction_torque_vec.z * reaction_torque_vec.z
+                    )
+                    estimated_power = float(torque_mag * angular_velocity)
+
+                elif (jtype == "prismatic") and (reaction_force_vec is not None) and (linear_velocity is not None):
+                    force_mag = m.sqrt(
+                        reaction_force_vec.x * reaction_force_vec.x
+                        + reaction_force_vec.y * reaction_force_vec.y
+                        + reaction_force_vec.z * reaction_force_vec.z
+                    )
+                    estimated_power = float(force_mag * linear_velocity)
+
+                out[str(jname)] = rt.JointTelemetry(
+                    jointType=jtype if jtype else None,
+                    angle=angle,
+                    position=position,
+                    angularVelocity=angular_velocity,
+                    linearVelocity=linear_velocity,
+                    reactionForce=reaction_force_vec,
+                    reactionTorque=reaction_torque_vec,
+                    estimatedPower=estimated_power,
+                )
+
+            except Exception:
+                continue
+
+        return out or None
+
+    def _compute_actuator_telemetry(self) -> Optional[Dict[str, rt.ActuatorTelemetry]]:
+        out: Dict[str, rt.ActuatorTelemetry] = {}
+
+        for aname, built_act in self.actuators.items():
+            try:
+                meta = built_act.meta
+                link = built_act.link
+                atype = str(getattr(meta, "type", "") or "")
+                target_joint = getattr(meta, "targetJoint", None)
+
+                commanded_speed: Optional[float] = None
+                commanded_torque: Optional[float] = None
+                applied_torque: Optional[float] = None
+                estimated_power: Optional[float] = None
+
+                # -------------------------
+                # commanded values from metadata
+                # -------------------------
+                try:
+                    if atype == "rotation_speed":
+                        commanded_speed = float(getattr(meta, "speed", None))
+                except Exception:
+                    pass
+
+                try:
+                    if atype == "rotation_torque":
+                        torque_model = getattr(meta, "torqueModel", None)
+                        if torque_model is not None:
+                            tm_type = getattr(torque_model, "type", None)
+                            tm_val = getattr(torque_model, "value", None)
+                            if str(tm_type) == "const" and tm_val is not None:
+                                commanded_torque = float(tm_val)
+                except Exception:
+                    pass
+
+                # -------------------------
+                # best-effort getter from actuator link
+                # -------------------------
+                if commanded_speed is None:
+                    for fn in ("GetMotorSpeed", "GetSpeed", "GetMotorRot_dt"):
+                        try:
+                            if hasattr(link, fn):
+                                commanded_speed = float(getattr(link, fn)())
+                                break
+                        except Exception:
+                            pass
+
+                if commanded_torque is None:
+                    for fn in ("GetMotorTorque", "GetTorque", "GetMotorTorqueReactionOnBody"):
+                        try:
+                            if hasattr(link, fn):
+                                val = getattr(link, fn)()
+                                if isinstance(val, (int, float)):
+                                    commanded_torque = float(val)
+                                    break
+                        except Exception:
+                            pass
+
+                # appliedTorque는 지금 단계에서는 best-effort 근사
+                if commanded_torque is not None:
+                    applied_torque = float(commanded_torque)
+                else:
+                    for fn in ("GetMotorTorque", "GetTorque", "GetMotorTorqueReactionOnBody"):
+                        try:
+                            if hasattr(link, fn):
+                                val = getattr(link, fn)()
+                                if isinstance(val, (int, float)):
+                                    applied_torque = float(val)
+                                    break
+                        except Exception:
+                            pass
+
+                # -------------------------
+                # estimated power
+                # -------------------------
+                if (applied_torque is not None) and (commanded_speed is not None):
+                    estimated_power = float(applied_torque * commanded_speed)
+
+                out[str(aname)] = rt.ActuatorTelemetry(
+                    actuatorType=atype if atype else None,
+                    targetJoint=str(target_joint) if target_joint is not None else None,
+                    commandedSpeed=commanded_speed,
+                    commandedTorque=commanded_torque,
+                    appliedTorque=applied_torque,
+                    estimatedPower=estimated_power,
+                )
+
+            except Exception:
+                continue
+
+        return out or None
+
+    def _build_diagnostics(
+        self,
+        *,
+        telemetry: Optional[rt.ContactTelemetry],
+        gear_telemetry: Optional[Dict[str, rt.GearTelemetry]],
+        assembly_telemetry: Optional[Dict[str, rt.AssemblyGuideTelemetry]],
+        joint_telemetry: Optional[Dict[str, rt.JointTelemetry]],
+        actuator_telemetry: Optional[Dict[str, rt.ActuatorTelemetry]],
+    ) -> Optional[List[rt.DiagnosticItem]]:
+        out: List[rt.DiagnosticItem] = []
+
+        # -------------------------------------------------
+        # 1) actuator stalled
+        #  - commanded torque는 있는데 joint angular velocity가 거의 없음
+        # -------------------------------------------------
+        if actuator_telemetry:
+            for aname, at in actuator_telemetry.items():
+                try:
+                    tgt = at.targetJoint
+                    if not tgt or not joint_telemetry or tgt not in joint_telemetry:
+                        continue
+
+                    jt = joint_telemetry[tgt]
+
+                    cmd_tau = at.commandedTorque
+                    applied_tau = at.appliedTorque
+                    ang_vel = jt.angularVelocity
+                    lin_vel = jt.linearVelocity
+
+                    torque_like = None
+                    if applied_tau is not None:
+                        torque_like = abs(float(applied_tau))
+                    elif cmd_tau is not None:
+                        torque_like = abs(float(cmd_tau))
+
+                    speed_like = None
+                    if ang_vel is not None:
+                        speed_like = abs(float(ang_vel))
+                    elif lin_vel is not None:
+                        speed_like = abs(float(lin_vel))
+
+                    if (torque_like is not None) and (torque_like > 1e-3) and (speed_like is not None) and (speed_like < 1e-3):
+                        out.append(
+                            rt.DiagnosticItem(
+                                code="ACTUATOR_STALLED",
+                                severity="warn",
+                                message=f"Actuator '{aname}' is commanding effort, but joint '{tgt}' is barely moving.",
+                                target=str(aname),
+                            )
+                        )
+                except Exception:
+                    continue
+
+        # -------------------------------------------------
+        # 2) likely blocked by constraint
+        #  - reaction force/torque 크고 속도 거의 없음
+        # -------------------------------------------------
+        if joint_telemetry:
+            for jname, jt in joint_telemetry.items():
+                try:
+                    speed_like = None
+                    if jt.angularVelocity is not None:
+                        speed_like = abs(float(jt.angularVelocity))
+                    elif jt.linearVelocity is not None:
+                        speed_like = abs(float(jt.linearVelocity))
+
+                    react_force_mag = 0.0
+                    if jt.reactionForce is not None:
+                        react_force_mag = m.sqrt(
+                            jt.reactionForce.x * jt.reactionForce.x
+                            + jt.reactionForce.y * jt.reactionForce.y
+                            + jt.reactionForce.z * jt.reactionForce.z
+                        )
+
+                    react_torque_mag = 0.0
+                    if jt.reactionTorque is not None:
+                        react_torque_mag = m.sqrt(
+                            jt.reactionTorque.x * jt.reactionTorque.x
+                            + jt.reactionTorque.y * jt.reactionTorque.y
+                            + jt.reactionTorque.z * jt.reactionTorque.z
+                        )
+
+                    blocked_force = react_force_mag > 10.0
+                    blocked_torque = react_torque_mag > 0.5
+                    slow = (speed_like is not None) and (speed_like < 1e-3)
+
+                    if slow and (blocked_force or blocked_torque):
+                        out.append(
+                            rt.DiagnosticItem(
+                                code="LIKELY_BLOCKED_BY_CONSTRAINT",
+                                severity="warn",
+                                message=f"Joint '{jname}' has high reaction load but very small motion.",
+                                target=str(jname),
+                            )
+                        )
+                except Exception:
+                    continue
+
+        # -------------------------------------------------
+        # 2.5) at joint limit
+        #  - limit 근처에서 거의 정지
+        # -------------------------------------------------
+        if joint_telemetry:
+            for jname, jt in joint_telemetry.items():
+                try:
+                    if jname not in self.joints:
+                        continue
+
+                    jm = self.joints[jname].meta
+                    limits = getattr(jm, "limits", None)
+                    if limits is None:
+                        continue
+
+                    lower = getattr(limits, "lower", None)
+                    upper = getattr(limits, "upper", None)
+
+                    value = None
+                    speed_like = None
+
+                    if jt.angle is not None:
+                        value = float(jt.angle)
+                        if jt.angularVelocity is not None:
+                            speed_like = abs(float(jt.angularVelocity))
+                    elif jt.position is not None:
+                        value = float(jt.position)
+                        if jt.linearVelocity is not None:
+                            speed_like = abs(float(jt.linearVelocity))
+
+                    if value is None or speed_like is None:
+                        continue
+
+                    near_limit = False
+
+                    if lower is not None and abs(value - float(lower)) < 1e-3:
+                        near_limit = True
+                    if upper is not None and abs(value - float(upper)) < 1e-3:
+                        near_limit = True
+
+                    if near_limit and speed_like < 1e-3:
+                        out.append(
+                            rt.DiagnosticItem(
+                                code="AT_JOINT_LIMIT",
+                                severity="warn",
+                                message=f"Joint '{jname}' is near its motion limit.",
+                                target=str(jname),
+                            )
+                        )
+                except Exception:
+                    continue
+
+        # -------------------------------------------------
+        # 3) high gear loss
+        # -------------------------------------------------
+        if gear_telemetry:
+            for gname, gt in gear_telemetry.items():
+                try:
+                    if (gt.applied_efficiency is not None) and (float(gt.applied_efficiency) < 0.6):
+                        out.append(
+                            rt.DiagnosticItem(
+                                code="HIGH_GEAR_LOSS",
+                                severity="info",
+                                message=f"Gear pair '{gname}' is operating with low efficiency.",
+                                target=str(gname),
+                            )
+                        )
+                except Exception:
+                    continue
+
+        # -------------------------------------------------
+        # 4) alignment in progress
+        # -------------------------------------------------
+        if assembly_telemetry:
+            for gname, ag in assembly_telemetry.items():
+                try:
+                    if bool(ag.activeSnap) and (
+                        (float(ag.snapErrorPos) > 1e-4) or (float(ag.snapErrorAngle) > 1e-3)
+                    ):
+                        out.append(
+                            rt.DiagnosticItem(
+                                code="ALIGNMENT_IN_PROGRESS",
+                                severity="info",
+                                message=f"Assembly guide '{gname}' is active and still aligning toward target.",
+                                target=str(gname),
+                            )
+                        )
+                except Exception:
+                    continue
+
+        # -------------------------------------------------
+        # 5) resting contact
+        #  - contact 많고, 전체적으로 거의 정지 상태
+        # -------------------------------------------------
+        if telemetry is not None and telemetry.contact_count > 0:
+            try:
+                all_speeds: List[float] = []
+                if joint_telemetry:
+                    for _, jt in joint_telemetry.items():
+                        if jt.angularVelocity is not None:
+                            all_speeds.append(abs(float(jt.angularVelocity)))
+                        if jt.linearVelocity is not None:
+                            all_speeds.append(abs(float(jt.linearVelocity)))
+
+                if all_speeds and max(all_speeds) < 1e-3:
+                    out.append(
+                        rt.DiagnosticItem(
+                            code="RESTING_CONTACT",
+                            severity="info",
+                            message="Bodies are in contact and motion is nearly zero.",
+                            target=None,
+                        )
+                    )
+            except Exception:
+                pass
+
+        # -------------------------------------------------
+        # 6) target fixed
+        #  - actuator target joint의 body2가 fixed면 표시
+        # -------------------------------------------------
+        if actuator_telemetry:
+            for aname, at in actuator_telemetry.items():
+                try:
+                    tgt = at.targetJoint
+                    if not tgt:
+                        continue
+                    if tgt not in self.joints:
+                        continue
+
+                    jm = self.joints[tgt].meta
+                    body2_name = getattr(jm, "body2", None)
+                    if body2_name not in self.bodies:
+                        continue
+
+                    body2 = self.bodies[body2_name].body
+                    if _is_fixed_body(body2):
+                        out.append(
+                            rt.DiagnosticItem(
+                                code="TARGET_FIXED",
+                                severity="warn",
+                                message=f"Actuator '{aname}' targets joint '{tgt}', but the driven body is fixed.",
+                                target=str(aname),
+                            )
+                        )
+                except Exception:
+                    continue
+
+        return out or None
+
+    def _normalize_diagnostics(
+        self,
+        diagnostics: Optional[List[rt.DiagnosticItem]],
+    ) -> Optional[List[rt.DiagnosticItem]]:
+        if not diagnostics:
+            return None
+
+        out: List[rt.DiagnosticItem] = []
+
+        for item in diagnostics:
+            try:
+                code = str(item.code)
+                sev = str(item.severity or "").strip().lower()
+                if sev not in ("info", "warn", "error"):
+                    sev = self.DIAG_DEFAULT_SEVERITY.get(code, "info")
+
+                out.append(
+                    rt.DiagnosticItem(
+                        code=code,
+                        severity=sev,
+                        message=str(item.message or ""),
+                        target=str(item.target) if item.target is not None else None,
+                    )
+                )
+            except Exception:
+                continue
+
+        return out or None
+
+    def _dedupe_and_suppress_diagnostics(
+        self,
+        diagnostics: Optional[List[rt.DiagnosticItem]],
+    ) -> Optional[List[rt.DiagnosticItem]]:
+        if not diagnostics:
+            return None
+
+        unique: Dict[tuple[str, Optional[str]], rt.DiagnosticItem] = {}
+        for item in diagnostics:
+            key = (str(item.code), str(item.target) if item.target is not None else None)
+            if key not in unique:
+                unique[key] = item
+
+        items = list(unique.values())
+
+        codes_present = {str(x.code) for x in items}
+
+        # TARGET_FIXED가 있으면 다른 "안 움직임" 계열 일부 제거
+        if "TARGET_FIXED" in codes_present:
+            fixed_targets = {
+                str(item.target)
+                for item in items
+                if item.code == "TARGET_FIXED" and item.target is not None
+            }
+
+            filtered: List[rt.DiagnosticItem] = []
+            for item in items:
+                if item.code == "ACTUATOR_STALLED" and item.target is not None and str(item.target) in fixed_targets:
+                    continue
+                filtered.append(item)
+            items = filtered
+            codes_present = {str(x.code) for x in items}
+
+        # AT_JOINT_LIMIT가 있으면 ACTUATOR_STALLED는 원인 중복이라 제거
+        if "AT_JOINT_LIMIT" in codes_present:
+            filtered = []
+            for item in items:
+                if item.code == "ACTUATOR_STALLED":
+                    continue
+                filtered.append(item)
+            items = filtered
+
+        return items or None
+
+    def _finalize_diagnostics(
+        self,
+        diagnostics: Optional[List[rt.DiagnosticItem]],
+    ) -> Optional[List[rt.DiagnosticItem]]:
+        if not diagnostics:
+            self._diag_seen_counts = {}
+            return None
+
+        next_seen: Dict[str, int] = {}
+
+        for item in diagnostics:
+            key = f"{item.code}::{item.target if item.target is not None else ''}"
+            prev = int(self._diag_seen_counts.get(key, 0))
+            next_seen[key] = prev + 1
+
+        self._diag_seen_counts = next_seen
+
+        persisted: List[rt.DiagnosticItem] = []
+        for item in diagnostics:
+            key = f"{item.code}::{item.target if item.target is not None else ''}"
+            seen = int(self._diag_seen_counts.get(key, 0))
+
+            if item.severity == "info" and seen < int(self.DIAG_MIN_PERSIST_STEPS):
+                continue
+
+            persisted.append(item)
+
+        severity_rank = {"error": 0, "warn": 1, "info": 2}
+
+        persisted.sort(
+            key=lambda x: (
+                severity_rank.get(str(x.severity), 9),
+                -int(self.DIAG_PRIORITY.get(str(x.code), 0)),
+                str(x.code),
+                str(x.target) if x.target is not None else "",
+            )
+        )
+
+        return persisted[: int(self.DIAG_MAX_ITEMS)] or None
+
     # -------------------------------
     # (1-3) Contact telemetry helpers
     # -------------------------------
@@ -2206,6 +2814,20 @@ class Simulator:
 
             telemetry = self._compute_contact_telemetry(max_points=cap)
 
+        joint_telemetry = self._compute_joint_telemetry()
+        actuator_telemetry = self._compute_actuator_telemetry()
+
+        diagnostics = self._build_diagnostics(
+            telemetry=telemetry,
+            gear_telemetry=gear_telemetry,
+            assembly_telemetry=assembly_telemetry,
+            joint_telemetry=joint_telemetry,
+            actuator_telemetry=actuator_telemetry,
+        )
+        diagnostics = self._normalize_diagnostics(diagnostics)
+        diagnostics = self._dedupe_and_suppress_diagnostics(diagnostics)
+        diagnostics = self._finalize_diagnostics(diagnostics)
+
         parts: List[PartState] = []
         for name in self._body_order:
             b = self.bodies[name].body
@@ -2223,6 +2845,9 @@ class Simulator:
             telemetry=telemetry,
             gearTelemetry=gear_telemetry,
             assemblyTelemetry=assembly_telemetry,
+            jointTelemetry=joint_telemetry,
+            actuatorTelemetry=actuator_telemetry,
+            diagnostics=diagnostics,
         )
 
     def close(self) -> None:

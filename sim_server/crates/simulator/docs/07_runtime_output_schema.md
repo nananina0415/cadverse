@@ -3,39 +3,68 @@
 Runtime Output Schema (Server → Client)
 ======================================
 
-본 문서는 서버(시뮬레이션)가 클라이언트(AR/렌더러)로 전송하는
+본 문서는 서버(시뮬레이션)가 클라이언트(AR / Renderer / UI)로 전송하는
 런타임 출력(SimState) 메시지의 JSON 스키마를 정의한다.
 
-출력은 "물리 시뮬레이션 결과(강체 포즈)"를 전달하기 위한 것으로,
-CAD/메타데이터(03_metadata_schema.md)와는 목적이 다르다.
+출력 메시지는 물리 시뮬레이션의 현재 상태를 전달하기 위한 것이며,
+CAD / Metadata / Scene 정의와는 목적이 다르다.
+
+- 입력 스키마: 06_runtime_input_schema.md
+- 메타데이터 스키마: 03_metadata_schema.md
+
 
 --------------------------------------------------
-Global Notes
+Global Rules
 --------------------------------------------------
 
-- Units
-  - 위치/길이: meter (m)
-  - 각도: radian (rad)
+Units
+-----
 
-- Coordinate system
-  - Right-handed
+| Quantity | Unit |
+|----------|------|
+| Length | meter (m) |
+| Angle | radian (rad) |
+| Time | second (s) |
+| Velocity | m/s |
+| Angular velocity | rad/s |
+| Force | N |
+| Torque | N·m |
+| Power | W |
 
-- Quaternion ordering (프로젝트 표준, Chrono 매핑)
-  - (w, x, y, z)
+Coordinate System
+-----------------
 
-- Encoding
-  - UTF-8 JSON
+- Right-handed
+- WORLD 기준 좌표 사용
 
-- Update Frequency (권장)
-  - Server → Client ModelState: 10 Hz (100 ms)
-  - (필요 시) 더 높은 주파수는 네트워크/성능을 보고 조정
+Quaternion Ordering
+-------------------
 
-- Simulation Authority
-  - 물리 상태의 단일 진실원(Source of Truth)은 서버 시뮬레이션이다.
-  - 클라이언트는 상태를 보간(interpolation)하여 렌더링한다.
+프로젝트 표준:
+
+(w, x, y, z)
+
+Chrono mapping:
+
+e0 = w
+e1 = x
+e2 = y
+e3 = z
+
+Encoding
+--------
+
+- UTF-8 JSON
+
+Simulation Authority
+--------------------
+
+- 물리 상태의 단일 진실원(Source of Truth)은 서버 시뮬레이션이다.
+- 클라이언트는 상태를 보간(interpolation)하여 렌더링한다.
+
 
 --------------------------------------------------
-Core Types (02_core_types.md와 동일)
+Core Types
 --------------------------------------------------
 
 Vector3 (WORLD)
@@ -46,7 +75,8 @@ Vector3 (WORLD)
   "z": 0.0
 }
 
-Quaternion (WORLD rotation)
+
+Quaternion (WORLD)
 
 {
   "w": 1.0,
@@ -55,12 +85,12 @@ Quaternion (WORLD rotation)
   "z": 0.0
 }
 
+
 --------------------------------------------------
 PartState
 --------------------------------------------------
 
-단일 바디(파트)의 상태.
-AR 렌더링 및 클라이언트 동기화에 사용한다.
+단일 강체의 상태.
 
 {
   "name": "gear_A",
@@ -68,198 +98,226 @@ AR 렌더링 및 클라이언트 동기화에 사용한다.
   "rot": { "w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0 }
 }
 
+Field
+
+| field | type | unit | optional | description |
+|--------|------|-------|----------|-------------|
+| name | string | - | no | metadata bodies[*].name |
+| pos | Vector3 | m | no | WORLD position |
+| rot | Quaternion | - | no | WORLD rotation |
+
 Notes
------
 
-- pos/rot는 WORLD 기준이다.
-- rot는 정규화(normalized)되어 있어야 한다.
-- name은 03_metadata_schema.md의 bodies[*].name 과 동일해야 한다.
+- rot는 항상 normalized quaternion
+- name은 metadata와 반드시 동일해야 한다
+
 
 --------------------------------------------------
-SimState / ModelStateMessage
+SimState
 --------------------------------------------------
 
-서버가 클라이언트로 주기적으로 전송하는
-"현재 시뮬레이션 상태" 메시지.
+서버가 클라이언트로 전송하는 런타임 상태 메시지.
 
-기본 형태:
+기본 구조
 
 {
   "sim_time": 0.0,
-  "parts": [
-    {
-      "name": "base",
-      "pos": { "x": 0.0, "y": 0.0, "z": 0.0 },
-      "rot": { "w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0 }
-    },
-    {
-      "name": "shaft",
-      "pos": { "x": 0.0, "y": 0.0, "z": 0.03 },
-      "rot": { "w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0 }
-    }
-  ]
+  "parts": [ PartState ]
 }
 
-Field Meaning
--------------
+Field
 
-- sim_time
-  - 시뮬레이션 시간 (seconds)
-  - 엔진 내부 dt 누적값
+| field | type | unit | optional | description |
+|--------|------|-------|----------|-------------|
+| sim_time | number | s | no | simulation time |
+| parts | array | - | no | PartState list |
 
-- parts
-  - PartState 배열
-  - 이 배열의 순서는 "PartIndex 기반 입력"의 기준이 될 수 있다.
 
 --------------------------------------------------
-Message Metadata (Recommended, Optional)
+Message Metadata (Optional)
 --------------------------------------------------
-
-네트워크 동기/디버깅/정렬 안정성을 위해,
-출력 메시지에 아래 필드를 선택적으로 포함하는 것을 권장한다.
 
 {
   "sim_time": 0.0,
   "seq": 120,
-  "server_time_sec": 1730000000.123,
+  "server_time_sec": 1730000000.0,
   "parts": [ ... ]
 }
 
-- seq (integer, optional)
-  - 상태 메시지 시퀀스 번호
-  - 드롭/역순 수신 감지
+| field | type | optional | description |
+|--------|--------|----------|------------|
+| seq | int | yes | message sequence |
+| server_time_sec | number | yes | server timestamp |
+| partNames | string[] | yes | index mapping |
 
-- server_time_sec (number, optional)
-  - 서버 wall-clock timestamp
 
 --------------------------------------------------
-Part Index Agreement (Optional)
+Contact Telemetry (Optional)
 --------------------------------------------------
-
-입력 프로토콜(06_runtime_input_schema.md)에서
-target.partIndex를 사용할 경우, 서버/클라이언트는
-parts 배열의 순서를 항상 합의해야 한다.
-
-권장 방식 1) 고정 순서 유지
-
-- metadata bodies 순서 기반
-- 또는 name 정렬
-
-권장 방식 2) partNames 매핑 제공
 
 {
-  "sim_time": 0.0,
-  "partNames": ["base", "shaft", "gear_A", "gear_B"],
-  "parts": [
-    { "pos": {...}, "rot": {...} },
-    { "pos": {...}, "rot": {...} },
-    { "pos": {...}, "rot": {...} },
-    { "pos": {...}, "rot": {...} }
-  ]
-}
-
---------------------------------------------------
-Extended Telemetry (UPDATED, Optional)
---------------------------------------------------
-
-교육용 시뮬레이터 및 디버깅 목적에서,
-다음 물리량을 선택적으로 출력할 수 있다.
-
-### Velocities
-
-{
-  "name": "shaft",
-  "pos": {...},
-  "rot": {...},
-
-  "lin_vel_world": { "x": 0.0, "y": 0.0, "z": 0.0 },
-  "ang_vel_world": { "x": 0.0, "y": 5.0, "z": 0.0 }
-}
-
-- PyChrono
-  - GetPos_dt()
-  - GetAngVelParent() or converted world angvel
-
-### Reaction Forces (Joint)
-
-{
-  "jointName": "rev_shaft_base",
-  "reaction_force_world": {...},
-  "reaction_torque_world": {...}
-}
-
-- ChLink.GetReactionForce()
-- ChLink.GetReactionTorque()
-
-### Motor Telemetry
-
-{
-  "actuatorName": "shaft_motor",
-  "applied_torque": 2.5,
-  "angular_speed": 4.8
-}
-
-교육 시각화 / 그래프 / UI 피드백용
-
---------------------------------------------------
-Contact / Collision Debug (UPDATED, Optional)
---------------------------------------------------
-
-충돌 구현 이후 디버그/교육 목적 출력 확장 가능.
-
-예:
-
-{
-  "contacts": [
-    {
+  "telemetry": {
+    "contact_count": 4,
+    "max_contact_force": 120.0,
+    "max_pair": {
       "bodyA": "gear_A",
-      "bodyB": "gear_B",
-      "point_world": { "x": 0.01, "y": 0.03, "z": 0.02 },
-      "normal_world": { "x": 1.0, "y": 0.0, "z": 0.0 },
-      "normal_force": 12.5
+      "bodyB": "gear_B"
+    }
+  }
+}
+
+| field | type | unit | description |
+|--------|------|------|-------------|
+| contact_count | int | - | number of contacts |
+| max_contact_force | number | N | max force |
+| max_pair | object | - | body pair |
+
+
+--------------------------------------------------
+Gear Telemetry (Optional)
+--------------------------------------------------
+
+{
+  "gearTelemetry": {
+    "gp1": {
+      "applied_efficiency": 0.8,
+      "loss_torque": 0.01,
+      "backlash_deadband": 0.02
+    }
+  }
+}
+
+| field | type | unit | description |
+|--------|------|------|-------------|
+| applied_efficiency | number | - | 0~1 |
+| loss_torque | number | N·m | loss |
+| backlash_deadband | number | rad | deadband |
+
+
+--------------------------------------------------
+Assembly Telemetry (Optional)
+--------------------------------------------------
+
+{
+  "assemblyTelemetry": {
+    "guide1": {
+      "activeSnap": true,
+      "snapCandidate": "target",
+      "snapErrorPos": 0.02,
+      "snapErrorAngle": 0.1,
+      "snapMode": "assist"
+    }
+  }
+}
+
+| field | unit | description |
+|--------|------|-------------|
+| activeSnap | - | active |
+| snapCandidate | - | name |
+| snapErrorPos | m | position error |
+| snapErrorAngle | rad | angle error |
+| snapMode | - | assist / snap |
+
+
+--------------------------------------------------
+Joint Telemetry (Optional)
+--------------------------------------------------
+
+{
+  "jointTelemetry": {
+    "rev0": {
+      "jointType": "revolute",
+      "angle": 0.5,
+      "angularVelocity": 2.0,
+      "reactionForce": {...},
+      "reactionTorque": {...},
+      "estimatedPower": 1.2
+    }
+  }
+}
+
+| field | unit | description |
+|--------|------|-------------|
+| angle | rad | revolute |
+| position | m | prismatic |
+| angularVelocity | rad/s | |
+| linearVelocity | m/s | |
+| reactionForce | N | |
+| reactionTorque | N·m | |
+| estimatedPower | W | approx |
+
+
+--------------------------------------------------
+Actuator Telemetry (Optional)
+--------------------------------------------------
+
+{
+  "actuatorTelemetry": {
+    "motor0": {
+      "actuatorType": "rotation_speed",
+      "targetJoint": "rev0",
+      "commandedSpeed": 5.0,
+      "appliedTorque": 1.2,
+      "estimatedPower": 2.3
+    }
+  }
+}
+
+| field | unit |
+|--------|------|
+| commandedSpeed | rad/s |
+| commandedTorque | N·m |
+| appliedTorque | N·m |
+| estimatedPower | W |
+
+
+--------------------------------------------------
+Diagnostics (Optional)
+--------------------------------------------------
+
+{
+  "diagnostics": [
+    {
+      "code": "AT_JOINT_LIMIT",
+      "severity": "warn",
+      "message": "joint limit reached",
+      "target": "rev0"
     }
   ]
 }
 
-용도:
+| field | description |
+|--------|-------------|
+| code | diagnostic id |
+| severity | info / warn / error |
+| message | text |
+| target | object name |
 
-- 접촉 시각화
-- 기어 맞물림 교육
-- 충돌 디버깅
 
---------------------------------------------------
-Interaction Debug (Optional)
---------------------------------------------------
+Example codes
 
-AR 상호작용 디버그용 출력 확장.
+- AT_JOINT_LIMIT
+- RESTING_CONTACT
+- LIKELY_BLOCKED_BY_CONSTRAINT
+- TARGET_FIXED
 
-{
-  "activeInteraction": {
-    "interactionId": "uuid",
-    "partName": "shaft",
-    "mode": "rotate"
-  }
-}
-
-- 현재 조작 대상 표시
-- rotate / spring 모드 시각화 가능
 
 --------------------------------------------------
 Design Rules
 --------------------------------------------------
 
-- 출력은 렌더링 가능한 포즈 제공이 1차 목적
-- 물리 상세값은 optional telemetry로 확장
-- name은 metadata와 1:1 매핑
-- quaternion ordering은 (w,x,y,z) 고정
+- 출력은 pose 전달이 기본 목적
+- telemetry는 optional
 - 서버 상태가 authoritative
+- optional field는 생략 가능
+
 
 --------------------------------------------------
 Future Extensions
 --------------------------------------------------
 
-- constraint forces visualization
-- energy / power telemetry
-- gear mesh slip detection
-- collision heatmap
-- educational overlay data
+- power graphs
+- constraint visualization
+- slip detection
+- energy telemetry
+- education overlay
