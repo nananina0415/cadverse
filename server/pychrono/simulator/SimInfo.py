@@ -13,15 +13,87 @@
 # - body_order가 None이면 scene.bodies 순서 사용(기존 유지)
 # - (선택) 출력 메시지에 partNames를 항상 포함할지 정책 플래그 추가 (기본 False: 기존 호환)
 #   -> main.py에서 SimState(partNames=...)를 넣고 싶으면 이 플래그를 True로 두면 됨
+#
+# [UPDATED: 1-1 PhysicsPreset]
+# - SimOptions에 physics preset(접촉/솔버/스텝) 옵션을 추가하고, builder/system에 적용되게 수정
+#
+# [UPDATED: 1-3 Contact Telemetry controls]
+# - SimOptions에 enable_contact_telemetry / max_contact_points_report 추가
+#
+# [UPDATED: 2-1.3 Auto inertia guardrails]
+# - SimOptions에 auto inertia 운영 스위치/가드레일/디버그 플래그 추가
+#
+# [UPDATED: 2-3.4 Ops guardrails/logging]
+# - SimOptions에 debug_joint_limits / debug_warnings 추가
+#   -> main.py에서 "joint limit 적용 실패/미지원" 경고를 사용자 친화적으로 요약 출력할 때 사용
+# - (선택) joint_limits_soft_enable: 소프트 리미트(spring/damper) 적용을 운영 레벨에서 기본 OFF로 유지
+#   (구 문서/코드에서 enable_soft_joint_limits라는 이름을 썼다면 alias로 지원)
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field, replace
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 # ✅ 스키마/타입 정의는 여기서 절대 재정의하지 않는다.
 from .metadata_types import SceneMeta, validate_scene
+
+
+# -----------------------------------------------------------------------------
+# PhysicsPreset (운영 프리셋 컨테이너)
+# -----------------------------------------------------------------------------
+
+@dataclass
+class PhysicsPreset:
+    """
+    1단계(안정성)용 '운영 프리셋' 컨테이너.
+
+    ⚠️ 중요:
+    - sim_builder는 SimOptions.physics_preset을
+      (1) 문자열("FAST"/"DEFAULT"/"ROBUST"/"SMC_DEFAULT")
+      (2) dict(오버라이드)
+      로 받아 처리한다.
+    - 따라서 PhysicsPreset 객체를 직접 넘길 거라면,
+      SimOptions.physics_preset에는 넣지 말고(권장 X),
+      SimOptions의 개별 override 필드들을 직접 채우는 쪽이 안전하다.
+
+    그래도 문서화/구조화를 위해, 아래처럼 "한 곳에 모아두는 용도"로는 유용.
+    """
+    name: str = "DEFAULT"
+    contact_method: Optional[str] = None  # "NSC"/"SMC"
+    solver: Optional[str] = None          # e.g., "PSOR", "PSSOR"
+    solver_max_iters: Optional[int] = None
+    solver_tolerance: Optional[float] = None
+
+    collision_envelope: Optional[float] = None
+    collision_margin: Optional[float] = None
+    min_bounce_speed: Optional[float] = None
+    max_penetration_recovery_speed: Optional[float] = None
+
+    # (선택) 미래 확장(바인딩 있으면 적용 가능)
+    warm_start: Optional[bool] = None
+    enable_system_logging: Optional[bool] = None
+
+    def to_overrides_dict(self) -> Dict[str, Any]:
+        """sim_builder가 읽을 수 있는 dict 오버라이드로 변환."""
+        out: Dict[str, Any] = {}
+        if self.contact_method is not None:
+            out["contact_method"] = self.contact_method
+        if self.solver is not None:
+            out["solver"] = self.solver
+        if self.solver_max_iters is not None:
+            out["max_iters"] = int(self.solver_max_iters)
+        if self.solver_tolerance is not None:
+            out["tol"] = float(self.solver_tolerance)
+        if self.collision_envelope is not None:
+            out["collision_envelope"] = float(self.collision_envelope)
+        if self.collision_margin is not None:
+            out["collision_margin"] = float(self.collision_margin)
+        if self.min_bounce_speed is not None:
+            out["min_bounce_speed"] = float(self.min_bounce_speed)
+        if self.max_penetration_recovery_speed is not None:
+            out["max_penetration_recovery_speed"] = float(self.max_penetration_recovery_speed)
+        return out
 
 
 # -----------------------------------------------------------------------------
@@ -32,19 +104,129 @@ from .metadata_types import SceneMeta, validate_scene
 class SimOptions:
     """
     엔진 빌드/런타임 정책(메타데이터가 아닌 '운영 옵션')
-    - dt: integration timestep [s]
-    - allow_obj_auto_approx: collision이 비었을 때 OBJ로 근사 허용(디버그용)
-    - strict_no_inference: 메타에 없는 정보는 추론하지 않음(프로덕션 원칙)
-
-    (schema-07 optional)
-    - emit_part_names: SimState에 partNames 배열을 포함할지 여부
-      - True면 client가 partIndex를 안정적으로 해석 가능(권장)
-      - False면 네트워크는 조금 더 가벼움(기존 호환)
     """
     dt: float = 1e-3
     allow_obj_auto_approx: bool = False
     strict_no_inference: bool = True
     emit_part_names: bool = False
+
+    # --- telemetry control (1-3) ---
+    enable_contact_telemetry: bool = False
+    max_contact_points_report: int = 256
+
+    # --- preset selector / overrides ---
+    physics_preset: Optional[Union[str, Dict[str, Any], PhysicsPreset]] = "DEFAULT"
+
+    # --- explicit overrides (highest priority in sim_builder) ---
+    contact_method: Optional[str] = None  # "NSC"/"SMC" (overrides preset)
+    solver: Optional[str] = None          # "PSOR"/"PSSOR"/...
+    solver_max_iters: Optional[int] = None
+    solver_tolerance: Optional[float] = None
+
+    collision_envelope: Optional[float] = None
+    collision_margin: Optional[float] = None
+
+    min_bounce_speed: Optional[float] = None
+    max_penetration_recovery_speed: Optional[float] = None
+
+    # --- auto inertia guardrails (2-1.3) ---
+    auto_inertia_enabled: bool = True
+    auto_inertia_min_inertia: float = 0.0
+    auto_inertia_scale: float = 1.0
+    auto_inertia_use_rotation: bool = False
+    auto_inertia_fallback_diagonal: float = 1e-3
+    debug_auto_inertia: bool = False
+
+    # --- joint limits ops guardrails (2-3.4) ---
+    # ✅ main.py에서 limits 관련 경고/적용상태를 "요약/상세"로 출력할지 토글
+    debug_joint_limits: bool = False
+
+    # ✅ 공통 경고 출력 토글(기본 True = 기존 print 경고 유지)
+    debug_warnings: bool = True
+
+    # ✅ (선택) 소프트 리미트(spring/damper) 운영 레벨에서 기본 OFF 유지용 (canonical)
+    # - True여도 metadata에 spring_k/damper_c가 None이면 당연히 미적용
+    # - False면 spring/damper 관련 값이 있어도 "운영 정책상" 적용을 스킵하도록
+    #   sim_builder에서 getattr(options, "joint_limits_soft_enable", False)로 확인해 사용할 수 있다.
+    joint_limits_soft_enable: bool = False
+
+    # ✅ (선택) 과거/문서 호환 alias (enable_soft_joint_limits)
+    # - 어떤 코드/문서에서 enable_soft_joint_limits를 쓴 경우를 대비
+    enable_soft_joint_limits: Optional[bool] = None
+
+    def __post_init__(self) -> None:
+        # basic sanity for dt + telemetry knobs
+        if float(self.dt) <= 0.0:
+            raise ValueError(f"SimOptions.dt must be > 0, got: {self.dt}")
+
+        if int(self.max_contact_points_report) <= 0:
+            raise ValueError(
+                f"SimOptions.max_contact_points_report must be > 0, got: {self.max_contact_points_report}"
+            )
+
+        # auto inertia knobs sanity
+        if float(self.auto_inertia_min_inertia) < 0.0:
+            raise ValueError(f"SimOptions.auto_inertia_min_inertia must be >= 0, got: {self.auto_inertia_min_inertia}")
+        if float(self.auto_inertia_scale) <= 0.0:
+            raise ValueError(f"SimOptions.auto_inertia_scale must be > 0, got: {self.auto_inertia_scale}")
+        if float(self.auto_inertia_fallback_diagonal) < 0.0:
+            raise ValueError(
+                f"SimOptions.auto_inertia_fallback_diagonal must be >= 0, got: {self.auto_inertia_fallback_diagonal}"
+            )
+
+        # 2-3.4 toggles sanity (bool coercion-like; no strict required)
+        self.debug_joint_limits = bool(self.debug_joint_limits)
+        self.debug_warnings = bool(self.debug_warnings)
+
+        # alias -> canonical (if explicitly provided)
+        if self.enable_soft_joint_limits is not None:
+            self.joint_limits_soft_enable = bool(self.enable_soft_joint_limits)
+
+        self.joint_limits_soft_enable = bool(self.joint_limits_soft_enable)
+
+    def as_builder_options(self) -> "SimOptions":
+        """
+        sim_builder가 기대하는 형태로 '정규화'한 options를 돌려준다.
+
+        ✅ 핵심 수정:
+        - physics_preset이 PhysicsPreset 객체일 때,
+          (A) preset 이름은 str로 유지해서 sim_builder preset table이 그대로 적용되게 하고
+          (B) preset의 세부 값들은 SimOptions의 개별 override 필드로 "펼쳐서" 반영한다.
+        """
+        opt = replace(self)
+
+        if isinstance(opt.physics_preset, PhysicsPreset):
+            pp = opt.physics_preset
+
+            # (A) base preset key는 문자열로 유지
+            opt.physics_preset = str(pp.name or "DEFAULT").strip().upper()
+
+            # (B) preset 값을 개별 override로 펼침(이미 사용자가 override를 줬으면 유지)
+            if opt.contact_method is None and pp.contact_method is not None:
+                opt.contact_method = pp.contact_method
+            if opt.solver is None and pp.solver is not None:
+                opt.solver = pp.solver
+            if opt.solver_max_iters is None and pp.solver_max_iters is not None:
+                opt.solver_max_iters = int(pp.solver_max_iters)
+            if opt.solver_tolerance is None and pp.solver_tolerance is not None:
+                opt.solver_tolerance = float(pp.solver_tolerance)
+
+            if opt.collision_envelope is None and pp.collision_envelope is not None:
+                opt.collision_envelope = float(pp.collision_envelope)
+            if opt.collision_margin is None and pp.collision_margin is not None:
+                opt.collision_margin = float(pp.collision_margin)
+
+            if opt.min_bounce_speed is None and pp.min_bounce_speed is not None:
+                opt.min_bounce_speed = float(pp.min_bounce_speed)
+            if opt.max_penetration_recovery_speed is None and pp.max_penetration_recovery_speed is not None:
+                opt.max_penetration_recovery_speed = float(pp.max_penetration_recovery_speed)
+
+        # alias normalize again (in case replace() copied None/values)
+        if opt.enable_soft_joint_limits is not None:
+            opt.joint_limits_soft_enable = bool(opt.enable_soft_joint_limits)
+        opt.joint_limits_soft_enable = bool(opt.joint_limits_soft_enable)
+
+        return opt
 
 
 # -----------------------------------------------------------------------------
@@ -79,6 +261,13 @@ class SimInfo:
         validate_scene(self.scene)
         self._rebuild_part_index()
 
+        # options normalization (PhysicsPreset object -> (preset name + overrides))
+        try:
+            self.options = self.options.as_builder_options()
+        except Exception:
+            # normalization 실패해도 시뮬 자체는 돌 수 있게(단, preset 객체 직접 사용은 비권장)
+            pass
+
     # -----------------------------------------------------------------
     # Convenience properties
     # -----------------------------------------------------------------
@@ -88,9 +277,7 @@ class SimInfo:
 
     @property
     def part_names(self) -> List[str]:
-        """
-        schema-07 optional의 partNames로 그대로 내보내기 좋은 "고정 순서 이름 배열".
-        """
+        """schema-07 optional의 partNames로 그대로 내보내기 좋은 "고정 순서 이름 배열"."""
         return list(self.part_index_to_name)
 
     # -----------------------------------------------------------------
@@ -115,9 +302,7 @@ class SimInfo:
     ) -> "SimInfo":
         opt = cls._apply_dt_override(options, dt)
         scene = SceneMeta.from_dict(meta)
-        info = cls(scene=scene, options=opt, body_order=body_order)
-        # __post_init__에서 validate_scene + index rebuild 수행됨
-        return info
+        return cls(scene=scene, options=opt, body_order=body_order)
 
     @classmethod
     def from_json_string(
@@ -152,7 +337,6 @@ class SimInfo:
         existing_list = [b.name for b in self.scene.bodies]
         existing_set = set(existing_list)
 
-        # ⚠️ body_order가 "빈 리스트([])"로 들어오는 경우도 명시적 입력으로 간주해서 에러를 내는 게 안전
         if self.body_order is not None:
             order = list(self.body_order)
 
@@ -162,10 +346,6 @@ class SimInfo:
                     "Use body_order=None to follow scene.bodies order."
                 )
 
-            # 유효성: body_order가 있으면
-            # - 모든 name이 실제 bodies에 존재해야 하고
-            # - 중복이 없어야 하며
-            # - 기본적으로 전체 body를 1번씩 포함하는 것을 권장(PartIndex 안정성)
             dup = set()
             seen = set()
             for n in order:
@@ -188,7 +368,6 @@ class SimInfo:
                 raise ValueError(f"body_order mismatch. missing={missing}, extra={extra}")
 
         else:
-            # 기본: 메타데이터 bodies 순서가 PartIndex 기준
             order = existing_list
 
         self.part_index_to_name = order
