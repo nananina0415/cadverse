@@ -1,0 +1,10 @@
+{
+  "autodeskProduct": "Fusion",
+  "type": "script",
+  "author": "",
+  "description": {
+    "": "CAD 모델에서 메시와 메타데이터를 추출하여 AR 시뮬레이션용으로 내보냅니다."
+  },
+  "supportedOS": "windows|mac",
+  "editEnabled": true
+}

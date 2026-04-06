@@ -1,0 +1,11 @@
+name: cadverse
+channels:
+  - projectchrono
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pychrono=8
+  - pip
+  - pip:
+      - -e .

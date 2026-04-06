@@ -1,0 +1,18 @@
+[package]
+name = "server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["auto-initialize"] }
+anyhow = "1"
+p2p-core = { path = "../p2p/core" }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+notify = "6"
+notify-debouncer-mini = "0.4"
+nalgebra = "0.33"
+qrcode = "0.14"
+minifb = "0.27"

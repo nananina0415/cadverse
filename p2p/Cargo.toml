@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "core",
+    "unity-ffi",
+    "sample",
+    "android-sample",
+]
+resolver = "2"

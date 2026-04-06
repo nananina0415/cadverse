@@ -1,0 +1,35 @@
+[package]
+name = "android-sample"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+# Android는 .so 공유 라이브러리로 빌드해야 APK에 패키징됨
+crate-type = ["cdylib"]
+
+[dependencies]
+p2p-core = { path = "../core" }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+anyhow = "1"
+
+# Android 진입점
+android-activity = { version = "0.6", features = ["native-activity"] }
+
+# Android 로깅 (logcat으로 출력)
+android_logger = "0.14"
+log = "0.4"
+
+[package.metadata.android]
+package = "com.cvproject.p2pdemo"
+label = "P2P Demo"
+build_targets = ["aarch64-linux-android"]
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.INTERNET"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.ACCESS_NETWORK_STATE"
+
+[package.metadata.android.sdk]
+min_sdk_version = 26
+target_sdk_version = 30

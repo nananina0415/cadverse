@@ -1,0 +1,31 @@
+# ── Rust ──────────────────────────────────────────────
+**/target/
+**/.cargo/config.toml
+
+# ── Python ────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+server/pychrono/build/*
+
+# ── conda-pack bundle ─────────────────────────────────
+python_env.tar.gz
+python_env/
+
+# ── Unity ─────────────────────────────────────────────
+client/[Ll]ibrary/
+client/[Tt]emp/
+client/[Ll]ogs/
+client/[Oo]bj/
+client/[Bb]uild/
+client/[Bb]uilds/
+client/[Uu]ser[Ss]ettings/
+client/.vs/
+client/.vscode/
+client/*.csproj
+client/*.sln
+client/*.slnx
+client/Assets/DefaultVolumeProfile.asset
+client/Assets/DefaultVolumeProfile.asset.meta
+client/**/*.meta linguist-generated=true
