@@ -1,3 +1,0 @@
-"""
-CADverse Simulation Server Package
-"""
