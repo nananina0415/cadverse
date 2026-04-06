@@ -29,3 +29,6 @@ client/*.slnx
 client/Assets/DefaultVolumeProfile.asset
 client/Assets/DefaultVolumeProfile.asset.meta
 client/**/*.meta linguist-generated=true
+
+# ── Deploy ────────────────────────────────────────────
+deploy/
