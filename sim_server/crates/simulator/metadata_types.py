@@ -318,7 +318,8 @@ class CollisionAuto:
 # - single primitive object
 # - list of primitive objects
 # - auto directive
-CollisionSpec = Union[CollisionPrimitive, List[CollisionPrimitive], CollisionAuto]
+# - none/null directive
+CollisionSpec = Optional[Union[CollisionPrimitive, List[CollisionPrimitive], CollisionAuto]]
 
 
 @dataclass(frozen=True)
@@ -343,9 +344,14 @@ class Geometry:
         visual = VisualMesh.from_dict(d["visual"])
         col_raw = d["collision"]
 
+        # (0) none / null
+        if col_raw is None or col_raw == "none":
+            collision: CollisionSpec = None
+            return Geometry(visual=visual, collision=collision)
+
         # (3) auto
         if col_raw == "auto" or (isinstance(col_raw, dict) and col_raw.get("kind") == "auto"):
-            collision: CollisionSpec = CollisionAuto.from_any(col_raw)
+            collision = CollisionAuto.from_any(col_raw)
             return Geometry(visual=visual, collision=collision)
 
         # (2) multiple
@@ -360,10 +366,14 @@ class Geometry:
             prim = CollisionPrimitive.from_dict(col_raw)
             return Geometry(visual=visual, collision=prim)
 
-        raise ValueError(f"geometry.collision must be object | list | 'auto', got: {type(col_raw)}")
+        raise ValueError(
+            f"geometry.collision must be object | list | 'auto' | 'none' | null, got: {type(col_raw)}"
+        )
 
     def to_dict(self) -> Dict[str, Any]:
-        if isinstance(self.collision, list):
+        if self.collision is None:
+            col = None
+        elif isinstance(self.collision, list):
             col = [p.to_dict() for p in self.collision]
         elif isinstance(self.collision, CollisionAuto):
             col = self.collision.to_dict()

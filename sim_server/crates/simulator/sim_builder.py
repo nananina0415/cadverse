@@ -1371,10 +1371,11 @@ def _approx_shaft_with_hub_from_obj(verts_body_local: List[Tuple[float, float, f
         R = sorted(rs)[int(0.5 * len(rs))]
         return center_c, axis, length, R, s_center, None
 
-    k = max(1, int(0.2 * len(med_sorted)))
+    k = max(1, int(0.10 * len(med_sorted)))
     baseline = sum(med_sorted[:k]) / k
+    baseline *= 0.92
 
-    thr = baseline * 1.35
+    thr = baseline * 1.55
     hub_idx = [i for i, v in enumerate(med) if v > thr]
 
     hub = None
@@ -1426,12 +1427,12 @@ def _make_base_top_floor_patch(
     hx0 = float(half_ext[0])
     hz0 = float(half_ext[2])
 
-    # 🔥 your "before/after" fix lives here
+    # base floor patch는 너무 과하게 넓어지지 않도록 보수적으로
     min_half_xz = float(min_half_xz)
-    hx = max(min_half_xz, hx0 * (1.0 + float(expand)))
-    hz = max(min_half_xz, hz0 * (1.0 + float(expand)))
+    hx = max(min_half_xz, hx0 * (1.0 + float(expand) * 0.35))
+    hz = max(min_half_xz, hz0 * (1.0 + float(expand) * 0.35))
 
-    hy = max(float(min_half_y), 0.5 * float(thickness))
+    hy = max(float(min_half_y), 0.25 * float(thickness))
     y_top = float(mx[1])
     cy = y_top - float(inset) - float(hy)
 
@@ -1466,9 +1467,9 @@ def _auto_collision_from_obj(
         prims = [
             CollisionPrimitive(
                 kind="box",
-                hx=float(half_ext[0]),
-                hy=float(half_ext[1]),
-                hz=float(half_ext[2]),
+                hx=float(half_ext[0]) * 0.96,
+                hy=float(half_ext[1]) * 0.85,
+                hz=float(half_ext[2]) * 0.96,
                 offset=off,
             )
         ]
@@ -1509,13 +1510,13 @@ def _auto_collision_from_obj(
         prims = [
             CollisionPrimitive(
                 kind="cylinder",
-                radius=float(R),
-                length=float(L),
+                radius=float(R) * 0.95,
+                length=float(L) * 0.96,
                 offset=_pose_from_center_rot(center_main, q),
             )
         ]
 
-        if hub and float(hub.get("length", 0.0)) > 1e-5 and float(hub.get("radius", 0.0)) > float(R) * 1.2:
+        if hub and float(hub.get("length", 0.0)) > 0.01 and float(hub.get("radius", 0.0)) > float(R) * 1.35:
             hub_center = _add(c, _mul(axis, float(hub.get("s_center", 0.0))))
             prims.append(
                 CollisionPrimitive(
@@ -1527,12 +1528,52 @@ def _auto_collision_from_obj(
             )
         return prims
 
+    # --- gear disc ---
+    if strategy == "gear_disc" or cat == "gear":
+        _, _, center_g, half_ext_g = _compute_aabb(verts)
+
+        gp = getattr(getattr(bdef, "mechanical", None), "gearProps", None)
+
+        face_width = 0.0
+        if gp is not None:
+            try:
+                face_width = float(getattr(gp, "face_width", 0.0) or 0.0)
+            except Exception:
+                face_width = 0.0
+
+        # gear는 얇은 disc/cylinder로 근사
+        disc_radius = max(float(half_ext_g[0]), float(half_ext_g[2]))
+
+        if face_width > 1e-6:
+            disc_length = float(face_width) * 0.95
+        else:
+            disc_length = min(float(half_ext_g[1]) * 2.0, disc_radius * 0.6)
+
+        disc_radius = max(disc_radius * 0.97, 1e-4)
+        disc_length = max(disc_length, 1e-4)
+
+        off = _pose_from_center_rot(center_g, Quat(1.0, 0.0, 0.0, 0.0))
+        return [
+            CollisionPrimitive(
+                kind="cylinder",
+                radius=float(disc_radius),
+                length=float(disc_length),
+                offset=off,
+            )
+        ]
+
     # --- category-based fallback ---
     if cat == "base":
         # base: AABB box + (optional) top floor patch
         off = _pose_from_center_rot(center, Quat(1.0, 0.0, 0.0, 0.0))
         prims = [
-            CollisionPrimitive(kind="box", hx=float(half_ext[0]), hy=float(half_ext[1]), hz=float(half_ext[2]), offset=off)
+            CollisionPrimitive(
+                kind="box",
+                hx=float(half_ext[0]) * 0.96,
+                hy=float(half_ext[1]) * 0.85,
+                hz=float(half_ext[2]) * 0.96,
+                offset=off,
+            )
         ]
 
         if bool((cfg or {}).get("auto_base_add_floor", True)):
@@ -1568,12 +1609,12 @@ def _auto_collision_from_obj(
         prims = [
             CollisionPrimitive(
                 kind="cylinder",
-                radius=float(R),
-                length=float(L),
+                radius=float(R) * 0.95,
+                length=float(L) * 0.96,
                 offset=_pose_from_center_rot(center_main, q),
             )
         ]
-        if hub and float(hub.get("length", 0.0)) > 1e-5 and float(hub.get("radius", 0.0)) > float(R) * 1.2:
+        if hub and float(hub.get("length", 0.0)) > 0.01 and float(hub.get("radius", 0.0)) > float(R) * 1.35:
             hub_center = _add(c, _mul(axis, float(hub.get("s_center", 0.0))))
             prims.append(
                 CollisionPrimitive(
@@ -1890,7 +1931,7 @@ def _coerce_collision_to_primitives(bdef: BodyDef, col_any: Any, *, cfg: Optiona
     ✅ NEW:
     - auto collision 생성 시 cfg(옵션) 기반의 base floor patch를 적용할 수 있게 cfg 전달.
     """
-    # 0) None
+    # 0) none / null
     if col_any is None:
         return []
 
@@ -1910,22 +1951,41 @@ def _coerce_collision_to_primitives(bdef: BodyDef, col_any: Any, *, cfg: Optiona
                 raise ValueError(f"Body '{bdef.name}': collision list has unsupported item type: {type(it)}")
         return prims
 
-    # 3) string "auto"
+    # 3) string "auto" / "none"
     if isinstance(col_any, str):
-        if col_any.strip().lower() == "auto":
+        s = col_any.strip().lower()
+        if s == "none":
+            return []
+        if s == "auto":
             cat = str(getattr(bdef, "category", "generic")).strip().lower()
-            strategy = "shaft_pca_hub2cyl" if cat == "shaft" else "base_aabb"
+            if cat == "shaft":
+                strategy = "shaft_pca_hub2cyl"
+            elif cat == "gear":
+                strategy = "gear_disc"
+            else:
+                strategy = "base_aabb"
             return _auto_collision_from_obj(bdef, CollisionAuto(strategy=strategy), cfg=cfg)
         raise ValueError(f"Body '{bdef.name}': unsupported collision string: {col_any}")
 
-    # 4) dict {kind:"auto"} 같은 형태가 남아있을 수도 있음
+    # 4) dict {kind:"auto"} / {kind:"none"}
     if isinstance(col_any, dict):
         kind = str(col_any.get("kind", "")).strip().lower()
+        if kind == "none":
+            return []
         if kind == "auto":
             cat = str(getattr(bdef, "category", "generic")).strip().lower()
-            strategy = str(col_any.get("strategy", "")).strip() or ("shaft_pca_hub2cyl" if cat == "shaft" else "base_aabb")
+            strategy = str(col_any.get("strategy", "")).strip()
+            if not strategy:
+                if cat == "shaft":
+                    strategy = "shaft_pca_hub2cyl"
+                elif cat == "gear":
+                    strategy = "gear_disc"
+                else:
+                    strategy = "base_aabb"
             return _auto_collision_from_obj(bdef, CollisionAuto(strategy=strategy), cfg=cfg)
-        raise ValueError(f"Body '{bdef.name}': unsupported collision dict (expected kind='auto'): keys={list(col_any.keys())}")
+        raise ValueError(
+            f"Body '{bdef.name}': unsupported collision dict (expected kind='auto' or 'none'): keys={list(col_any.keys())}"
+        )
 
     # 5) single primitive
     if isinstance(col_any, CollisionPrimitive):
@@ -1943,6 +2003,7 @@ def _build_body(sys: Any, bdef: BodyDef, *, cfg: Optional[Dict[str, Any]] = None
 
     body.SetFixed(bool(bdef.mechanical.fixed))
     body.SetMass(float(bdef.mechanical.mass))
+    print(f"[DEBUG mass] {bdef.name} mass = {float(bdef.mechanical.mass):.6f}")
 
     # ✅ PATCH: apply damping only for dynamic bodies (best-effort across bindings)
     if (not bool(bdef.mechanical.fixed)) and cfg is not None:
@@ -1959,9 +2020,10 @@ def _build_body(sys: Any, bdef: BodyDef, *, cfg: Optional[Dict[str, Any]] = None
     c = bdef.mechanical.contact
     mat = _make_contact_material(sys, c, cfg=cfg)
 
-    # determine collision primitives (single/list/auto/"auto" string)
+    # determine collision primitives (single/list/auto/"auto"/"none"/null)
     col_any = bdef.geometry.collision
     prims: List[CollisionPrimitive] = _coerce_collision_to_primitives(bdef, col_any, cfg=cfg)
+    print(f"[DEBUG prims] {bdef.name} prim_count = {len(prims)}")
 
     # inertia
     inertia = bdef.mechanical.inertia
@@ -1969,13 +2031,22 @@ def _build_body(sys: Any, bdef: BodyDef, *, cfg: Optional[Dict[str, Any]] = None
         Ixx = float(inertia.Ixx or 0.0)
         Iyy = float(inertia.Iyy or 0.0)
         Izz = float(inertia.Izz or 0.0)
-        body.SetInertiaXX(chrono.ChVector3d(Ixx, Iyy, Izz))
+
+        # explicit inertia가 0/비정상이면 auto 추정으로 fallback
+        if Ixx < 1e-8 or Iyy < 1e-8 or Izz < 1e-8:
+            cfg_in = getattr(inertia, "auto", None)
+            mval = float(bdef.mechanical.mass)
+            print(f"[WARN] {bdef.name} explicit inertia invalid -> fallback to auto")
+            Ixx, Iyy, Izz = _estimate_inertia_from_primitives(prims, mval, cfg_in)
+
+        body.SetInertiaXX(chrono.ChVector3d(float(Ixx), float(Iyy), float(Izz)))
+        print(f"[DEBUG inertia] {bdef.name} explicit/fallback inertia = ({float(Ixx):.6e}, {float(Iyy):.6e}, {float(Izz):.6e})")
     else:
         cfg_in = getattr(inertia, "auto", None)  # AutoInertiaFromCollision | None
         mval = float(bdef.mechanical.mass)
         Ixx, Iyy, Izz = _estimate_inertia_from_primitives(prims, mval, cfg_in)
         body.SetInertiaXX(chrono.ChVector3d(float(Ixx), float(Iyy), float(Izz)))
-
+        print(f"[DEBUG inertia] {bdef.name} auto inertia = ({float(Ixx):.6e}, {float(Iyy):.6e}, {float(Izz):.6e})")
     # collision shapes
     should_collide = (prims is not None) and (len(prims) > 0)
 

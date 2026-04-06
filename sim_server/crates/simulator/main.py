@@ -352,6 +352,46 @@ def _get_linvel_world(body: chrono.ChBody) -> chrono.ChVector3d:
             pass
     return chrono.ChVector3d(0.0, 0.0, 0.0)
 
+def _set_angvel_world_best_effort(body: chrono.ChBody, w_world: chrono.ChVector3d) -> bool:
+    # 1) world 계열 setter 우선
+    for fn in ("SetWvel_par", "SetAngVelWorld", "SetWvel"):
+        try:
+            if hasattr(body, fn):
+                getattr(body, fn)(w_world)
+                return True
+        except Exception:
+            pass
+
+    # 2) ambiguous SetAngVel
+    try:
+        if hasattr(body, "SetAngVel"):
+            body.SetAngVel(w_world)
+            return True
+    except Exception:
+        pass
+
+    # 3) local setter만 있으면 world -> local 변환
+    try:
+        if hasattr(body, "SetAngVelLocal") and hasattr(body, "GetRot"):
+            qinv = _quat_conjugate(body.GetRot())
+            w_local = _quat_rotate(qinv, w_world)
+            body.SetAngVelLocal(w_local)
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def _set_linvel_world_best_effort(body: chrono.ChBody, v_world: chrono.ChVector3d) -> bool:
+    for fn in ("SetPos_dt", "SetPosDt", "SetVel", "SetPosDt_par"):
+        try:
+            if hasattr(body, fn):
+                getattr(body, fn)(v_world)
+                return True
+        except Exception:
+            pass
+    return False
 
 def _apply_torque_world(body: chrono.ChBody, tau_world: chrono.ChVector3d) -> None:
     try:
@@ -1044,7 +1084,6 @@ def _coerce_user_input_any(user_input_any: Any) -> Optional[UserInput]:
 # ============================================================
 # AR Interaction Controller (schema-06) - Hybrid
 # ============================================================
-
 @dataclass
 class _TouchContext:
     active: bool = False
@@ -1054,20 +1093,43 @@ class _TouchContext:
     last_finger_world: Optional[chrono.ChVector3d] = None
     camera_forward_world: Optional[chrono.ChVector3d] = None
 
+    # rotate mode에서 TouchStart 시점에 고정해서 쓰는 기준
+    rotate_axis_world: Optional[chrono.ChVector3d] = None
+    rotate_pivot_world: Optional[chrono.ChVector3d] = None
+
+    # TouchEnd 직후 free-phase 안정화용 카운터
+    rotate_release_step_count: int = 0
+
+    # free-phase에서 사용할 "명령된 축방향 각속도"
+    # post-step sanitize가 현재 측정치를 따라가지 않고, 이 값을 단조감쇠시킨다.
+    rotate_free_w_cmd: float = 0.0
 
 class _ARInteractionController:
     MODE_ROTATE = "rotate"
     MODE_SPRING = "spring"
 
-    # ---- Rotate drag torque ----
-    DRAG_TORQUE_MAX = 1.0
-    DRAG_ANGLE_REF = m.pi / 6.0
+    DRAG_TORQUE_MAX = 2.6
+    DRAG_ANGLE_REF = m.pi / 28.0
 
-    # ---- Rotate damping (torque-based) ----
-    ROT_DAMP_CW = 1.0
-    VEL_EPS_SNAP_ROT = 0.10
-    ROT_DAMP_TAU_MAX = 1.5
+    ROT_DRAG_CW = 0.010
+    ROT_DRAG_SPEED_SOFT = 8.0
+    ROT_DRAG_SPEED_HARD = 12.0
+
+    ROT_DRAG_LOW_SPEED_REF = 0.80
+    ROT_DRAG_MIN_TAU_LOW = 0.60
+
+    # ---- Rotate damping (inertia-aware torque-based) ----
+    # 기존 tau = Cw * w  대신
+    # tau = Cw_alpha * Ieff * w  형태로 써서
+    # 관성이 달라도 비슷한 각감속(alpha)이 나오게 만든다.
+    ROT_DAMP_CW_ALPHA = 0.90          # [1/s]
+    VEL_EPS_SNAP_ROT = 0.03
+    ROT_DAMP_TAU_MAX_ALPHA = 1.80     # [rad/s^2] * Ieff 로 환산
     ROT_DAMP_NOFLIP_SAFETY = 0.95
+
+    # TouchEnd 직후 free phase 제어 파라미터
+    ROT_RELEASE_HOLD_STEPS = 3
+    ROT_FREE_LOW_SPEED_REF = 0.8
 
     # ---- Spring ----
     SPRING_K = 80.0
@@ -1084,6 +1146,58 @@ class _ARInteractionController:
         self._mode: str = self.MODE_ROTATE
         self._prev_finger_world: Optional[chrono.ChVector3d] = None
         self._prev_rotate_finger_world: Optional[chrono.ChVector3d] = None
+
+    def _find_single_revolute_joint_meta(self, sim: "Simulator", target_body_name: str):
+        revs = []
+        try:
+            for j in sim.joints.values():
+                jm = j.meta
+                if getattr(jm, "type", None) != "revolute":
+                    continue
+
+                b1 = getattr(jm, "body1", None)
+                b2 = getattr(jm, "body2", None)
+                if b1 == target_body_name or b2 == target_body_name:
+                    revs.append(jm)
+        except Exception:
+            return None
+
+        if len(revs) == 1:
+            return revs[0]
+        return None
+
+    def _resolve_rotate_reference(self, sim: "Simulator", target_body_name: str) -> tuple[chrono.ChVector3d, chrono.ChVector3d]:
+        """
+        rotate mode에서 사용할 axis/pivot 기준을 TouchStart 시점에 고정한다.
+        - axis: 기존 infer 함수 사용
+        - pivot: 가능하면 revolute joint meta.frame.pos (world) 사용
+        - 실패 시 body.GetPos() fallback
+        """
+        axis_world = _normalize(sim._infer_revolute_axis_world_for_body(target_body_name))
+        if _norm(axis_world) < 1e-9:
+            axis_world = chrono.ChVector3d(1.0, 0.0, 0.0)
+
+        pivot_world = chrono.ChVector3d(0.0, 0.0, 0.0)
+
+        jm = self._find_single_revolute_joint_meta(sim, target_body_name)
+        if jm is not None:
+            try:
+                fr = getattr(jm, "frame", None)
+                if fr is not None:
+                    pos = getattr(fr, "pos", None)
+                    if pos is not None:
+                        pivot_world = chrono.ChVector3d(float(pos.x), float(pos.y), float(pos.z))
+                        return axis_world, pivot_world
+            except Exception:
+                pass
+
+        try:
+            b = sim.bodies[target_body_name].body
+            pivot_world = b.GetPos()
+        except Exception:
+            pivot_world = chrono.ChVector3d(0.0, 0.0, 0.0)
+
+        return axis_world, pivot_world
 
     def ingest(self, user_input: UserInput, *, part_names: List[str], sim: "Simulator") -> None:
         if isinstance(user_input, TouchStartEvent):
@@ -1105,8 +1219,22 @@ class _ARInteractionController:
 
             self._prev_finger_world = chrono.ChVector3d(fp.x, fp.y, fp.z)
             self._prev_rotate_finger_world = chrono.ChVector3d(fp.x, fp.y, fp.z)
+            self.ctx.rotate_release_step_count = 0
+            self.ctx.rotate_free_w_cmd = 0.0
 
             self._mode = self._auto_select_mode(sim, target_name)
+
+            # rotate mode 기준은 TouchStart 시점에 고정
+            self.ctx.rotate_axis_world = None
+            self.ctx.rotate_pivot_world = None
+            if self._mode == self.MODE_ROTATE and target_name:
+                try:
+                    ax, pv = self._resolve_rotate_reference(sim, target_name)
+                    self.ctx.rotate_axis_world = ax
+                    self.ctx.rotate_pivot_world = pv
+                except Exception:
+                    self.ctx.rotate_axis_world = None
+                    self.ctx.rotate_pivot_world = None
 
             sim._maybe_release_drive_actuators_for_target(target_name)
 
@@ -1125,6 +1253,12 @@ class _ARInteractionController:
             self.ctx.start_finger_world = None
             self._prev_finger_world = None
             self._prev_rotate_finger_world = None
+            self.ctx.rotate_release_step_count = 0
+
+            # ✅ TouchEnd에서는 각속도 overwrite / 강제 캡을 하지 않는다.
+            #    현재 물리 상태를 그대로 이어받고, 이후 free phase에서 damping torque만 적용되게 둔다.
+            self.ctx.rotate_free_w_cmd = 0.0
+
             print("[AR] TouchEnd")
             return
 
@@ -1187,14 +1321,19 @@ class _ARInteractionController:
             self._apply_spring(sim=sim, body=target_body, body_name=target_name, dt=dt, dragging_now=dragging_now)
 
     def _apply_rotate(self, *, sim: "Simulator", body: chrono.ChBody, body_name: str, dt: float, dragging_now: bool) -> None:
-        axis_world = _normalize(sim._infer_revolute_axis_world_for_body(body_name))
+        axis_world = self.ctx.rotate_axis_world
+        if axis_world is None or _norm(axis_world) < 1e-9:
+            axis_world = _normalize(sim._infer_revolute_axis_world_for_body(body_name))
+
         if _norm(axis_world) < 1e-9:
             self._mode = self.MODE_SPRING
             return
 
-        center_world = body.GetPos()
+        center_world = self.ctx.rotate_pivot_world
+        if center_world is None:
+            center_world = body.GetPos()
 
-        # 1) Drag torque (증분 방식)
+        # ---- Drag 상태 ----
         if dragging_now:
             f_curr = self.ctx.last_finger_world
             f_prev = self._prev_rotate_finger_world
@@ -1208,49 +1347,122 @@ class _ARInteractionController:
 
             self._prev_rotate_finger_world = chrono.ChVector3d(f_curr.x, f_curr.y, f_curr.z)
 
-            if _norm(v0) > 1e-6 and _norm(v1) > 1e-6:
+            axis_world_n = _normalize(axis_world)
+            if _norm(axis_world_n) < 1e-9:
+                return
+
+            w_before = _get_angvel_world(body)
+            w_along_now = float(_dot(w_before, axis_world_n))
+            abs_w = abs(w_along_now)
+
+            tau_drag = chrono.ChVector3d(0.0, 0.0, 0.0)
+
+            if _norm(v0) > 1e-6 and _norm(v1) > 1e-6 and dt > 1e-9:
                 v0n = _normalize(v0)
                 v1n = _normalize(v1)
 
                 c = _clamp(_dot(v0n, v1n), -1.0, 1.0)
                 d_ang = m.acos(c)
 
-                if d_ang > 1e-6:
+                DRAG_ANGLE_EPS = 1e-4
+
+                if d_ang > DRAG_ANGLE_EPS:
                     arc_axis = _cross(v0n, v1n)
                     arc_axis_n = _normalize(arc_axis)
 
                     if _norm(arc_axis_n) > 1e-6:
-                        sign = 1.0 if _dot(arc_axis_n, axis_world) >= 0.0 else -1.0
+                        align = float(_dot(arc_axis_n, axis_world_n))
+                        sign = 1.0 if align >= 0.0 else -1.0
+                        align_abs = abs(align)
+
                         s = _clamp(d_ang / self.DRAG_ANGLE_REF, 0.0, 1.0)
-                        tau_drag = _mul(axis_world, sign * self.DRAG_TORQUE_MAX * s)
-                        _apply_torque_world(body, tau_drag)
+
+                        base_tau = self.DRAG_TORQUE_MAX * s
+                        base_tau *= max(0.70, align_abs)
+
+                        # 저속 / settled 상태에서는 입력이 거의 안 먹는 경우가 있어서
+                        # 작은 "minimum induction torque"를 보강한다.
+                        if abs_w < self.ROT_DRAG_LOW_SPEED_REF:
+                            low_alpha = 1.0 - (abs_w / max(self.ROT_DRAG_LOW_SPEED_REF, 1e-6))
+                            tau_floor = self.ROT_DRAG_MIN_TAU_LOW * low_alpha
+                            tau_floor *= max(0.80, align_abs)
+
+                            # settled pose에서는 실제 drag가 작게 들어와도 너무 쉽게 죽지 않게
+                            # floor 적용 조건을 조금 완화
+                            if d_ang > (1.2 * DRAG_ANGLE_EPS):
+                                base_tau = max(base_tau, tau_floor)
+
+                        # 속도가 높을수록 drag 입력 토크를 강하게 줄인다.
+                        if abs_w >= self.ROT_DRAG_SPEED_HARD:
+                            base_tau = 0.0
+                        elif abs_w > self.ROT_DRAG_SPEED_SOFT:
+                            alpha = (abs_w - self.ROT_DRAG_SPEED_SOFT) / max(
+                                self.ROT_DRAG_SPEED_HARD - self.ROT_DRAG_SPEED_SOFT, 1e-6
+                            )
+                            base_tau *= max(0.0, 1.0 - alpha)
+
+                        tau_drag = _mul(axis_world_n, sign * base_tau)
+
+            # drag 중에도 약한 축방향 점성감쇠를 같이 넣어서
+            # repeat / dropout 때 속도가 계속 과도하게 유지되지 않게 한다.
+            # inertia-aware drag damping
+            Ieff = _effective_inertia_about_axis_world(body, axis_world_n)
+            tau_drag_damp_mag = float(self.ROT_DRAG_CW) * Ieff * abs_w
+            tau_drag_damp = _mul(axis_world_n, -m.copysign(tau_drag_damp_mag, w_along_now))
+
+            tau_total = _add(tau_drag, tau_drag_damp)
+            _apply_torque_world(body, tau_total)
             return
 
-        # 드래그 끝
+        # ---- TouchEnd 이후 ----
         self._prev_rotate_finger_world = None
 
-        # 2) Torque-based damping (TouchEnd 이후)
+        self.ctx.rotate_release_step_count += 1
+        if self.ctx.rotate_release_step_count <= self.ROT_RELEASE_HOLD_STEPS:
+            return
+
         if dt <= 1e-9:
             return
 
-        w_world = _get_angvel_world(body)
-        w_along = float(_dot(w_world, axis_world))
-
-        if abs(w_along) < self.VEL_EPS_SNAP_ROT:
+        axis_world_n = _normalize(axis_world)
+        if _norm(axis_world_n) < 1e-9:
             return
 
-        # 기본 감쇠 크기
-        tau_mag = abs(self.ROT_DAMP_CW * w_along)
-        tau_mag = min(tau_mag, float(self.ROT_DAMP_TAU_MAX))
+        w_world = _get_angvel_world(body)
+        w_along = float(_dot(w_world, axis_world_n))
+        abs_w = abs(w_along)
 
-        # ✅ 핵심: anti-flip clamp
-        Ieff = _effective_inertia_about_axis_world(body, axis_world)
-        tau_noflip = (Ieff * abs(w_along) / float(dt)) * float(self.ROT_DAMP_NOFLIP_SAFETY)
+        if abs_w < self.VEL_EPS_SNAP_ROT:
+            return
+
+        # free phase에서는 drag 때보다 조금 강한 점성감쇠를 주되,
+        # 저속으로 내려갈수록 과한 제동 느낌이 나지 않게 부드럽게 줄인다.
+        Ieff = _effective_inertia_about_axis_world(body, axis_world_n)
+
+        # inertia-aware damping:
+        # tau = C_alpha * Ieff * |w|
+        tau_mag = float(self.ROT_DAMP_CW_ALPHA) * Ieff * abs_w
+
+        low_ref = max(float(self.ROT_FREE_LOW_SPEED_REF), 1e-6)
+        if abs_w < low_ref:
+            scale = abs_w / low_ref
+            tau_mag *= scale * scale
+
+        # inertia-aware tau max
+        tau_max_alpha = float(self.ROT_DAMP_TAU_MAX_ALPHA) * Ieff
+        tau_mag = min(tau_mag, tau_max_alpha)
+
+        # no-flip safety는 기존처럼 유지
+        tau_noflip = (Ieff * abs_w / float(dt)) * float(self.ROT_DAMP_NOFLIP_SAFETY)
         if tau_mag > tau_noflip:
             tau_mag = tau_noflip
 
-        tau_damp = _mul(axis_world, -m.copysign(tau_mag, w_along))
+        if tau_mag <= 0.0:
+            return
+
+        tau_damp = _mul(axis_world_n, -m.copysign(tau_mag, w_along))
         _apply_torque_world(body, tau_damp)
+        return
 
     def _apply_spring(self, *, sim: "Simulator", body: chrono.ChBody, body_name: str, dt: float, dragging_now: bool) -> None:
         ap_local = self.ctx.action_point_local
@@ -2793,8 +3005,37 @@ class Simulator:
         gear_telemetry = self._apply_gear_pair_approximations(dt=dt)
         self._last_gear_telemetry = gear_telemetry
 
+        # ---- NaN guard (before DoStepDynamics) ----
+        for name, bwrap in self.bodies.items():
+            b = bwrap.body
+
+            try:
+                w = _get_angvel_world(b)
+                if not (
+                    m.isfinite(float(w.x))
+                    and m.isfinite(float(w.y))
+                    and m.isfinite(float(w.z))
+                ):
+                    print(f"[SANITY] NaN angvel detected on {name}, resetting")
+                    _set_angvel_world_best_effort(b, chrono.ChVector3d(0.0, 0.0, 0.0))
+            except Exception:
+                pass
+
+            try:
+                v = _get_linvel_world(b)
+                if not (
+                    m.isfinite(float(v.x))
+                    and m.isfinite(float(v.y))
+                    and m.isfinite(float(v.z))
+                ):
+                    print(f"[SANITY] NaN linvel detected on {name}, resetting")
+                    _set_linvel_world_best_effort(b, chrono.ChVector3d(0.0, 0.0, 0.0))
+            except Exception:
+                pass
+
         # ---- integrate ----
         self.sys.DoStepDynamics(dt)
+
         self.sim_time += dt
         self._seq += 1
 
