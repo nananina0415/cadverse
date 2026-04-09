@@ -3502,6 +3502,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "p2p-core",
+ "serde_json",
  "tokio",
 ]
 
