@@ -259,6 +259,20 @@ fn show_group_info(setting: &NetSetting, peers: &[p2p_core::PeerInfo]) {
         println!("  {}{}", p.name, sim);
     }
 
+    #[cfg(debug_assertions)]
+    {
+        let clients: Vec<_> = peers.iter()
+            .filter(|p| matches!(p.peer_type, p2p_core::PeerType::ArClient { .. }))
+            .collect();
+        if !clients.is_empty() {
+            println!("=== [DEBUG] AR 클라이언트 ({}) ===", clients.len());
+            for p in clients {
+                if let p2p_core::PeerType::ArClient { udp_port } = p.peer_type {
+                    println!("  {} [port={}]", p.name, udp_port);
+                }
+            }
+        }
+    }
 }
 
 pub fn setup_python() {
