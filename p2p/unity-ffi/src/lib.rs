@@ -62,7 +62,7 @@ pub extern "C" fn cv_join(
         }
     };
 
-    let net = match rt.block_on(p2p_core::join_p2p_net(JoinForm {
+    let net = match rt.block_on(p2p_core::join_as_client(JoinForm {
         net_id: NetId(net_id),
         pw: Password(pw),
         my_name: name,
