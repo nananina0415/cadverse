@@ -1104,19 +1104,29 @@ class _TouchContext:
     # post-step sanitize가 현재 측정치를 따라가지 않고, 이 값을 단조감쇠시킨다.
     rotate_free_w_cmd: float = 0.0
 
+    # 폐루프 기구에서 실제 torque를 줄 body
+    # 예: target=coupler_link여도 drive_body=input_link로 바꿔서 구동
+    drive_body_name: Optional[str] = None
+
 class _ARInteractionController:
     MODE_ROTATE = "rotate"
     MODE_SPRING = "spring"
 
-    DRAG_TORQUE_MAX = 2.6
+    # ---- Rotate drag (inertia-aware) ----
+    DRAG_ALPHA_MAX = 35.0          # 최대 각가속도
+    DRAG_ALPHA_MIN_LOW = 4.0       # 저속에서 최소 각가속도
     DRAG_ANGLE_REF = m.pi / 28.0
+    DRAG_ANGLE_EPS = 1e-4
 
-    ROT_DRAG_CW = 0.010
     ROT_DRAG_SPEED_SOFT = 8.0
     ROT_DRAG_SPEED_HARD = 12.0
-
     ROT_DRAG_LOW_SPEED_REF = 0.80
-    ROT_DRAG_MIN_TAU_LOW = 0.60
+    ROT_DRAG_TARGET_SPEED_GAIN = 1.0
+    ROT_DRAG_SPEED_KP_ALPHA = 10.0
+    ROT_DRAG_SPEED_TAU_MAX_ALPHA = 6.0
+
+    # drag 중 damping (alpha 기반)
+    ROT_DRAG_CW_ALPHA = 0.25
 
     # ---- Rotate damping (inertia-aware torque-based) ----
     # 기존 tau = Cw * w  대신
@@ -1166,6 +1176,212 @@ class _ARInteractionController:
             return revs[0]
         return None
 
+    def _find_drive_revolute_joint_meta(self, sim: "Simulator", target_body_name: str):
+        """
+        폐루프/다중 조인트 기구에서 AR rotate 기준이 될 revolute joint를 찾는다.
+
+        우선순위:
+        1) target body가 fixed/ground body와 직접 연결된 revolute joint
+        2) target body에서 joint graph를 따라가며 가장 가까운 fixed/ground 연결 revolute joint
+        3) 그래도 없으면 target body에 직접 연결된 revolute joint 중 첫 번째
+
+        예:
+        - input_link  -> rev_ground_input
+        - rocker_link -> rev_rocker_ground
+        - coupler_link -> 가까운 ground-side revolute를 찾아서 선택
+        """
+        if not target_body_name:
+            return None
+
+        # -----------------------------------------
+        # 1) revolute joint 목록 + body graph 구성
+        # -----------------------------------------
+        revs = []
+        graph: dict[str, list[tuple[str, Any]]] = {}
+
+        try:
+            for j in sim.joints.values():
+                jm = j.meta
+                if getattr(jm, "type", None) != "revolute":
+                    continue
+
+                b1 = getattr(jm, "body1", None)
+                b2 = getattr(jm, "body2", None)
+
+                if not b1 or not b2:
+                    continue
+
+                revs.append(jm)
+
+                graph.setdefault(str(b1), []).append((str(b2), jm))
+                graph.setdefault(str(b2), []).append((str(b1), jm))
+        except Exception:
+            return None
+
+        if target_body_name not in graph:
+            return None
+
+        def _is_fixed_name(name: str) -> bool:
+            # 1) Chrono body 기준
+            try:
+                body = sim.bodies[name].body
+                if _is_fixed_body(body):
+                    return True
+            except Exception:
+                pass
+
+            # 2) metadata 기준 fallback
+            try:
+                for bm in getattr(sim.info.scene, "bodies", []):
+                    if getattr(bm, "name", None) != name:
+                        continue
+
+                    mech = getattr(bm, "mechanical", None)
+                    if mech is not None and bool(getattr(mech, "fixed", False)):
+                        return True
+            except Exception:
+                pass
+
+            # 3) 이름 기준 fallback
+            if str(name).lower() in ("ground", "base", "fixed", "world"):
+                return True
+
+            return False
+
+        # -----------------------------------------
+        # 2) 직접 fixed/ground에 연결된 revolute 우선
+        # -----------------------------------------
+        direct_revs = []
+        try:
+            for other_name, jm in graph.get(target_body_name, []):
+                if _is_fixed_name(other_name):
+                    direct_revs.append(jm)
+        except Exception:
+            pass
+
+        if direct_revs:
+            return direct_revs[0]
+
+        # -----------------------------------------
+        # 3) BFS로 가장 가까운 fixed/ground 연결 revolute 찾기
+        # -----------------------------------------
+        from collections import deque
+
+        visited = set([target_body_name])
+        q = deque()
+
+        # (현재 body, 현재 body까지 들어올 때 사용한 joint, depth)
+        for other_name, jm in graph.get(target_body_name, []):
+            q.append((other_name, jm, 1))
+            visited.add(other_name)
+
+        best = None
+
+        while q:
+            body_name, incoming_joint, depth = q.popleft()
+
+            # 현재 body가 fixed/ground면,
+            # 그 fixed body와 직접 연결된 incoming_joint가 진짜 drive joint
+            if _is_fixed_name(body_name):
+                best = incoming_joint
+                break
+
+            for next_name, next_joint in graph.get(body_name, []):
+                if next_name in visited:
+                    continue
+
+                visited.add(next_name)
+
+                # 핵심:
+                # first_joint가 아니라, 다음 body로 들어갈 때의 next_joint를 넘긴다.
+                q.append((next_name, next_joint, depth + 1))
+
+        if best is not None:
+            return best
+
+        # -----------------------------------------
+        # 4) fallback: target에 직접 연결된 revolute 중 첫 번째
+        # -----------------------------------------
+        try:
+            direct_any = graph.get(target_body_name, [])
+            if direct_any:
+                return direct_any[0][1]
+        except Exception:
+            pass
+
+        return None
+
+    def _resolve_drive_body_name(self, sim: "Simulator", target_body_name: str) -> str:
+        """
+        AR target이 coupler처럼 직접 구동하기 어려운 링크일 때,
+        실제 torque를 줄 drive body를 결정한다.
+
+        원칙:
+        - fixed body는 절대 drive body로 선택하지 않는다.
+        - target body가 fixed가 아니고, drive joint에 포함되어 있으면 target을 우선 사용한다.
+        - coupler처럼 fixed와 직접 연결되지 않은 경우에는 joint 반대편 non-fixed body를 사용한다.
+        """
+        if not target_body_name:
+            return target_body_name
+
+        try:
+            target_body = sim.bodies[target_body_name].body
+            if _is_fixed_body(target_body):
+                return target_body_name
+        except Exception:
+            return target_body_name
+
+        jm = self._find_drive_revolute_joint_meta(sim, target_body_name)
+        if jm is None:
+            return target_body_name
+
+        try:
+            b1 = str(getattr(jm, "body1", ""))
+            b2 = str(getattr(jm, "body2", ""))
+
+            b1_fixed = False
+            b2_fixed = False
+
+            try:
+                b1_fixed = _is_fixed_body(sim.bodies[b1].body)
+            except Exception:
+                pass
+            if str(b1).lower() in ("ground", "base", "fixed", "world"):
+                b1_fixed = True
+
+            try:
+                b2_fixed = _is_fixed_body(sim.bodies[b2].body)
+            except Exception:
+                pass
+            if str(b2).lower() in ("ground", "base", "fixed", "world"):
+                b2_fixed = True
+
+            # fixed body는 절대 drive body로 쓰지 않는다.
+            if b1_fixed and not b2_fixed:
+                return b2
+
+            if b2_fixed and not b1_fixed:
+                return b1
+
+            # target이 drive joint에 포함되어 있고 fixed가 아니면 target 우선
+            if b1 == target_body_name and not b1_fixed:
+                return b1
+
+            if b2 == target_body_name and not b2_fixed:
+                return b2
+
+            # coupler 케이스: target이 포함되지 않은 joint가 잡혔거나 애매하면 non-fixed 후보 선택
+            if b1 and not b1_fixed:
+                return b1
+
+            if b2 and not b2_fixed:
+                return b2
+
+        except Exception:
+            pass
+
+        return target_body_name
+
     def _resolve_rotate_reference(self, sim: "Simulator", target_body_name: str) -> tuple[chrono.ChVector3d, chrono.ChVector3d]:
         """
         rotate mode에서 사용할 axis/pivot 기준을 TouchStart 시점에 고정한다.
@@ -1179,7 +1395,9 @@ class _ARInteractionController:
 
         pivot_world = chrono.ChVector3d(0.0, 0.0, 0.0)
 
-        jm = self._find_single_revolute_joint_meta(sim, target_body_name)
+        jm = self._find_drive_revolute_joint_meta(sim, target_body_name)
+        if jm is None:
+            jm = self._find_single_revolute_joint_meta(sim, target_body_name)
         if jm is not None:
             try:
                 fr = getattr(jm, "frame", None)
@@ -1207,6 +1425,7 @@ class _ARInteractionController:
 
             self.ctx.active = True
             self.ctx.target_name = target_name
+            self.ctx.drive_body_name = target_name
 
             ap = user_input.payload.actionPointLocal
             fp = user_input.payload.fingerPointWorld
@@ -1229,10 +1448,21 @@ class _ARInteractionController:
             self.ctx.rotate_pivot_world = None
             if self._mode == self.MODE_ROTATE and target_name:
                 try:
-                    ax, pv = self._resolve_rotate_reference(sim, target_name)
+                    drive_body_name = self._resolve_drive_body_name(sim, target_name)
+                    self.ctx.drive_body_name = drive_body_name
+
+                    ax, pv = self._resolve_rotate_reference(sim, drive_body_name)
+
+                    print(
+                        f"[AR DEBUG] target={target_name} "
+                        f"drive_body={drive_body_name} "
+                        f"axis=({ax.x:+.3f},{ax.y:+.3f},{ax.z:+.3f}) "
+                        f"pivot=({pv.x:+.3f},{pv.y:+.3f},{pv.z:+.3f})"
+                    )
                     self.ctx.rotate_axis_world = ax
                     self.ctx.rotate_pivot_world = pv
                 except Exception:
+                    self.ctx.drive_body_name = target_name
                     self.ctx.rotate_axis_world = None
                     self.ctx.rotate_pivot_world = None
 
@@ -1244,13 +1474,28 @@ class _ARInteractionController:
         if isinstance(user_input, TouchingEvent):
             fp = user_input.payload.fingerPointWorld
             cf = user_input.payload.cameraForwardWorld
-            self.ctx.last_finger_world = chrono.ChVector3d(fp.x, fp.y, fp.z)
+
+            new_fp = chrono.ChVector3d(fp.x, fp.y, fp.z)
+
+            if self.ctx.last_finger_world is None:
+                self.ctx.last_finger_world = new_fp
+            else:
+                alpha = 0.35
+                old = self.ctx.last_finger_world
+
+                self.ctx.last_finger_world = chrono.ChVector3d(
+                    old.x * (1.0 - alpha) + new_fp.x * alpha,
+                    old.y * (1.0 - alpha) + new_fp.y * alpha,
+                    old.z * (1.0 - alpha) + new_fp.z * alpha,
+                )
+
             self.ctx.camera_forward_world = chrono.ChVector3d(cf.x, cf.y, cf.z)
             return
 
         if isinstance(user_input, TouchEndEvent):
             self.ctx.active = False
             self.ctx.start_finger_world = None
+            self.ctx.drive_body_name = None
             self._prev_finger_world = None
             self._prev_rotate_finger_world = None
             self.ctx.rotate_release_step_count = 0
@@ -1290,16 +1535,26 @@ class _ARInteractionController:
         except Exception:
             return self.MODE_SPRING
 
+        # 단순 회전 바디
         if (len(revolute_joints) == 1) and (len(other_joints) == 0):
             axis = sim._infer_revolute_axis_world_for_body(target_body_name)
             if _norm(axis) > 1e-6:
                 return self.MODE_ROTATE
             return self.MODE_SPRING
 
+        # 폐루프/다중 조인트 기구:
+        # fixed/ground와 연결된 revolute가 있으면 그 joint를 기준으로 rotate 허용
+        drive_rev = self._find_drive_revolute_joint_meta(sim, target_body_name)
+        if drive_rev is not None:
+            axis = sim._infer_revolute_axis_world_for_body(target_body_name)
+            if _norm(axis) > 1e-6:
+                return self.MODE_ROTATE
+
         return self.MODE_SPRING
 
+
     def compute_and_apply(self, *, sim: "Simulator", dt: float) -> None:
-        target_name = self.ctx.target_name
+        target_name = self.ctx.drive_body_name or self.ctx.target_name
         if not target_name:
             target_name = self._last_dynamic_target
 
@@ -1333,6 +1588,14 @@ class _ARInteractionController:
         if center_world is None:
             center_world = body.GetPos()
 
+        axis_world_n = _normalize(axis_world)
+        if _norm(axis_world_n) < 1e-9:
+            return
+
+        Ieff = _effective_inertia_about_axis_world(body, axis_world_n)
+        if not (Ieff > 1e-12):
+            Ieff = 1.0
+
         # ---- Drag 상태 ----
         if dragging_now:
             f_curr = self.ctx.last_finger_world
@@ -1347,10 +1610,6 @@ class _ARInteractionController:
 
             self._prev_rotate_finger_world = chrono.ChVector3d(f_curr.x, f_curr.y, f_curr.z)
 
-            axis_world_n = _normalize(axis_world)
-            if _norm(axis_world_n) < 1e-9:
-                return
-
             w_before = _get_angvel_world(body)
             w_along_now = float(_dot(w_before, axis_world_n))
             abs_w = abs(w_along_now)
@@ -1364,9 +1623,7 @@ class _ARInteractionController:
                 c = _clamp(_dot(v0n, v1n), -1.0, 1.0)
                 d_ang = m.acos(c)
 
-                DRAG_ANGLE_EPS = 1e-4
-
-                if d_ang > DRAG_ANGLE_EPS:
+                if d_ang > self.DRAG_ANGLE_EPS:
                     arc_axis = _cross(v0n, v1n)
                     arc_axis_n = _normalize(arc_axis)
 
@@ -1375,39 +1632,37 @@ class _ARInteractionController:
                         sign = 1.0 if align >= 0.0 else -1.0
                         align_abs = abs(align)
 
-                        s = _clamp(d_ang / self.DRAG_ANGLE_REF, 0.0, 1.0)
+                        # 손가락이 pivot 주변에서 만든 각속도(rad/s)
+                        w_drag = sign * (d_ang / float(dt))
+                        w_drag *= max(0.2, align_abs)
+                        w_drag *= float(self.ROT_DRAG_TARGET_SPEED_GAIN)
 
-                        base_tau = self.DRAG_TORQUE_MAX * s
-                        base_tau *= max(0.70, align_abs)
+                        # 너무 큰 순간 입력 방지
+                        w_drag = _clamp(
+                            w_drag,
+                            -float(self.ROT_DRAG_SPEED_HARD),
+                            +float(self.ROT_DRAG_SPEED_HARD),
+                        )
 
-                        # 저속 / settled 상태에서는 입력이 거의 안 먹는 경우가 있어서
-                        # 작은 "minimum induction torque"를 보강한다.
-                        if abs_w < self.ROT_DRAG_LOW_SPEED_REF:
-                            low_alpha = 1.0 - (abs_w / max(self.ROT_DRAG_LOW_SPEED_REF, 1e-6))
-                            tau_floor = self.ROT_DRAG_MIN_TAU_LOW * low_alpha
-                            tau_floor *= max(0.80, align_abs)
+                        # 현재 축방향 각속도와 목표 각속도의 차이를 줄이는 PD 느낌의 토크
+                        w_err = float(w_drag - w_along_now)
+                        alpha_cmd = float(self.ROT_DRAG_SPEED_KP_ALPHA) * w_err
 
-                            # settled pose에서는 실제 drag가 작게 들어와도 너무 쉽게 죽지 않게
-                            # floor 적용 조건을 조금 완화
-                            if d_ang > (1.2 * DRAG_ANGLE_EPS):
-                                base_tau = max(base_tau, tau_floor)
+                        # 각가속도 제한
+                        alpha_cmd = _clamp(
+                            alpha_cmd,
+                            -float(self.ROT_DRAG_SPEED_TAU_MAX_ALPHA),
+                            +float(self.ROT_DRAG_SPEED_TAU_MAX_ALPHA),
+                        )
 
-                        # 속도가 높을수록 drag 입력 토크를 강하게 줄인다.
-                        if abs_w >= self.ROT_DRAG_SPEED_HARD:
-                            base_tau = 0.0
-                        elif abs_w > self.ROT_DRAG_SPEED_SOFT:
-                            alpha = (abs_w - self.ROT_DRAG_SPEED_SOFT) / max(
-                                self.ROT_DRAG_SPEED_HARD - self.ROT_DRAG_SPEED_SOFT, 1e-6
-                            )
-                            base_tau *= max(0.0, 1.0 - alpha)
+                        # hard speed 근처에서는 더 가속하지 않도록 제한
+                        if abs_w >= self.ROT_DRAG_SPEED_HARD and (w_along_now * alpha_cmd) > 0.0:
+                            alpha_cmd = 0.0
 
-                        tau_drag = _mul(axis_world_n, sign * base_tau)
+                        tau_drag = _mul(axis_world_n, Ieff * alpha_cmd)
 
-            # drag 중에도 약한 축방향 점성감쇠를 같이 넣어서
-            # repeat / dropout 때 속도가 계속 과도하게 유지되지 않게 한다.
-            # inertia-aware drag damping
-            Ieff = _effective_inertia_about_axis_world(body, axis_world_n)
-            tau_drag_damp_mag = float(self.ROT_DRAG_CW) * Ieff * abs_w
+            # drag 중 축방향 감쇠
+            tau_drag_damp_mag = float(self.ROT_DRAG_CW_ALPHA) * Ieff * abs_w
             tau_drag_damp = _mul(axis_world_n, -m.copysign(tau_drag_damp_mag, w_along_now))
 
             tau_total = _add(tau_drag, tau_drag_damp)
@@ -1424,38 +1679,28 @@ class _ARInteractionController:
         if dt <= 1e-9:
             return
 
-        axis_world_n = _normalize(axis_world)
-        if _norm(axis_world_n) < 1e-9:
-            return
-
         w_world = _get_angvel_world(body)
         w_along = float(_dot(w_world, axis_world_n))
         abs_w = abs(w_along)
 
+        # 아주 작은 속도면 snap-to-rest
         if abs_w < self.VEL_EPS_SNAP_ROT:
             return
 
-        # free phase에서는 drag 때보다 조금 강한 점성감쇠를 주되,
-        # 저속으로 내려갈수록 과한 제동 느낌이 나지 않게 부드럽게 줄인다.
-        Ieff = _effective_inertia_about_axis_world(body, axis_world_n)
-
-        # inertia-aware damping:
-        # tau = C_alpha * Ieff * |w|
+        # free phase damping
         tau_mag = float(self.ROT_DAMP_CW_ALPHA) * Ieff * abs_w
 
+        # 저속에서는 linear 하게만 줄여서 tail이 너무 길어지지 않게 함
         low_ref = max(float(self.ROT_FREE_LOW_SPEED_REF), 1e-6)
         if abs_w < low_ref:
-            scale = abs_w / low_ref
-            tau_mag *= scale * scale
+            low_scale = max(0.35, abs_w / low_ref)
+            tau_mag *= low_scale
 
-        # inertia-aware tau max
         tau_max_alpha = float(self.ROT_DAMP_TAU_MAX_ALPHA) * Ieff
         tau_mag = min(tau_mag, tau_max_alpha)
 
-        # no-flip safety는 기존처럼 유지
         tau_noflip = (Ieff * abs_w / float(dt)) * float(self.ROT_DAMP_NOFLIP_SAFETY)
-        if tau_mag > tau_noflip:
-            tau_mag = tau_noflip
+        tau_mag = min(tau_mag, tau_noflip)
 
         if tau_mag <= 0.0:
             return
@@ -2835,16 +3080,12 @@ class Simulator:
 
     def _try_report_all_contacts(self, container: Any, *, max_points: int) -> Optional[rt.ContactTelemetry]:
         """
-        ReportAllContacts(callback)를 통해 (cap 적용)
-        - contact_count (reporter가 실제로 순회한 수)
-        - max_contact_force
-        - max_pair(optional)
-        를 얻는다.
+        ReportAllContacts(callback)를 통해 contact telemetry를 얻는다.
 
-        ✅ FIX:
-        - args에서 react_forces 위치가 표준 시그니처 기준 args[5]
-        - 마지막 ChVector3d를 집는 방식은 바디 포인트(pA/pB)나 토크(react_torques)를 집을 수 있어
-          max_force=0 고착의 원인이 됨
+        핵심:
+        - contact_count는 reporter가 실제 순회한 contact 수
+        - max_contact_force는 react_forces 우선, 실패 시 force-like 벡터 후보 fallback
+        - max_pair는 contact object/contactable에서 가능한 한 body name 추출
         """
         if container is None or (not hasattr(container, "ReportAllContacts")):
             return None
@@ -2853,6 +3094,7 @@ class Simulator:
             max_points_i = int(max_points)
         except Exception:
             max_points_i = 0
+
         if max_points_i <= 0:
             return None
 
@@ -2868,8 +3110,98 @@ class Simulator:
                     self.cap = int(cap)
                     self.count = 0
                     self.max_force = 0.0
+                    self.min_distance: Optional[float] = None
+                    self.max_penetration = 0.0
                     self.max_a: Optional[str] = None
                     self.max_b: Optional[str] = None
+
+                    # 🔥 디버그 출력 1회만 수행
+                    self.debug_printed = False
+
+                def _force_mag_from_args(self, args: tuple[Any, ...]) -> float:
+                    """
+                    PyChrono 바인딩별 ReportAllContacts 인자 차이를 흡수한다.
+
+                    흔한 Chrono 시그니처:
+                    pA, pB, plane_coord, distance, eff_radius,
+                    react_forces, react_torques, contactobjA, contactobjB
+
+                    하지만 바인딩에 따라 react_forces 위치/타입이 다를 수 있으므로
+                    1) args[5] 우선
+                    2) 이름/메서드 기반 force 후보
+                    3) 벡터 후보 중 앞쪽 contact point를 제외하고 가장 큰 값
+                    순서로 본다.
+                    """
+                    # 1) 표준 위치 우선: react_forces
+                    try:
+                        if len(args) >= 6:
+                            mag = self.outer._vec_norm_any(args[5])
+                            if mag > 0.0:
+                                return float(mag)
+                    except Exception:
+                        pass
+
+                    # 2) 객체 메서드 기반 후보
+                    for a in args:
+                        for fn_name in (
+                            "GetContactForce",
+                            "GetForce",
+                            "GetReactionForce",
+                            "GetNormalForce",
+                            "GetContactForceAbs",
+                        ):
+                            try:
+                                fn = getattr(a, fn_name, None)
+                                if callable(fn):
+                                    val = fn()
+                                    mag = self.outer._vec_norm_any(val)
+                                    if mag > 0.0:
+                                        return float(mag)
+                                    try:
+                                        f = float(val)
+                                        if abs(f) > 0.0:
+                                            return abs(f)
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+
+                    # 3) 벡터 후보 fallback
+                    # args[0], args[1]은 보통 contact point라서 제외하는 편이 안전하다.
+                    best_mag = 0.0
+                    for idx, a in enumerate(args):
+                        if idx in (0, 1, 2):
+                            continue
+
+                        mag = self.outer._vec_norm_any(a)
+
+                        # contact point 좌표나 normal 좌표가 잘못 force로 잡히는 것 방지:
+                        # 아주 작은 값은 무시한다.
+                        if mag > best_mag and mag > 1e-12:
+                            best_mag = float(mag)
+
+                    return float(best_mag)
+
+                def _pair_from_args(self, args: tuple[Any, ...]) -> tuple[Optional[str], Optional[str]]:
+                    """
+                    contact object/contactable에서 body name 추출.
+                    표준적으로 마지막 두 개가 contactobjA/contactobjB인 경우가 많다.
+                    """
+                    candidates: list[tuple[Any, Any]] = []
+
+                    if len(args) >= 2:
+                        candidates.append((args[-2], args[-1]))
+
+                    if len(args) >= 9:
+                        candidates.append((args[7], args[8]))
+
+                    for a, b in candidates:
+                        name_a = self.outer._try_get_body_name_from_contactable(a)
+                        name_b = self.outer._try_get_body_name_from_contactable(b)
+                        if name_a or name_b:
+                            return name_a, name_b
+
+                    return None, None
 
                 def OnReportContact(self, *args) -> bool:  # noqa: N802
                     if self.count >= self.cap:
@@ -2877,45 +3209,40 @@ class Simulator:
 
                     self.count += 1
 
-                    react_forces = None
-                    contactA = None
-                    contactB = None
+                    # 🔥 디버그 출력 (딱 1번만)
+                    if not self.debug_printed:
+                        self.debug_printed = True
+                        print("[CONTACT DEBUG] ReportAllContacts args:")
+                        for i, a in enumerate(args):
+                            try:
+                                mag = self.outer._vec_norm_any(a)
+                            except Exception:
+                                mag = -1.0
+                            print(f"  arg[{i}] type={type(a)} mag={mag} repr={repr(a)[:120]}")
 
-                    # 표준 Chrono: (..., react_forces, react_torques, contactobjA, contactobjB)
-                    #            idx:      5            6            -2         -1
+                    # arg[3]은 Chrono ReportAllContacts에서 보통 distance 계열 값
+                    # 양수: 떨어져 있음 / 0 근처: 접촉 / 음수: 침투 가능성
                     try:
-                        if len(args) >= 7:
-                            cand = args[5]
-                            if cand is not None:
-                                react_forces = cand
+                        if len(args) >= 4:
+                            dist = float(args[3])
+                            if self.min_distance is None:
+                                self.min_distance = dist
+                            else:
+                                self.min_distance = min(float(self.min_distance), dist)
+
+                            if dist < 0.0:
+                                self.max_penetration = max(float(self.max_penetration), abs(dist))
                     except Exception:
                         pass
 
-                    # contactable은 보통 마지막 2개
-                    try:
-                        if len(args) >= 2:
-                            contactA = args[-2]
-                            contactB = args[-1]
-                    except Exception:
-                        contactA = None
-                        contactB = None
+                    fmag = self._force_mag_from_args(args)
 
-                    # fallback: args 중 "가장 force스러운" 벡터를 찾기 (react_forces가 못 잡혔을 때만)
-                    if react_forces is None:
-                        best = None
-                        best_mag = -1.0
-                        for a in args:
-                            mag = self.outer._vec_norm_any(a)
-                            if mag > best_mag:
-                                best_mag = mag
-                                best = a
-                        react_forces = best
-
-                    fmag = self.outer._vec_norm_any(react_forces)
                     if fmag > self.max_force:
                         self.max_force = float(fmag)
-                        self.max_a = self.outer._try_get_body_name_from_contactable(contactA)
-                        self.max_b = self.outer._try_get_body_name_from_contactable(contactB)
+
+                        name_a, name_b = self._pair_from_args(args)
+                        self.max_a = name_a
+                        self.max_b = name_b
 
                     return True
 
@@ -2926,15 +3253,24 @@ class Simulator:
             except Exception:
                 return None
 
+            if rep.count > 0:
+                print(
+                    f"[CONTACT DIST] count={rep.count} "
+                    f"min_distance={rep.min_distance} "
+                    f"max_penetration={rep.max_penetration}"
+                )
+
             max_pair = None
+
             if rep.max_a and rep.max_b:
                 max_pair = rt.ContactPair(bodyA=str(rep.max_a), bodyB=str(rep.max_b))
 
             return rt.ContactTelemetry(
-                contact_count=int(rep.count),  # ✅ cap 적용된 count
+                contact_count=int(rep.count),
                 max_contact_force=float(rep.max_force),
                 max_pair=max_pair,
             )
+
         except Exception:
             return None
 
