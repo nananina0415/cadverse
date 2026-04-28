@@ -190,12 +190,7 @@ pub async fn join_p2p_net(form: JoinForm) -> Result<P2PNet> {
 
     let keypair = derive_network_keypair(&form.net_id.0, &form.pw.0);
 
-    let coord_id = if form.my_name == "A" {
-        println!("[join] name is A, forcing coordinator role");
-        None
-    } else {
-        read_coordinator_id(&keypair).await
-    };
+    let coord_id = read_coordinator_id(&keypair).await;
 
     let (data_tx, data_rx) = mpsc::channel(32);
     let (http_tx, http_rx) = mpsc::channel(32);
@@ -263,6 +258,62 @@ pub async fn join_p2p_net(form: JoinForm) -> Result<P2PNet> {
     }
 }
 
+/// AR 클라이언트 전용 접속 함수.
+/// 코디네이터가 존재하는 네트워크에만 참가하며, 없으면 Err를 반환한다.
+/// 코디네이터가 되는 경우는 없다.
+pub async fn join_as_client(form: JoinForm) -> Result<P2PNet> {
+    let endpoint = create_endpoint().await?;
+    endpoint.online().await;
+
+    let keypair = derive_network_keypair(&form.net_id.0, &form.pw.0);
+
+    let coord_id = read_coordinator_id(&keypair).await
+        .ok_or_else(|| anyhow::anyhow!("네트워크를 찾을 수 없습니다. 그룹명/비밀번호를 확인해주세요."))?;
+
+    println!("[join_as_client] coordinator found: {coord_id}");
+    let coord_addr: NodeAddr = coord_id.into();
+    let conn = endpoint.connect(coord_addr, COORD_ALPN).await?;
+
+    let my_info = PeerInfo {
+        addr: endpoint.addr(),
+        name: form.my_name,
+        peer_type: form.peer_type,
+    };
+    send_to_coord(&conn, &ToCoord::Register(my_info)).await?;
+
+    // 코디네이터 응답 대기: Ack이면 정상, NameConflict이면 에러
+    {
+        let mut recv = conn.accept_uni().await?;
+        let data = recv.read_to_end(64 * 1024).await?;
+        match serde_json::from_slice::<ToPeer>(&data)? {
+            ToPeer::Ack(_) => {}
+            ToPeer::NameConflict => {
+                anyhow::bail!("이미 같은 이름의 사용자가 접속 중입니다.");
+            }
+            ToPeer::Broadcast(_) => {}
+        }
+    }
+
+    let (data_tx, data_rx) = mpsc::channel(32);
+    let (http_tx, http_rx) = mpsc::channel(32);
+
+    let peers: Arc<Mutex<Vec<PeerInfo>>> = Arc::new(Mutex::new(Vec::new()));
+    tokio::spawn(peer_recv_loop(conn.clone(), peers.clone()));
+    tokio::spawn(peer_heartbeat_loop(conn.clone()));
+
+    let accept_handle = tokio::spawn(accept_loop(
+        endpoint.clone(), None, data_tx, http_tx,
+    ));
+    let node = Node { endpoint, _accept_task: accept_handle };
+    Ok(P2PNet {
+        node,
+        peers: Peers::Peer(peers),
+        coord_conn: Some(conn),
+        data_rx: Arc::new(tokio::sync::Mutex::new(data_rx)),
+        http_rx: Arc::new(tokio::sync::Mutex::new(http_rx)),
+    })
+}
+
 // ── 비공개 구현 ───────────────────────────────────────────────────────────────
 
 const COORD_ALPN: &[u8] = b"cv-coord/0";
@@ -282,6 +333,7 @@ enum ToCoord {
 enum ToPeer {
     Ack(Vec<PeerInfo>),
     Broadcast(Vec<PeerInfo>),
+    NameConflict,
 }
 
 struct PeerSlot {
@@ -388,12 +440,35 @@ async fn broadcast_to_all_except(peers: &PeerMap, list: &[PeerInfo], except_id: 
     }
 }
 
+fn is_same_type(a: &PeerType, b: &PeerType) -> bool {
+    matches!((a, b),
+        (PeerType::SimServer, PeerType::SimServer) |
+        (PeerType::MidServer, PeerType::MidServer) |
+        (PeerType::ArClient { .. }, PeerType::ArClient { .. })
+    )
+}
+
 async fn register_peer_and_ack(
     peers: &PeerMap,
     peer_id: EndpointId,
     info: PeerInfo,
     conn: &iroh::endpoint::Connection,
 ) {
+    // 같은 타입 내 이름 중복 체크
+    let conflict = {
+        let map = peers.lock().unwrap();
+        map.values().any(|slot| {
+            slot.info.name == info.name && is_same_type(&slot.info.peer_type, &info.peer_type)
+        })
+    };
+
+    if conflict {
+        if let Err(e) = send_to_peer(conn, &ToPeer::NameConflict).await {
+            eprintln!("[coord] name conflict 전송 실패: {e}");
+        }
+        return;
+    }
+
     let list = {
         let mut map = peers.lock().unwrap();
         map.insert(peer_id, PeerSlot {
@@ -544,6 +619,7 @@ async fn peer_recv_loop(conn: iroh::endpoint::Connection, peers: Arc<Mutex<Vec<P
         };
         let list = match msg {
             ToPeer::Ack(list) | ToPeer::Broadcast(list) => list,
+            ToPeer::NameConflict => break,
         };
         *peers.lock().unwrap() = list;
     }
