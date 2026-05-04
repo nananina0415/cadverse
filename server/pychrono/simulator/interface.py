@@ -1,21 +1,25 @@
 """
 interface.py
 
-Simulation Engine <-> Server (Rust) Interface Specification
+Simulation Engine <-> Server / AR Interface Specification
 
-This file defines:
-1) Scene Input (initial metadata)
-2) Runtime Input (User interaction events)
-3) Simulation Output (SimState)
+This file defines the data contract used by the Python simulation engine.
 
-⚠️ This is NOT the actual engine implementation.
-⚠️ This is a CONTRACT FILE for cross-language integration.
+This is NOT the simulation engine implementation.
+Actual implementation entry points are:
 
+- simulator.SimInfo.SimInfo
+- simulator.SimInfo.SimOptions
+- simulator.main.Simulator
+- simulator.runtime_types.UserInput
+- simulator.runtime_types.SimState
+
+External modules should treat this file as a readable contract/reference.
 All data must be JSON-serializable.
 """
 
 from dataclasses import dataclass
-from typing import List, Optional, Union, Literal, Dict, Any
+from typing import Any, Dict, List, Literal, Optional, Union
 
 
 # =========================================================
@@ -44,15 +48,15 @@ class Pose:
 
 
 # =========================================================
-# Scene Input (Initial)
+# Scene Metadata Input
 # =========================================================
 
 @dataclass
 class SceneInput:
     """
-    Initial scene metadata (from CAD / JSON)
+    Initial scene metadata.
 
-    This maps to SceneMeta in simulation engine.
+    This maps to metadata_types.SceneMeta.
     """
 
     sceneName: str
@@ -60,10 +64,10 @@ class SceneInput:
 
     bodies: List[Dict[str, Any]]
     joints: List[Dict[str, Any]]
+
     gearPairs: Optional[List[Dict[str, Any]]] = None
     actuators: Optional[List[Dict[str, Any]]] = None
 
-    # optional extensions
     collisionFilter: Optional[Dict[str, Any]] = None
     assemblyGuides: Optional[List[Dict[str, Any]]] = None
 
@@ -73,67 +77,67 @@ class SceneInput:
 # =========================================================
 
 @dataclass
-class SimOptions:
+class SimOptionsInput:
     """
-    Simulation runtime configuration
+    Runtime / build options.
+
+    This maps to SimInfo.SimOptions.
     """
 
-    dt: float
+    dt: float = 1.0 / 60.0
 
-    # behavior flags
     allow_obj_auto_approx: bool = True
     strict_no_inference: bool = False
-
-    # output options
     emit_part_names: bool = True
+
     enable_contact_telemetry: bool = False
+    max_contact_points_report: int = 256
 
-    # physics presets
-    physics_preset: Literal[
-        "FAST", "DEFAULT", "ROBUST", "SMC_DEFAULT"
-    ] = "DEFAULT"
+    physics_preset: Literal["FAST", "DEFAULT", "ROBUST", "SMC_DEFAULT"] = "DEFAULT"
+    contact_method: Optional[Literal["NSC", "SMC"]] = None
 
-    contact_method: Literal["NSC", "SMC"] = "NSC"
+    solver: Optional[str] = None
+    solver_max_iters: Optional[int] = None
+    solver_tolerance: Optional[float] = None
 
+    auto_inertia_enabled: bool = True
+    debug_auto_inertia: bool = False
+    debug_joint_limits: bool = False
+    debug_warnings: bool = True
+    joint_limits_soft_enable: bool = False
 
-# =========================================================
-# Simulator Init Contract
-# =========================================================
 
 @dataclass
 class SimulatorCreateInput:
     """
-    Used once at initialization
+    Used once at initialization.
     """
 
     scene: SceneInput
-    options: SimOptions
+    options: SimOptionsInput
+    body_order: Optional[List[str]] = None
 
 
 # =========================================================
-# Runtime Input (AR / Server)
+# Runtime Input
 # =========================================================
 
 TargetRef = Dict[str, Union[int, str]]
-# example:
-# { "partIndex": 0 } or { "partName": "shaft" }
+# Preferred:
+# { "partName": "shaft" }
+# Also supported:
+# { "partIndex": 0 }
 
-
-# ---------------------------
-# Touch Events
-# ---------------------------
 
 @dataclass
 class TouchStart:
     type: Literal["TouchStart"]
-
     target: TargetRef
 
     actionPointLocal: Vec3
     fingerPointWorld: Vec3
     cameraForwardWorld: Vec3
 
-    # optional metadata
     interactionId: Optional[str] = None
     timestampSec: Optional[float] = None
     seq: Optional[int] = None
@@ -147,7 +151,6 @@ class Touching:
     cameraForwardWorld: Vec3
 
     target: Optional[TargetRef] = None
-
     interactionId: Optional[str] = None
     timestampSec: Optional[float] = None
     seq: Optional[int] = None
@@ -158,7 +161,6 @@ class TouchEnd:
     type: Literal["TouchEnd"]
 
     target: Optional[TargetRef] = None
-
     interactionId: Optional[str] = None
     timestampSec: Optional[float] = None
     seq: Optional[int] = None
@@ -168,205 +170,196 @@ UserInput = Union[TouchStart, Touching, TouchEnd]
 
 
 # =========================================================
-# Output (Simulation State)
+# Runtime Output
 # =========================================================
 
 @dataclass
 class PartState:
-    """
-    Per-body state (WORLD coordinates)
-    """
-
     name: str
     pos: Vec3
     rot: Quat
 
 
 @dataclass
-class SimState:
-    """
-    Output from Simulator.step()
-    """
+class ContactPair:
+    bodyA: str
+    bodyB: str
 
+
+@dataclass
+class ContactTelemetry:
+    contact_count: int
+    max_contact_force: float
+    max_pair: Optional[ContactPair] = None
+
+
+@dataclass
+class InteractionTelemetry:
+    mode: Optional[str] = None
+    targetBody: Optional[str] = None
+    driveBody: Optional[str] = None
+    driveJoint: Optional[str] = None
+    axisWorld: Optional[Vec3] = None
+    pivotWorld: Optional[Vec3] = None
+
+
+@dataclass
+class GearTelemetry:
+    applied_efficiency: float
+    loss_torque: float
+    backlash_deadband: float
+
+
+@dataclass
+class AssemblyGuideTelemetry:
+    activeSnap: bool
+    snapCandidate: Optional[str] = None
+    snapErrorPos: float = 0.0
+    snapErrorAngle: float = 0.0
+    snapMode: Optional[str] = None
+
+
+@dataclass
+class JointTelemetry:
+    jointType: Optional[str] = None
+    angle: Optional[float] = None
+    position: Optional[float] = None
+    angularVelocity: Optional[float] = None
+    linearVelocity: Optional[float] = None
+    reactionForce: Optional[Vec3] = None
+    reactionTorque: Optional[Vec3] = None
+    estimatedPower: Optional[float] = None
+
+
+@dataclass
+class ActuatorTelemetry:
+    actuatorType: Optional[str] = None
+    targetJoint: Optional[str] = None
+    commandedSpeed: Optional[float] = None
+    commandedTorque: Optional[float] = None
+    appliedTorque: Optional[float] = None
+    estimatedPower: Optional[float] = None
+
+
+@dataclass
+class DiagnosticItem:
+    code: str
+    severity: Literal["info", "warn", "error"] = "info"
+    message: str = ""
+    target: Optional[str] = None
+
+
+@dataclass
+class SimState:
     sim_time: float
     parts: List[PartState]
 
-    # optional metadata
+    partNames: Optional[List[str]] = None
     seq: Optional[int] = None
     server_time_sec: Optional[float] = None
 
-    # mapping stability
-    partNames: Optional[List[str]] = None
+    telemetry: Optional[ContactTelemetry] = None
+    interactionTelemetry: Optional[InteractionTelemetry] = None
 
-    # telemetry (optional)
-    telemetry: Optional[Dict[str, Any]] = None
-    jointTelemetry: Optional[Dict[str, Any]] = None
-    actuatorTelemetry: Optional[Dict[str, Any]] = None
+    gearTelemetry: Optional[Dict[str, GearTelemetry]] = None
+    assemblyTelemetry: Optional[Dict[str, AssemblyGuideTelemetry]] = None
+    jointTelemetry: Optional[Dict[str, JointTelemetry]] = None
+    actuatorTelemetry: Optional[Dict[str, ActuatorTelemetry]] = None
 
-    diagnostics: Optional[Dict[str, Any]] = None
+    diagnostics: Optional[List[DiagnosticItem]] = None
     warnings: Optional[List[str]] = None
 
 
 # =========================================================
-# Simulator External API (IMPORTANT)
+# Actual External API Shape
 # =========================================================
 
 class Simulator:
     """
-    Python Simulation Engine External Interface
+    External shape of the Python simulation engine.
 
-    Rust server MUST use ONLY this interface.
+    Actual implementation:
+    - simulator.main.Simulator
     """
 
     @staticmethod
-    def create(input: SimulatorCreateInput) -> "Simulator":
+    def create(info: Any) -> "Simulator":
         """
-        Initialize simulation
+        info should be simulator.SimInfo.SimInfo.
 
-        Internally:
-        SceneInput -> SceneMeta -> PyChrono system
+        Typical flow:
+        - Scene JSON
+        - SceneMeta.from_dict(...)
+        - SimInfo(scene, options, body_order)
+        - Simulator.create(info)
         """
         raise NotImplementedError
 
-    def step(self, user_input: Optional[UserInput]) -> SimState:
+    def step(self, user_input: Optional[Union[UserInput, Dict[str, Any]]]) -> SimState:
         """
-        Advance simulation by one step (dt)
+        Advance simulation by one step.
 
-        Flow:
-        1. Parse user_input
-        2. Apply control (torque / motor / AR interaction)
-        3. DoStepDynamics(dt)
-        4. Return SimState
+        user_input may be:
+        - None
+        - TouchStart / Touching / TouchEnd object
+        - dict matching runtime_types.user_input_from_dict(...)
         """
         raise NotImplementedError
 
     def close(self) -> None:
         """
-        Release resources
+        Release Chrono resources.
         """
         raise NotImplementedError
 
 
 # =========================================================
-# IMPORTANT CONVENTIONS
+# Conventions
 # =========================================================
 
 """
 Coordinate System:
 - Right-handed
-- Units: meter, kg, second, rad
+
+Units:
+- Length: meter
+- Mass: kilogram
+- Time: second
+- Angle: radian
+- Force: N
+- Torque: N·m
 
 Quaternion:
 - (w, x, y, z)
 
 Frames:
-- WORLD coordinates for outputs
-- BODY-LOCAL coordinates for actionPointLocal
+- body pose: WORLD
+- joint frame: WORLD
+- actionPointLocal: BODY-LOCAL
+- fingerPointWorld: WORLD
+- cameraForwardWorld: WORLD
 
-Index Mapping:
-- parts[i] corresponds to partIndex i
-- Use partNames for stable mapping if needed
+Target Identification:
+- Prefer partName
+- partIndex is supported when partNames ordering is shared
 
 Input Philosophy:
-- UserInput expresses INTENT (not force/torque)
-- Simulation engine converts intent -> physics
+- UserInput expresses intent
+- The simulation engine converts intent into torque / force internally
 
 Collision:
-- Primitive / Compound / Auto / None supported
-- Visualization mesh is NOT used for physics
+- primitive
+- compound
+- auto
+- none / null
 
 Separation:
-- CAD / Server / AR / Simulation are fully decoupled
-"""
-
-
-
-# =========================================================
-# JSON EXAMPLES (FOR RUST SERVER TEAM)
-# =========================================================
-
-"""
-This section provides real examples for:
-
-1. SceneInput (initialization)
-2. UserInput (runtime events)
-3. SimState (output)
-
-These are DIRECTLY derived from actual test cases:
-- Four-bar linkage test
-- AR rotate interaction test
+- CAD / Server / AR / Simulation are decoupled by JSON contracts
 """
 
 
 # =========================================================
-# Example 1: SceneInput (Four-bar linkage)
-# =========================================================
-
-SCENE_INPUT_FOUR_BAR = {
-    "sceneName": "four_bar_linkage_test",
-    "gravity": {"x": 0.0, "y": 0.0, "z": 0.0},
-
-    "bodies": [
-        {
-            "name": "ground",
-            "pose": {
-                "pos": {"x": 0.0, "y": 0.8, "z": 0.0},
-                "rot": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}
-            },
-            "mechanical": {
-                "mass": 1000.0,
-                "fixed": True,
-                "inertia": {"mode": "explicit", "Ixx": 1.0, "Iyy": 1.0, "Izz": 1.0}
-            },
-            "geometry": {
-                "collision": None
-            }
-        },
-        {
-            "name": "input_link",
-            "pose": {
-                "pos": {"x": 0.0, "y": 0.94, "z": 0.0},
-                "rot": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}
-            },
-            "mechanical": {
-                "mass": 1.0,
-                "fixed": False,
-                "inertia": {"mode": "explicit", "Ixx": 0.02, "Iyy": 0.02, "Izz": 0.02}
-            },
-            "geometry": {
-                "collision": None
-            }
-        }
-    ],
-
-    "joints": [
-        {
-            "name": "rev_ground_input",
-            "type": "revolute",
-            "body1": "ground",
-            "body2": "input_link",
-            "frame": {
-                "pos": {"x": 0.0, "y": 0.8, "z": 0.0},
-                "rot": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}
-            }
-        }
-    ],
-
-    "gearPairs": [],
-
-    "actuators": [
-        {
-            "name": "motor_input",
-            "type": "rotation_speed",
-            "targetJoint": "rev_ground_input",
-            "speed": 0.35
-        }
-    ]
-}
-
-
-# =========================================================
-# Example 2: SceneInput (AR rotate test)
+# JSON Examples
 # =========================================================
 
 SCENE_INPUT_AR_ROTATE = {
@@ -376,32 +369,64 @@ SCENE_INPUT_AR_ROTATE = {
     "bodies": [
         {
             "name": "base",
+            "category": "base",
             "pose": {
                 "pos": {"x": 0.0, "y": 0.0, "z": 0.0},
-                "rot": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}
+                "rot": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0},
+            },
+            "geometry": {
+                "visual": {
+                    "kind": "mesh",
+                    "file": "meshes/base.obj",
+                    "scale": {"x": 1.0, "y": 1.0, "z": 1.0},
+                    "offset": {
+                        "pos": {"x": 0.0, "y": 0.0, "z": 0.0},
+                        "rot": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0},
+                    },
+                },
+                "collision": None,
             },
             "mechanical": {
                 "fixed": True,
-                "mass": 1.0
+                "mass": 1.0,
+                "inertia": {
+                    "mode": "explicit",
+                    "Ixx": 0.01,
+                    "Iyy": 0.01,
+                    "Izz": 0.01,
+                },
             },
-            "geometry": {
-                "collision": None
-            }
         },
         {
             "name": "shaft",
+            "category": "shaft",
             "pose": {
                 "pos": {"x": 0.0, "y": 0.0, "z": 0.03},
-                "rot": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}
+                "rot": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0},
+            },
+            "geometry": {
+                "visual": {
+                    "kind": "mesh",
+                    "file": "meshes/shaft.obj",
+                    "scale": {"x": 1.0, "y": 1.0, "z": 1.0},
+                    "offset": {
+                        "pos": {"x": 0.0, "y": 0.0, "z": 0.0},
+                        "rot": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0},
+                    },
+                },
+                "collision": "auto",
             },
             "mechanical": {
                 "fixed": False,
-                "mass": 1.0
+                "mass": 1.0,
+                "inertia": {
+                    "mode": "explicit",
+                    "Ixx": 0.01,
+                    "Iyy": 0.01,
+                    "Izz": 0.01,
+                },
             },
-            "geometry": {
-                "collision": "auto"
-            }
-        }
+        },
     ],
 
     "joints": [
@@ -412,19 +437,15 @@ SCENE_INPUT_AR_ROTATE = {
             "body2": "shaft",
             "frame": {
                 "pos": {"x": 0.0, "y": 0.0, "z": 0.03},
-                "rot": {"w": 0.7071, "x": 0.0, "y": 0.7071, "z": 0.0}
-            }
+                "rot": {"w": 0.7071, "x": 0.0, "y": 0.7071, "z": 0.0},
+            },
         }
     ],
 
     "gearPairs": [],
-    "actuators": []
+    "actuators": [],
 }
 
-
-# =========================================================
-# Example 3: UserInput (AR Interaction)
-# =========================================================
 
 USER_INPUT_TOUCH_START = {
     "type": "TouchStart",
@@ -432,32 +453,26 @@ USER_INPUT_TOUCH_START = {
         "target": {"partName": "shaft"},
         "actionPointLocal": {"x": 0.0, "y": 0.0, "z": 0.0},
         "fingerPointWorld": {"x": 0.05, "y": 0.04, "z": -0.02},
-        "cameraForwardWorld": {"x": 0.0, "y": 0.0, "z": -1.0}
-    }
+        "cameraForwardWorld": {"x": 0.0, "y": 0.0, "z": -1.0},
+    },
 }
-
 
 USER_INPUT_TOUCHING = {
     "type": "Touching",
     "payload": {
         "target": {"partName": "shaft"},
         "fingerPointWorld": {"x": 0.05, "y": 0.05, "z": -0.01},
-        "cameraForwardWorld": {"x": 0.0, "y": 0.0, "z": -1.0}
-    }
+        "cameraForwardWorld": {"x": 0.0, "y": 0.0, "z": -1.0},
+    },
 }
-
 
 USER_INPUT_TOUCH_END = {
     "type": "TouchEnd",
     "payload": {
-        "target": {"partName": "shaft"}
-    }
+        "target": {"partName": "shaft"},
+    },
 }
 
-
-# =========================================================
-# Example 4: SimState (Output)
-# =========================================================
 
 SIM_STATE_EXAMPLE = {
     "sim_time": 0.125,
@@ -465,43 +480,63 @@ SIM_STATE_EXAMPLE = {
         {
             "name": "base",
             "pos": {"x": 0.0, "y": 0.0, "z": 0.0},
-            "rot": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}
+            "rot": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0},
         },
         {
             "name": "shaft",
             "pos": {"x": 0.0, "y": 0.0, "z": 0.03},
-            "rot": {"w": 0.998, "x": 0.0, "y": 0.0, "z": 0.062}
+            "rot": {"w": 0.998, "x": 0.0, "y": 0.0, "z": 0.062},
+        },
+    ],
+    "partNames": ["base", "shaft"],
+    "interactionTelemetry": {
+        "mode": "rotate",
+        "targetBody": "shaft",
+        "driveBody": "shaft",
+        "driveJoint": "base_shaft_rev",
+        "axisWorld": {"x": 0.0, "y": 0.0, "z": 1.0},
+        "pivotWorld": {"x": 0.0, "y": 0.0, "z": 0.03},
+    },
+    "diagnostics": [
+        {
+            "code": "INVALID_INERTIA",
+            "severity": "warn",
+            "message": "Body inertia value may cause abnormal rotation response.",
+            "target": "shaft",
         }
     ],
-
-    "partNames": ["base", "shaft"],
-
-    "telemetry": {
-        "contact_count": 0,
-        "max_contact_force": 0.0
-    }
 }
 
 
 # =========================================================
-# Usage Example (Rust-side logic)
+# Usage Notes
 # =========================================================
 
 """
-Pseudo-flow for Rust server:
+Typical Python-side flow:
 
-1. Send SceneInput JSON
-2. Initialize Simulator
+from simulator.SimInfo import SimInfo, SimOptions
+from simulator.main import Simulator
 
-3. Loop:
-    send UserInput JSON
-    receive SimState JSON
+info = SimInfo.from_dict(
+    SCENE_INPUT_AR_ROTATE,
+    options=SimOptions(
+        dt=1.0 / 60.0,
+        emit_part_names=True,
+        allow_obj_auto_approx=True,
+    ),
+)
 
-Example:
+sim = Simulator.create(info)
+state = sim.step(USER_INPUT_TOUCH_START)
+state = sim.step(USER_INPUT_TOUCHING)
+state = sim.step(USER_INPUT_TOUCH_END)
+sim.close()
 
-send(SCENE_INPUT_AR_ROTATE)
-
-loop:
-    send(USER_INPUT_TOUCHING)
-    state = recv()
+Rust-side flow:
+- Serialize Scene metadata
+- Build SimInfo through Python
+- Call Simulator.create(info)
+- Pass UserInput dict to Simulator.step(...)
+- Convert SimState.parts to ObjectTransform
 """

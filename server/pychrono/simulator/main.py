@@ -70,6 +70,7 @@ from .runtime_types import (
     UserInput,
     SimState,
     PartState,
+    InteractionTelemetry,
     TouchStartEvent,
     TouchingEvent,
     TouchEndEvent,
@@ -1080,6 +1081,131 @@ def _coerce_user_input_any(user_input_any: Any) -> Optional[UserInput]:
     print("[WARN] Unsupported userInput type:", type(user_input_any))
     return None
 
+# ============================================================
+# Metadata validation diagnostics
+# ============================================================
+
+def validate_metadata(scene: Any) -> List[rt.DiagnosticItem]:
+    """
+    시뮬레이션 시작 전 메타데이터를 검사하여 교육용 진단 메시지를 생성한다.
+
+    검사 항목:
+    - mass <= 0
+    - inertia <= 0
+    - joint가 존재하지 않는 body를 참조
+    - fixed body가 하나도 없음
+    """
+    diagnostics: List[rt.DiagnosticItem] = []
+
+    bodies = list(getattr(scene, "bodies", []) or [])
+    joints = list(getattr(scene, "joints", []) or [])
+
+    body_names = set()
+    fixed_count = 0
+
+    for body in bodies:
+        name = str(getattr(body, "name", "") or "")
+        if not name:
+            continue
+
+        body_names.add(name)
+
+        mechanical = getattr(body, "mechanical", None)
+
+        try:
+            if mechanical is not None and bool(getattr(mechanical, "fixed", False)):
+                fixed_count += 1
+        except Exception:
+            pass
+
+        # mass 검사
+        try:
+            mass = float(getattr(mechanical, "mass", 0.0)) if mechanical is not None else 0.0
+            if mass <= 0.0 and not bool(getattr(mechanical, "fixed", False)):
+                diagnostics.append(
+                    rt.DiagnosticItem(
+                        code="INVALID_MASS",
+                        severity="warn",
+                        message=f"Body '{name}'의 mass 값이 0 이하입니다. 동역학 계산이 불안정할 수 있습니다.",
+                        target=name,
+                    )
+                )
+        except Exception:
+            diagnostics.append(
+                rt.DiagnosticItem(
+                    code="MASS_CHECK_FAILED",
+                    severity="info",
+                    message=f"Body '{name}'의 mass 값을 확인하지 못했습니다.",
+                    target=name,
+                )
+            )
+
+        # inertia 검사
+        try:
+            inertia = getattr(mechanical, "inertia", None) if mechanical is not None else None
+
+            if inertia is not None:
+                ixx = float(getattr(inertia, "Ixx", 0.0))
+                iyy = float(getattr(inertia, "Iyy", 0.0))
+                izz = float(getattr(inertia, "Izz", 0.0))
+
+                if (ixx <= 0.0 or iyy <= 0.0 or izz <= 0.0) and not bool(getattr(mechanical, "fixed", False)):
+                    diagnostics.append(
+                        rt.DiagnosticItem(
+                            code="INVALID_INERTIA",
+                            severity="warn",
+                            message=f"Body '{name}'의 inertia 값 중 0 이하인 항목이 있습니다. 회전 응답이 비정상적일 수 있습니다.",
+                            target=name,
+                        )
+                    )
+        except Exception:
+            diagnostics.append(
+                rt.DiagnosticItem(
+                    code="INERTIA_CHECK_FAILED",
+                    severity="info",
+                    message=f"Body '{name}'의 inertia 값을 확인하지 못했습니다.",
+                    target=name,
+                )
+            )
+
+    # fixed body 없음 검사
+    if fixed_count <= 0:
+        diagnostics.append(
+            rt.DiagnosticItem(
+                code="NO_FIXED_BODY",
+                severity="warn",
+                message="fixed body가 하나도 없습니다. 기준 body가 없으면 전체 기구가 떠다니거나 불안정할 수 있습니다.",
+                target=None,
+            )
+        )
+
+    # joint body 참조 검사
+    for joint in joints:
+        joint_name = str(getattr(joint, "name", "") or "")
+        body1 = getattr(joint, "body1", None)
+        body2 = getattr(joint, "body2", None)
+
+        if body1 is not None and str(body1) not in body_names:
+            diagnostics.append(
+                rt.DiagnosticItem(
+                    code="JOINT_BODY_NOT_FOUND",
+                    severity="error",
+                    message=f"Joint '{joint_name}'가 존재하지 않는 body1 '{body1}'를 참조합니다.",
+                    target=joint_name,
+                )
+            )
+
+        if body2 is not None and str(body2) not in body_names:
+            diagnostics.append(
+                rt.DiagnosticItem(
+                    code="JOINT_BODY_NOT_FOUND",
+                    severity="error",
+                    message=f"Joint '{joint_name}'가 존재하지 않는 body2 '{body2}'를 참조합니다.",
+                    target=joint_name,
+                )
+            )
+
+    return diagnostics
 
 # ============================================================
 # AR Interaction Controller (schema-06) - Hybrid
@@ -1552,6 +1678,48 @@ class _ARInteractionController:
 
         return self.MODE_SPRING
 
+    def make_interaction_telemetry(self, sim: "Simulator") -> Optional[InteractionTelemetry]:
+        """
+        현재 AR 인터랙션 상태를 SimState로 내보내기 위한 telemetry 생성.
+        - 콘솔 print로만 보던 target / drive_body / mode / axis / pivot 정보를 구조화한다.
+        """
+        target_name = self.ctx.target_name
+        drive_body_name = self.ctx.drive_body_name
+
+        if not target_name and not drive_body_name:
+            return None
+
+        drive_joint_name = None
+
+        try:
+            if drive_body_name:
+                jm = self._find_drive_revolute_joint_meta(sim, drive_body_name)
+                if jm is None:
+                    jm = self._find_single_revolute_joint_meta(sim, drive_body_name)
+                if jm is not None:
+                    drive_joint_name = str(getattr(jm, "name", "")) or None
+        except Exception:
+            drive_joint_name = None
+
+        axis = self.ctx.rotate_axis_world
+        pivot = self.ctx.rotate_pivot_world
+
+        axis_vec = None
+        if axis is not None:
+            axis_vec = rt.Vec3(float(axis.x), float(axis.y), float(axis.z))
+
+        pivot_vec = None
+        if pivot is not None:
+            pivot_vec = rt.Vec3(float(pivot.x), float(pivot.y), float(pivot.z))
+
+        return InteractionTelemetry(
+            mode=str(self._mode) if self._mode is not None else None,
+            targetBody=str(target_name) if target_name is not None else None,
+            driveBody=str(drive_body_name) if drive_body_name is not None else None,
+            driveJoint=drive_joint_name,
+            axisWorld=axis_vec,
+            pivotWorld=pivot_vec,
+        )
 
     def compute_and_apply(self, *, sim: "Simulator", dt: float) -> None:
         target_name = self.ctx.drive_body_name or self.ctx.target_name
@@ -1785,6 +1953,19 @@ class Simulator:
 
     def __init__(self, info: SimInfo):
         self.info: SimInfo = info
+
+        # Metadata validation diagnostics
+        try:
+            self._metadata_diagnostics = validate_metadata(info.scene)
+        except Exception as e:
+            self._metadata_diagnostics = [
+                rt.DiagnosticItem(
+                    code="METADATA_VALIDATION_FAILED",
+                    severity="warn",
+                    message=f"메타데이터 사전 검증 중 오류가 발생했습니다: {e}",
+                    target=None,
+                )
+            ]
 
         built = build_system_from_scene(info.scene, options=info.options)
 
@@ -3393,6 +3574,11 @@ class Simulator:
 
         joint_telemetry = self._compute_joint_telemetry()
         actuator_telemetry = self._compute_actuator_telemetry()
+        interaction_telemetry = None
+        try:
+            interaction_telemetry = self._ar.make_interaction_telemetry(self)
+        except Exception:
+            interaction_telemetry = None
 
         diagnostics = self._build_diagnostics(
             telemetry=telemetry,
@@ -3401,6 +3587,32 @@ class Simulator:
             joint_telemetry=joint_telemetry,
             actuator_telemetry=actuator_telemetry,
         )
+
+        # ----------------------------------------------------
+        # 1) metadata diagnostics 먼저 붙이기
+        # ----------------------------------------------------
+        try:
+            metadata_diagnostics = list(getattr(self, "_metadata_diagnostics", []) or [])
+        except Exception:
+            metadata_diagnostics = []
+
+        if metadata_diagnostics:
+            diagnostics = metadata_diagnostics + list(diagnostics or [])
+
+        # ----------------------------------------------------
+        # 2) runtime diagnostics 추가
+        # ----------------------------------------------------
+        runtime_diagnostics = self._build_runtime_diagnostics(
+            telemetry=telemetry,
+            interaction_telemetry=interaction_telemetry,
+        )
+
+        if runtime_diagnostics:
+            diagnostics = list(diagnostics or []) + runtime_diagnostics
+
+        # ----------------------------------------------------
+        # 3) 후처리
+        # ----------------------------------------------------
         diagnostics = self._normalize_diagnostics(diagnostics)
         diagnostics = self._dedupe_and_suppress_diagnostics(diagnostics)
         diagnostics = self._finalize_diagnostics(diagnostics)
@@ -3420,12 +3632,134 @@ class Simulator:
             seq=int(self._seq),
             server_time_sec=server_time_sec,
             telemetry=telemetry,
+            interactionTelemetry=interaction_telemetry,
             gearTelemetry=gear_telemetry,
             assemblyTelemetry=assembly_telemetry,
             jointTelemetry=joint_telemetry,
             actuatorTelemetry=actuator_telemetry,
             diagnostics=diagnostics,
         )
+
+    def _build_runtime_diagnostics(
+        self,
+        *,
+        telemetry: Optional[rt.ContactTelemetry],
+        interaction_telemetry: Optional[InteractionTelemetry],
+    ) -> List[rt.DiagnosticItem]:
+        """
+        실행 중 상태를 기반으로 교육용 진단 메시지를 생성한다.
+
+        검사 항목:
+        - AR 입력이 있는데 움직임이 거의 없음
+        - 접촉 힘이 과도함
+        - body 선속도/각속도가 비정상적으로 큼
+        """
+        diagnostics: List[rt.DiagnosticItem] = []
+
+        # ----------------------------------------------------
+        # 1) AR 입력이 있는데 움직임이 거의 없음
+        # ----------------------------------------------------
+        try:
+            if interaction_telemetry is not None:
+                target_name = interaction_telemetry.driveBody or interaction_telemetry.targetBody
+
+                if target_name and target_name in self.bodies:
+                    body = self.bodies[target_name].body
+
+                    v = _get_linvel_world(body)
+                    w = _get_angvel_world(body)
+
+                    lin_speed = _norm(v)
+                    ang_speed = _norm(w)
+
+                    ar_active = bool(getattr(self._ar.ctx, "active", False))
+
+                    if ar_active and lin_speed < 1e-4 and ang_speed < 1e-4:
+                        diagnostics.append(
+                            rt.DiagnosticItem(
+                                code="AR_INPUT_NO_MOTION",
+                                severity="warn",
+                                message=(
+                                    f"AR 입력이 적용되었지만 '{target_name}'의 움직임이 거의 없습니다. "
+                                    "조인트 구속, 충돌 간섭, 또는 구동 body 선택을 확인하세요."
+                                ),
+                                target=str(target_name),
+                            )
+                        )
+        except Exception:
+            pass
+
+        # ----------------------------------------------------
+        # 2) 과도한 접촉력
+        # ----------------------------------------------------
+        try:
+            if telemetry is not None:
+                max_force = float(getattr(telemetry, "max_contact_force", 0.0))
+
+                if max_force > 100.0:
+                    target = None
+                    try:
+                        if telemetry.max_pair is not None:
+                            target = f"{telemetry.max_pair.bodyA}-{telemetry.max_pair.bodyB}"
+                    except Exception:
+                        target = None
+
+                    diagnostics.append(
+                        rt.DiagnosticItem(
+                            code="EXCESSIVE_CONTACT_FORCE",
+                            severity="warn",
+                            message=(
+                                f"접촉력이 과도하게 큽니다. max_contact_force={max_force:.3f} N. "
+                                "충돌 형상 크기, body 간 간섭, 초기 배치를 확인하세요."
+                            ),
+                            target=target,
+                        )
+                    )
+        except Exception:
+            pass
+
+        # ----------------------------------------------------
+        # 3) 비정상 속도/각속도
+        # ----------------------------------------------------
+        try:
+            for name, bwrap in self.bodies.items():
+                body = bwrap.body
+
+                v = _get_linvel_world(body)
+                w = _get_angvel_world(body)
+
+                lin_speed = _norm(v)
+                ang_speed = _norm(w)
+
+                if lin_speed > 20.0:
+                    diagnostics.append(
+                        rt.DiagnosticItem(
+                            code="ABNORMAL_LINEAR_SPEED",
+                            severity="warn",
+                            message=(
+                                f"Body '{name}'의 선속도가 비정상적으로 큽니다. "
+                                f"speed={lin_speed:.3f} m/s. 힘/질량/충돌 설정을 확인하세요."
+                            ),
+                            target=str(name),
+                        )
+                    )
+
+                if ang_speed > 50.0:
+                    diagnostics.append(
+                        rt.DiagnosticItem(
+                            code="ABNORMAL_ANGULAR_SPEED",
+                            severity="warn",
+                            message=(
+                                f"Body '{name}'의 각속도가 비정상적으로 큽니다. "
+                                f"angular_speed={ang_speed:.3f} rad/s. 관성/토크/조인트 설정을 확인하세요."
+                            ),
+                            target=str(name),
+                        )
+                    )
+        except Exception:
+            pass
+
+        return diagnostics
 
     def close(self) -> None:
         try:

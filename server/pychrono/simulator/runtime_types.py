@@ -483,6 +483,55 @@ class DiagnosticItem:
             out["target"] = str(self.target)
         return out
 
+@dataclass(frozen=True)
+class InteractionTelemetry:
+    """
+    AR 인터랙션 상태 telemetry.
+
+    - mode: rotate | spring 등 현재 인터랙션 모드
+    - targetBody: 사용자가 선택한 body
+    - driveBody: 실제 구동에 사용된 body
+    - driveJoint: 선택된 구동 joint
+    - axisWorld: 회전 축 (WORLD)
+    - pivotWorld: 회전 중심 (WORLD)
+    """
+    mode: Optional[str] = None
+    targetBody: Optional[str] = None
+    driveBody: Optional[str] = None
+    driveJoint: Optional[str] = None
+    axisWorld: Optional[Vec3] = None
+    pivotWorld: Optional[Vec3] = None
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "InteractionTelemetry":
+        if not isinstance(d, dict):
+            raise ValueError(f"InteractionTelemetry must be object, got: {type(d)}")
+
+        return InteractionTelemetry(
+            mode=str(d["mode"]) if d.get("mode") is not None else None,
+            targetBody=str(d["targetBody"]) if d.get("targetBody") is not None else None,
+            driveBody=str(d["driveBody"]) if d.get("driveBody") is not None else None,
+            driveJoint=str(d["driveJoint"]) if d.get("driveJoint") is not None else None,
+            axisWorld=Vec3.from_dict(d["axisWorld"]) if isinstance(d.get("axisWorld"), dict) else None,
+            pivotWorld=Vec3.from_dict(d["pivotWorld"]) if isinstance(d.get("pivotWorld"), dict) else None,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        if self.mode is not None:
+            out["mode"] = str(self.mode)
+        if self.targetBody is not None:
+            out["targetBody"] = str(self.targetBody)
+        if self.driveBody is not None:
+            out["driveBody"] = str(self.driveBody)
+        if self.driveJoint is not None:
+            out["driveJoint"] = str(self.driveJoint)
+        if self.axisWorld is not None:
+            out["axisWorld"] = self.axisWorld.to_dict()
+        if self.pivotWorld is not None:
+            out["pivotWorld"] = self.pivotWorld.to_dict()
+        return out
+
 # ============================================================
 # Runtime Output (Server -> Client)
 # ============================================================
@@ -563,6 +612,9 @@ class SimState:
     (1-3) Optional telemetry:
     - telemetry: ContactTelemetry
 
+    (AR) Optional interaction telemetry:
+    - interactionTelemetry: InteractionTelemetry
+
     (3-1.3) Optional gear telemetry:
     - gearTelemetry: Dict[str, GearTelemetry]   # key = gearPair name
 
@@ -587,6 +639,9 @@ class SimState:
 
     # (Optional) contact telemetry
     telemetry: Optional[ContactTelemetry] = None
+
+    # (Optional) AR interaction telemetry
+    interactionTelemetry: Optional[InteractionTelemetry] = None
 
     # (Optional) gear telemetry (3-1.3)
     gearTelemetry: Optional[Dict[str, GearTelemetry]] = None
@@ -621,6 +676,10 @@ class SimState:
         telemetry = None
         if "telemetry" in d and d["telemetry"] is not None:
             telemetry = ContactTelemetry.from_dict(d["telemetry"])
+
+        interactionTelemetry = None
+        if "interactionTelemetry" in d and d["interactionTelemetry"] is not None:
+            interactionTelemetry = InteractionTelemetry.from_dict(d["interactionTelemetry"])
 
         gear_raw = _get_first(d, ["gearTelemetry", "gear_telemetry", "gear"], None)
         gearTelemetry: Optional[Dict[str, GearTelemetry]] = None
@@ -704,6 +763,7 @@ class SimState:
             seq=seq,
             server_time_sec=server_time_sec,
             telemetry=telemetry,
+            interactionTelemetry=interactionTelemetry,
             gearTelemetry=gearTelemetry,
             assemblyTelemetry=assemblyTelemetry,
             jointTelemetry=jointTelemetry,
@@ -725,6 +785,8 @@ class SimState:
             out["server_time_sec"] = float(self.server_time_sec)
         if self.telemetry is not None:
             out["telemetry"] = self.telemetry.to_dict()
+        if self.interactionTelemetry is not None:
+            out["interactionTelemetry"] = self.interactionTelemetry.to_dict()
         if self.gearTelemetry is not None:
             out["gearTelemetry"] = {str(k): v.to_dict() for k, v in self.gearTelemetry.items()}
         if self.assemblyTelemetry is not None:
