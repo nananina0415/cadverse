@@ -1,73 +1,40 @@
 # docs/07_runtime_output_schema.md
 
-Runtime Output Schema (Server → Client)
-======================================
+# Runtime Output Schema (Server → Client)
 
-본 문서는 서버(시뮬레이션)가 클라이언트(AR / Renderer / UI)로 전송하는
-런타임 출력(SimState) 메시지의 JSON 스키마를 정의한다.
+본 문서는 시뮬레이션 엔진이 서버를 통해
+클라이언트(AR / Renderer / UI)로 전달하는
+런타임 출력(SimState)의 JSON 구조를 정의한다.
 
-출력 메시지는 물리 시뮬레이션의 현재 상태를 전달하기 위한 것이며,
-CAD / Metadata / Scene 정의와는 목적이 다르다.
+출력 메시지는 시뮬레이션의 현재 물리 상태를 전달하며,
+클라이언트는 이를 기반으로 렌더링 및 UI 표시를 수행한다.
 
-- 입력 스키마: 06_runtime_input_schema.md
-- 메타데이터 스키마: 03_metadata_schema.md
+---
 
+## Global Rules
 
---------------------------------------------------
-Global Rules
---------------------------------------------------
+- Encoding: UTF-8 JSON
+- Coordinate system: Right-handed (WORLD 기준)
+- Rotation: Quaternion (w, x, y, z)
 
-Units
------
+### Units
 
 | Quantity | Unit |
 |----------|------|
 | Length | meter (m) |
-| Angle | radian (rad) |
 | Time | second (s) |
+| Angle | radian (rad) |
 | Velocity | m/s |
 | Angular velocity | rad/s |
 | Force | N |
 | Torque | N·m |
 | Power | W |
 
-Coordinate System
------------------
+---
 
-- Right-handed
-- WORLD 기준 좌표 사용
+## Core Types
 
-Quaternion Ordering
--------------------
-
-프로젝트 표준:
-
-(w, x, y, z)
-
-Chrono mapping:
-
-e0 = w
-e1 = x
-e2 = y
-e3 = z
-
-Encoding
---------
-
-- UTF-8 JSON
-
-Simulation Authority
---------------------
-
-- 물리 상태의 단일 진실원(Source of Truth)은 서버 시뮬레이션이다.
-- 클라이언트는 상태를 보간(interpolation)하여 렌더링한다.
-
-
---------------------------------------------------
-Core Types
---------------------------------------------------
-
-Vector3 (WORLD)
+### Vector3
 
 {
   "x": 0.0,
@@ -75,8 +42,9 @@ Vector3 (WORLD)
   "z": 0.0
 }
 
+---
 
-Quaternion (WORLD)
+### Quaternion
 
 {
   "w": 1.0,
@@ -85,75 +53,52 @@ Quaternion (WORLD)
   "z": 0.0
 }
 
+---
 
---------------------------------------------------
-PartState
---------------------------------------------------
+## PartState
 
-단일 강체의 상태.
+단일 rigid body의 상태
 
 {
-  "name": "gear_A",
-  "pos": { "x": 0.0, "y": 0.03, "z": 0.03 },
+  "name": "shaft",
+  "pos": { "x": 0.0, "y": 0.0, "z": 0.0 },
   "rot": { "w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0 }
 }
 
-Field
+Rules:
 
-| field | type | unit | optional | description |
-|--------|------|-------|----------|-------------|
-| name | string | - | no | metadata bodies[*].name |
-| pos | Vector3 | m | no | WORLD position |
-| rot | Quaternion | - | no | WORLD rotation |
+- name은 metadata와 동일해야 한다
+- pos는 WORLD 좌표
+- rot은 normalized quaternion
 
-Notes
+---
 
-- rot는 항상 normalized quaternion
-- name은 metadata와 반드시 동일해야 한다
+## SimState
 
-
---------------------------------------------------
-SimState
---------------------------------------------------
-
-서버가 클라이언트로 전송하는 런타임 상태 메시지.
-
-기본 구조
+시뮬레이션 한 step의 전체 상태
 
 {
   "sim_time": 0.0,
   "parts": [ PartState ]
 }
 
-Field
+---
 
-| field | type | unit | optional | description |
-|--------|------|-------|----------|-------------|
-| sim_time | number | s | no | simulation time |
-| parts | array | - | no | PartState list |
+## Optional Fields
 
+다음 필드는 상황에 따라 포함될 수 있다.
 
---------------------------------------------------
-Message Metadata (Optional)
---------------------------------------------------
+### Message Metadata
 
 {
-  "sim_time": 0.0,
   "seq": 120,
   "server_time_sec": 1730000000.0,
-  "parts": [ ... ]
+  "partNames": ["base", "shaft"]
 }
 
-| field | type | optional | description |
-|--------|--------|----------|------------|
-| seq | int | yes | message sequence |
-| server_time_sec | number | yes | server timestamp |
-| partNames | string[] | yes | index mapping |
+---
 
-
---------------------------------------------------
-Contact Telemetry (Optional)
---------------------------------------------------
+### Contact Telemetry
 
 {
   "telemetry": {
@@ -166,62 +111,49 @@ Contact Telemetry (Optional)
   }
 }
 
-| field | type | unit | description |
-|--------|------|------|-------------|
-| contact_count | int | - | number of contacts |
-| max_contact_force | number | N | max force |
-| max_pair | object | - | body pair |
+---
 
+### Interaction Telemetry
 
---------------------------------------------------
-Gear Telemetry (Optional)
---------------------------------------------------
+{
+  "interactionTelemetry": {
+    "mode": "rotate",
+    "active": true,
+    "target": "shaft"
+  }
+}
+
+---
+
+### Gear Telemetry
 
 {
   "gearTelemetry": {
     "gp1": {
-      "applied_efficiency": 0.8,
-      "loss_torque": 0.01,
-      "backlash_deadband": 0.02
+      "applied_efficiency": 0.85,
+      "loss_torque": 0.02,
+      "backlash_deadband": 0.01
     }
   }
 }
 
-| field | type | unit | description |
-|--------|------|------|-------------|
-| applied_efficiency | number | - | 0~1 |
-| loss_torque | number | N·m | loss |
-| backlash_deadband | number | rad | deadband |
+---
 
-
---------------------------------------------------
-Assembly Telemetry (Optional)
---------------------------------------------------
+### Assembly Telemetry
 
 {
   "assemblyTelemetry": {
     "guide1": {
       "activeSnap": true,
-      "snapCandidate": "target",
-      "snapErrorPos": 0.02,
-      "snapErrorAngle": 0.1,
-      "snapMode": "assist"
+      "snapErrorPos": 0.01,
+      "snapErrorAngle": 0.05
     }
   }
 }
 
-| field | unit | description |
-|--------|------|-------------|
-| activeSnap | - | active |
-| snapCandidate | - | name |
-| snapErrorPos | m | position error |
-| snapErrorAngle | rad | angle error |
-| snapMode | - | assist / snap |
+---
 
-
---------------------------------------------------
-Joint Telemetry (Optional)
---------------------------------------------------
+### Joint Telemetry
 
 {
   "jointTelemetry": {
@@ -229,27 +161,15 @@ Joint Telemetry (Optional)
       "jointType": "revolute",
       "angle": 0.5,
       "angularVelocity": 2.0,
-      "reactionForce": {...},
-      "reactionTorque": {...},
-      "estimatedPower": 1.2
+      "reactionForce": { "x": 0, "y": 0, "z": 0 },
+      "reactionTorque": { "x": 0, "y": 0, "z": 0 }
     }
   }
 }
 
-| field | unit | description |
-|--------|------|-------------|
-| angle | rad | revolute |
-| position | m | prismatic |
-| angularVelocity | rad/s | |
-| linearVelocity | m/s | |
-| reactionForce | N | |
-| reactionTorque | N·m | |
-| estimatedPower | W | approx |
+---
 
-
---------------------------------------------------
-Actuator Telemetry (Optional)
---------------------------------------------------
+### Actuator Telemetry
 
 {
   "actuatorTelemetry": {
@@ -257,23 +177,14 @@ Actuator Telemetry (Optional)
       "actuatorType": "rotation_speed",
       "targetJoint": "rev0",
       "commandedSpeed": 5.0,
-      "appliedTorque": 1.2,
-      "estimatedPower": 2.3
+      "appliedTorque": 1.2
     }
   }
 }
 
-| field | unit |
-|--------|------|
-| commandedSpeed | rad/s |
-| commandedTorque | N·m |
-| appliedTorque | N·m |
-| estimatedPower | W |
+---
 
-
---------------------------------------------------
-Diagnostics (Optional)
---------------------------------------------------
+### Diagnostics
 
 {
   "diagnostics": [
@@ -286,38 +197,31 @@ Diagnostics (Optional)
   ]
 }
 
-| field | description |
-|--------|-------------|
-| code | diagnostic id |
-| severity | info / warn / error |
-| message | text |
-| target | object name |
+---
 
+### Warnings
 
-Example codes
+{
+  "warnings": [
+    "constraint instability detected"
+  ]
+}
 
-- AT_JOINT_LIMIT
-- RESTING_CONTACT
-- LIKELY_BLOCKED_BY_CONSTRAINT
-- TARGET_FIXED
+---
 
+## Design Rules
 
---------------------------------------------------
-Design Rules
---------------------------------------------------
+- SimState는 서버가 authoritative (단일 진실원)
+- 클라이언트는 이를 기반으로 렌더링한다
+- telemetry 필드는 optional
+- 필드가 없으면 해당 기능은 비활성 상태로 간주
 
-- 출력은 pose 전달이 기본 목적
-- telemetry는 optional
-- 서버 상태가 authoritative
-- optional field는 생략 가능
+---
 
+## Summary
 
---------------------------------------------------
-Future Extensions
---------------------------------------------------
+SimState는 다음 목적을 가진다:
 
-- power graphs
-- constraint visualization
-- slip detection
-- energy telemetry
-- education overlay
+- AR 렌더링을 위한 pose 전달
+- 물리 상태 모니터링
+- 디버깅 및 교육용 데이터 제공

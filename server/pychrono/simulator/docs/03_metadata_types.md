@@ -1,19 +1,17 @@
 # docs/03_metadata_schema.md
-==========================
 
-본 문서는 AR 기반 기계설계 시뮬레이터에서 사용하는
-시뮬레이션 메타데이터(JSON)의 구조를 정의한다.
+# Metadata Schema
 
-시뮬레이션 엔진은 본 문서에 정의된 정보만을 사용하여
-물리 시스템과 시각화를 구성한다.
-(CAD/OBJ 파일로부터 축, 관성, 기어비 등을 추론하지 않는다.)
+본 문서는 AR 기반 기구학 시뮬레이터의
+시뮬레이션 메타데이터(JSON) 구조를 정의한다.
 
-단, 충돌 형상(collision)에 한해 명시적으로 허용된 경우에만
-OBJ 기반 자동 근사(auto-approximation)를 사용할 수 있다.
+시뮬레이션 엔진은 metadata_types.py에서 정의된 구조를 기반으로
+PyChrono 시스템을 구성하며,
+모든 물리/기구학 정보는 메타데이터에 명시적으로 제공되어야 한다.
 
---------------------------------------------------
-Top-level Structure
---------------------------------------------------
+---
+
+## Top-level Structure
 
 {
   "sceneName": "example_scene",
@@ -21,304 +19,258 @@ Top-level Structure
 
   "bodies": [],
   "joints": [],
+
   "gearPairs": [],
   "actuators": []
 }
 
---------------------------------------------------
-Global Conventions
---------------------------------------------------
+---
 
-- Coordinate system : Right-handed
-- Length unit       : meter
-- Mass unit         : kilogram
-- Time unit         : second
-- Angle unit        : radian
-- Rotation          : Quaternion (w, x, y, z)
+## Design Principles
 
-- All frames (pose, joint frame, gear mesh frame)
-  are defined in WORLD coordinates.
+- Metadata-driven
+  모든 시뮬레이션 요소는 JSON으로 정의된다.
 
-- geometry.visual.offset is defined
-  in BODY-LOCAL coordinates.
+- No implicit inference
+  엔진은 조인트, 축, 관성 등을 자동 추론하지 않는다.
 
-- geometry.collision[*].offset is defined
-  in BODY-LOCAL coordinates.
+- Physics-first
+  모든 상호작용은 물리 기반으로 처리된다.
 
-- Cylinder primitive axis convention
-  - Cylinder 기본 축은 BODY-LOCAL Z축이다.
-  - 다른 축을 원하면 offset.rot로 회전시켜 표현한다.
+---
 
---------------------------------------------------
-Bodies
---------------------------------------------------
+## Bodies
 
-Bodies 항목은 시뮬레이션에 포함되는 모든 강체를 정의한다.
-각 Body는 시각적 표현, 충돌 형상, 기계적 특성을 분리하여 기술한다.
+각 Body는 시각, 충돌, 물리 속성을 포함한다.
 
-Example:
+### Structure
 
 {
-  "name": "gear_A",
-  "category": "gear",
+  "name": "part_name",
+  "category": "base | gear | shaft | link | generic",
+
+  "pose": {
+    "pos": [x, y, z],
+    "rot": [w, x, y, z]
+  },
 
   "geometry": {
     "visual": {
       "kind": "mesh",
-      "file": "gear_A_scaled.obj",
-      "scale": [1.0, 1.0, 1.0],
+      "file": "path/to/obj",
+      "scale": [1,1,1],
 
       "offset": {
-        "pos": [0.0, 0.0, 0.0],
-        "rot": [1.0, 0.0, 0.0, 0.0]
+        "pos": [0,0,0],
+        "rot": [1,0,0,0]
       }
     },
 
-    "collision": {
-      "enabled": true,
-      "kind": "cylinder",
-      "radius": 0.02,
-      "length": 0.02
-    }
+    "collision": "auto | none | primitive | compound"
   },
 
   "mechanical": {
-    "mass": 5.0,
+    "mass": 1.0,
     "fixed": false,
 
     "inertia": {
       "mode": "explicit",
-      "Ixx": 0.002,
-      "Iyy": 0.002,
-      "Izz": 0.0005
+      "Ixx": 0.01,
+      "Iyy": 0.01,
+      "Izz": 0.01
     },
 
     "contact": {
       "friction": 0.4,
-      "restitution": 0.05,
-
-      "rollingFriction": 0.001,
-      "spinningFriction": 0.001,
-
-      "contactStiffness": 1e6,
-      "contactDamping": 1e3
+      "restitution": 0.05
     },
 
     "damping": {
       "type": "viscous_torque",
       "coef": 0.02
-    },
-
-    "gearProps": {
-      "module": 0.002,
-      "teeth": 20,
-      "face_width": 0.02
     }
-  },
-
-  "pose": {
-    "pos": [0.0, 0.03, 0.03],
-    "rot": [1.0, 0.0, 0.0, 0.0]
   }
 }
 
---------------------------------------------------
-Collision (UPDATED)
---------------------------------------------------
+---
 
-geometry.collision 은 아래 3가지 형태 중 하나를 허용한다.
+## Collision Model
 
---------------------------------------------------
-(1) Single collision primitive
---------------------------------------------------
-
-Supported primitives:
-
-- box
-- cylinder
-- sphere
-
-Example:
-
-{
-  "enabled": true,
-  "kind": "box",
-
-  "hx": 0.10,
-  "hy": 0.02,
-  "hz": 0.10,
-
-  "offset": {
-    "pos": [0,0,0],
-    "rot": [1,0,0,0]
-  }
-}
-
---------------------------------------------------
-(2) Multiple collision primitives
---------------------------------------------------
-
-복합 충돌 형상 정의 가능.
-
-Example:
-
-"collision": [
-  {
-    "kind": "cylinder",
-    "radius": 0.01,
-    "length": 0.12
-  },
-  {
-    "kind": "cylinder",
-    "radius": 0.02,
-    "length": 0.02,
-    "offset": {
-      "pos": [0,0,0.01],
-      "rot": [1,0,0,0]
-    }
-  }
-]
-
---------------------------------------------------
-(3) Auto approximation (Opt-in only)
---------------------------------------------------
-
-기본 동작: collision 미정의 → FAIL
-
-예외 허용:
+### 1. Auto (기본)
 
 "collision": "auto"
 
-또는
+- OBJ 기반 단순 형상 생성
+- 빠른 시뮬레이션 목적
 
-"collision": {
-  "kind": "auto",
-  "strategy": "default",
-  "resolutionHint": "low"
-}
+---
 
-Auto strategy examples:
-
-- base  → AABB box
-- shaft → PCA cylinder
-- gear  → disk approx
-
---------------------------------------------------
-Collision Filtering (NEW)
---------------------------------------------------
-
-선택적으로 충돌 그룹 정의 가능.
-
-"collisionFilter": {
-  "group": 1,
-  "mask": [1,2]
-}
-
-용도:
-
-- 특정 부품 간 충돌만 허용
-- base 제외
-- 교육용 간섭 제거 모드
-
---------------------------------------------------
-Joints
---------------------------------------------------
-
-Example:
+### 2. Primitive
 
 {
-  "name": "rev_gearA_base",
-  "type": "revolute",
+  "kind": "box | cylinder | sphere",
+  ...
+}
 
-  "body1": "gear_A",
-  "body2": "base",
+---
+
+### 3. Compound
+
+[
+  { primitive },
+  { primitive }
+]
+
+---
+
+### 4. None
+
+"collision": "none"
+
+---
+
+## Joints
+
+### Structure
+
+{
+  "name": "joint_name",
+  "type": "revolute | prismatic | fixed",
+
+  "body1": "name",
+  "body2": "name",
 
   "frame": {
-    "pos": [0.0, 0.03, 0.03],
-    "rot": [1.0, 0.0, 0.0, 0.0]
+    "pos": [x,y,z],
+    "rot": [w,x,y,z]
+  },
+
+  "limits": {
+    "lower": -1.57,
+    "upper": 1.57
   }
 }
 
-Supported types:
+---
 
-- revolute
-- prismatic
-- fixed
+## Joint Behavior
 
-Rule:
+- frame.local Z축 = 자유도 방향
+- limits는 optional
+- best-effort constraint 적용
 
-frame.local Z = DOF axis
+---
 
---------------------------------------------------
-GearPairs
---------------------------------------------------
+## GearPairs
 
-Example:
+### Structure
 
 {
-  "name": "gear_pair_1",
-
+  "name": "gear_pair",
   "gearA": "gear_A",
   "gearB": "gear_B",
 
   "ratio_sign": -1,
 
   "meshFrame": {
-    "pos": [0.03,0.03,0.03],
-    "rot": [1,0,0,0]
+    "pos": [x,y,z],
+    "rot": [w,x,y,z]
   }
 }
 
---------------------------------------------------
-Actuators
---------------------------------------------------
+---
 
-Rotation Speed:
+## Gear Runtime Behavior
+
+엔진 내부에서 다음 요소를 고려한다:
+
+- ideal constraint
+- efficiency
+- backlash
+- loss torque approximation
+
+---
+
+## Actuators
+
+### Rotation Speed
 
 {
   "type": "rotation_speed",
-  "targetJoint": "rev_gearA_base",
+  "targetJoint": "joint_name",
   "speed": 5.0
 }
 
-Rotation Torque:
+---
+
+### Rotation Torque
 
 {
   "type": "rotation_torque",
-  "targetJoint": "rev_gearA_base",
+  "targetJoint": "joint_name",
   "torqueModel": {
     "type": "const",
     "value": 2.5
   }
 }
 
---------------------------------------------------
-Design Rules (UPDATED)
---------------------------------------------------
+---
 
-- 모든 name은 유일
-- 모든 축/프레임/관성은 메타에 명시
-- 엔진은 메타 없는 정보 추론 금지
+## Interaction Integration (IMPORTANT)
 
-예외:
+메타데이터는 AR interaction과 직접 연결되지 않는다.
 
-collision auto approximation만 허용
+- AR 입력 → runtime_types.py → main.py
+- main.py → interaction controller → 물리 입력 변환
 
-조건:
+---
 
-- collision = auto
-- allow_obj_auto_approx = true
-- visual.mesh 존재
+## Runtime Physics Features (Implemented)
 
---------------------------------------------------
-Reality Extension Policy
---------------------------------------------------
+현재 엔진에는 다음 요소가 구현되어 있다:
 
-현실성 요소는 단계적으로 활성화:
+### Inertia
+- explicit inertia 사용
+- fallback inertia 지원
 
-Level 0 — Primitive collision
-Level 1 — Compound collision
-Level 2 — Contact material
-Level 3 — Friction/rolling/spinning
-Level 4 — Gear contact realism
-Level 5 — Advanced backlash/compliance
+### Contact
+- friction
+- restitution
+
+### Damping
+- viscous damping
+- AR rotate damping
+
+### Stabilization
+- torque clamp
+- no-flip guard
+- settle logic
+
+### Interaction Controller
+- rotate mode
+- spring mode
+
+### Constraint Handling
+- closed-loop 안정성 처리
+- joint separation 방지
+
+---
+
+## Design Rules
+
+- 모든 name은 unique
+- 모든 물리 정보는 metadata에 명시
+- 시각(mesh)와 물리(collision)는 분리
+- simulation은 metadata만으로 구성 가능해야 함
+
+---
+
+## Summary
+
+이 스키마는:
+
+- CAD → Simulation 변환 기준
+- 서버 / AR와의 데이터 계약 기준
+- 물리 기반 상호작용 구현 기준
+
+을 동시에 만족해야 한다.
