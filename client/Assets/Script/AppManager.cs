@@ -1,17 +1,14 @@
-using System;
-using System.Threading.Tasks;
+using System.Collections;
+using TMPro;
 using UnityEngine;
+using UnityEngine.XR.ARFoundation;
 
 namespace Cadverse
 {
     public class AppManager : MonoBehaviour
     {
-        const ushort AR_CLIENT_PORT = 9001;
-        const int    CONNECT_TIMEOUT_MS = 30_000;
-
-        public static P2PNet Net { get; private set; }
-
-        LoginPanel _loginPanel;
+        public static P2PNet      Net     { get; private set; }
+        public static QRScanner   Scanner { get; private set; }
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         static void Bootstrap()
@@ -23,39 +20,68 @@ namespace Cadverse
 
         void Awake()
         {
-            _loginPanel = LoginPanel.Create(this);
-            DontDestroyOnLoad(_loginPanel.gameObject);
+            LoginManager.Create(this);
         }
 
-        public async void ConnectAsync(string groupName, string pw, string name)
+        public void OnLoginComplete(P2PNet net)
         {
-            var connectTask = Task.Run(() => new P2PNet(groupName, pw, name, AR_CLIENT_PORT));
-            var timeoutTask = Task.Delay(CONNECT_TIMEOUT_MS);
+            Net = net;
+            var cameraManager = FindAnyObjectByType<ARCameraManager>();
+            Scanner = QRScanner.Create(cameraManager, OnQRChanged);
+        }
 
-            if (await Task.WhenAny(connectTask, timeoutTask) == timeoutTask)
-            {
-                _loginPanel.ShowError("연결 시간이 초과됐습니다. 다시 시도해주세요.");
-                return;
-            }
-
-            try
-            {
-                Net = await connectTask;
-            }
-            catch (Exception e)
-            {
-                Debug.LogError($"[AppManager] 연결 실패: {e.Message}");
-                _loginPanel.ShowError("연결에 실패했습니다. 다시 시도해주세요.");
-                return;
-            }
-
-            Destroy(_loginPanel.gameObject);
+        void OnQRChanged(Addr addr)
+        {
+            ShowToast("QR 스캔 성공");
         }
 
         void OnDestroy()
         {
             Net?.Dispose();
             Net = null;
+        }
+
+        // ── 토스트 ────────────────────────────────────────────────────────────
+
+        void ShowToast(string message)
+        {
+            StartCoroutine(ToastRoutine(message));
+        }
+
+        IEnumerator ToastRoutine(string message)
+        {
+            // 캔버스
+            var canvasGo = new GameObject("Toast");
+            var canvas   = canvasGo.AddComponent<Canvas>();
+            canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+            canvas.sortingOrder = 999;
+            canvasGo.AddComponent<UnityEngine.UI.CanvasScaler>();
+
+            // 텍스트
+            var textGo = new GameObject("Text");
+            textGo.transform.SetParent(canvasGo.transform, false);
+            var tmp = textGo.AddComponent<TextMeshProUGUI>();
+            tmp.text      = message;
+            tmp.fontSize  = 36;
+            tmp.alignment = TextAlignmentOptions.Center;
+
+            var rect = textGo.GetComponent<RectTransform>();
+            rect.anchorMin = new Vector2(0.1f, 0.1f);
+            rect.anchorMax = new Vector2(0.9f, 0.2f);
+            rect.offsetMin = rect.offsetMax = Vector2.zero;
+
+            // 1.5초 표시 후 페이드아웃
+            yield return new WaitForSeconds(1.5f);
+
+            float elapsed = 0f;
+            while (elapsed < 0.5f)
+            {
+                elapsed += Time.deltaTime;
+                tmp.alpha = 1f - elapsed / 0.5f;
+                yield return null;
+            }
+
+            Destroy(canvasGo);
         }
     }
 }
