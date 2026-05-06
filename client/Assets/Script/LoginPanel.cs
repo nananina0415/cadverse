@@ -16,14 +16,14 @@ namespace Cadverse
         TextMeshProUGUI _errorText;
         TextMeshProUGUI _loadingText;
 
-        AppManager _app;
+        LoginManager _app;
 
         static TMP_FontAsset _font;
         static TMP_FontAsset Font => _font ??= Resources.Load<TMP_FontAsset>("Font/Pretendard-Regular SDF");
 
         // ── 진입점 ────────────────────────────────────────────────────────────
 
-        public static LoginPanel Create(AppManager app)
+        public static LoginPanel Create(LoginManager app)
         {
             if (FindAnyObjectByType<EventSystem>() == null)
             {

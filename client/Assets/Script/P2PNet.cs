@@ -1,9 +1,45 @@
 using System;
 using System.Runtime.InteropServices;
-using System.Threading.Tasks;
 
 namespace Cadverse
 {
+    /// <summary>
+    /// iroh NodeAddr의 JSON 래퍼.
+    /// FFI에 넘길 때는 RawJson을 그대로 사용하고,
+    /// 동일 피어 여부는 Id(공개키)로만 비교한다.
+    /// </summary>
+    public class Addr
+    {
+        public string RawJson { get; }
+        public string Id      { get; }
+
+        Addr(string rawJson, string id) { RawJson = rawJson; Id = id; }
+
+        public static Addr TryParse(string json)
+        {
+            if (string.IsNullOrEmpty(json)) return null;
+            var id = ExtractId(json);
+            if (id == null) return null;
+            return new Addr(json, id);
+        }
+
+        // {"id":"...","addrs":[...]} 에서 id 값만 추출
+        static string ExtractId(string json)
+        {
+            const string key = "\"id\"";
+            int k = json.IndexOf(key, StringComparison.Ordinal);
+            if (k < 0) return null;
+            int colon = json.IndexOf(':', k + key.Length);
+            if (colon < 0) return null;
+            int open = json.IndexOf('"', colon + 1);
+            if (open < 0) return null;
+            int close = json.IndexOf('"', open + 1);
+            if (close < 0) return null;
+            return json.Substring(open + 1, close - open - 1);
+        }
+    }
+
+
     /// <summary>
     /// unity-ffi (libunity_ffi.dll / libunity_ffi.so) P/Invoke 바인딩.
     ///
@@ -20,7 +56,7 @@ namespace Cadverse
     ///   var net  = new P2PNet("my-net", "password", "Player1", udpPort: 9000);
     ///   string json = net.GetPeersJson();
     ///   // json 파싱 후 SimServer 피어의 addr 추출
-    ///   using var conn = net.ConnectUdp(addrJson);
+    ///   using var conn = net.ConnectQuic(addrJson);
     ///   conn.Send(System.Text.Encoding.UTF8.GetBytes("hello"));
     ///   byte[] data = conn.Recv();
     /// </summary>
@@ -66,7 +102,7 @@ namespace Cadverse
         /// addrJson = GetPeersJson()에서 파싱한 PeerInfo.addr 필드 값 그대로.
         /// 블로킹 — Task.Run 안에서 호출할 것.
         /// </summary>
-        public P2PConn ConnectUdp(string addrJson)
+        public P2PConn ConnectQuic(string addrJson)
         {
             ThrowIfDisposed();
             IntPtr conn = cv_connect_udp(_handle, addrJson);
