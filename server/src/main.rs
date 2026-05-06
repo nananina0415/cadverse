@@ -122,7 +122,7 @@ fn main() {
                 printsh!("어떤 그룹원의 시뮬레이션에 참가하시겠습니까?: ");
                 let name = input::<String>();
                 if let Some(addr) = net.sim_info(&name) {
-                    show_qr(format!("{addr:?}"));
+                    show_qr(serde_json::to_string(&addr).expect("NodeAddr 직렬화 실패"));
                 } else {
                     println!("그룹원이 존재하지 않거나 시뮬레이션이 실행 중이지 않습니다");
                     continue;
@@ -155,6 +155,37 @@ fn main() {
     });
 */
 
+
+fn make_qr(data: &str) -> anyhow::Result<qrcode::QrCode> {
+    Ok(qrcode::QrCode::with_error_correction_level(data.as_bytes(), qrcode::EcLevel::M)?)
+}
+
+pub(crate) fn qr_path() -> std::path::PathBuf {
+    std::env::current_exe()
+        .expect("실행 파일 경로 획득 실패")
+        .parent()
+        .expect("실행 파일 부모 디렉토리 획득 실패")
+        .join("local_sim_qr.txt")
+}
+
+pub(crate) fn save_local_sim_qr_txt(addr: &p2p_core::NodeAddr) {
+    let json = serde_json::to_string(addr).expect("NodeAddr 직렬화 실패");
+    let code = match make_qr(&json) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("[save_local_sim_qr_txt] QR 생성 실패: {e}"); return; }
+    };
+
+    let width = code.width();
+    let content = code.to_colors()
+        .chunks(width)
+        .map(|row| row.iter().map(|c| if *c == qrcode::Color::Dark { '1' } else { '0' }).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if let Err(e) = std::fs::write(qr_path(), content) {
+        eprintln!("[save_local_sim_qr_txt] 저장 실패: {e}");
+    }
+}
 
 fn show_qr(data: String) {
     const QR_SIZE_CM: f32 = 5.0;
@@ -190,7 +221,10 @@ fn show_qr(data: String) {
         let dpi = get_system_dpi();
         let target_size_px = cm_to_pixels(QR_SIZE_CM, dpi);
 
-        let code = qrcode::QrCode::with_error_correction_level(data.as_bytes(), qrcode::EcLevel::M).unwrap();
+        let code = match make_qr(&data) {
+            Ok(c) => c,
+            Err(e) => { eprintln!("[show_qr] QR 생성 실패: {e}"); return; }
+        };
         let qr_modules = code.render::<char>()
             .quiet_zone(false)
             .module_dimensions(1, 1)

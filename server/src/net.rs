@@ -17,6 +17,12 @@ pub struct NetThread {
     ar_clients: Arc<Mutex<Vec<p2p_core::Connection>>>,
 }
 
+impl Drop for NetThread {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(crate::qr_path());
+    }
+}
+
 impl NetThread {
     pub fn new(setting: &NetSetting, userin_w: TripleBufWriter<Vec<UserIn>>, simout_r: TripleBufReader<SimOut>) -> NetThread {
         let rt = tokio::runtime::Runtime::new()
@@ -88,6 +94,12 @@ impl NetThread {
                     tokio::time::sleep(std::time::Duration::from_millis(16)).await;
                 }
             });
+        }
+
+        if let Some(my_info) = net.get_peers().into_iter().find(|p| p.name == setting.name) {
+            crate::save_local_sim_qr_txt(&my_info.addr);
+        } else {
+            eprintln!("[NetThread] 자신의 주소를 찾을 수 없어 QR 생성 스킵");
         }
 
         NetThread { async_rt: rt, net, my_peer_type, ar_clients }
