@@ -28,6 +28,13 @@ client/*.sln
 client/*.slnx
 client/Assets/DefaultVolumeProfile.asset
 client/Assets/DefaultVolumeProfile.asset.meta
+client/Assets/Resources/PerformanceTestRunInfo.json
+client/Assets/Resources/PerformanceTestRunInfo.json.meta
+client/Assets/Resources/PerformanceTestRunSettings.json
+client/Assets/Resources/PerformanceTestRunSettings.json.meta
+client/Assets/XR/Temp/
+client/Assets/XR/Temp.meta
+client/CADverse_BurstDebugInformation_DoNotShip/
 client/**/*.meta linguist-generated=true
 
 # ── Deploy ────────────────────────────────────────────

@@ -11,6 +11,7 @@ fn main() {
     let profile = env::var("PROFILE").unwrap_or_default();
 
     update_conda_env(&env_yml);
+    install_simulator(&Path::new(&manifest_dir).join("pychrono"));
 
     if profile == "release" {
         let bundle_out = Path::new(&manifest_dir).join("target/release/python_env.tar.gz");
@@ -30,6 +31,19 @@ fn update_conda_env(env_yml: &Path) {
         .status()
         .expect("conda not found. Set CONDA_PATH in .cargo/config.toml");
     assert!(status.success(), "conda env update failed");
+}
+
+/// simulator 패키지를 conda 환경에 설치
+fn install_simulator(pychrono_dir: &Path) {
+    println!("cargo:warning=Installing simulator package...");
+    let conda = env::var("CONDA_PATH").unwrap_or_else(|_| "conda".to_string());
+    let env_path = env::var("CONDA_ENV_PATH").expect("CONDA_ENV_PATH not set in .cargo/config.toml");
+    let status = Command::new(&conda)
+        .args(["run", "-p", &env_path,
+               "pip", "install", pychrono_dir.to_str().unwrap(), "--quiet"])
+        .status()
+        .expect("pip install failed");
+    assert!(status.success(), "pip install simulator failed");
 }
 
 /// conda-pack으로 Python 환경 번들링
