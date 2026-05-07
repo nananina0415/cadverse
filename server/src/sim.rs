@@ -151,17 +151,75 @@ pub struct Simulator {
 }
 
 fn build_py_sim(py: Python, model: &SimModel, dt: f64) -> PyResult<Py<PyAny>> {
-    let json = serde_json::to_string(model).expect("SimModel 직렬화 실패");
+    let mut value = serde_json::to_value(model).expect("SimModel 직렬화 실패");
+
+    // Python SceneMeta가 기대하는 top-level / body 필드 보정
+    if let Some(obj) = value.as_object_mut() {
+        obj.entry("sceneName".to_string())
+            .or_insert(serde_json::json!("rust_loaded_scene"));
+        obj.entry("gravity".to_string())
+            .or_insert(serde_json::json!([0.0, -9.81, 0.0]));
+        obj.entry("gearPairs".to_string())
+            .or_insert(serde_json::json!([]));
+        obj.entry("actuators".to_string())
+            .or_insert(serde_json::json!([]));
+
+        if let Some(bodies) = obj.get_mut("bodies").and_then(|v| v.as_array_mut()) {
+            for body in bodies {
+                let name = body
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+
+                if let Some(body_obj) = body.as_object_mut() {
+                    body_obj.entry("category".to_string()).or_insert(
+                        if name == "ground" || name == "base" {
+                            serde_json::json!("base")
+                        } else {
+                            serde_json::json!("generic")
+                        }
+                    );
+
+                    if let Some(mech) = body_obj.get_mut("mechanical").and_then(|v| v.as_object_mut()) {
+                        mech.entry("fixed".to_string()).or_insert(
+                            serde_json::json!(name == "ground" || name == "base")
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    let json = serde_json::to_string(&value).expect("SimModel 직렬화 실패");
+
+    let siminfo_mod = py.import("simulator.SimInfo")?;
+
+    let opt_kwargs = PyDict::new(py);
+    opt_kwargs.set_item("dt", dt)?;
+    opt_kwargs.set_item("allow_obj_auto_approx", true)?;
+    opt_kwargs.set_item("strict_no_inference", false)?;
+    opt_kwargs.set_item("emit_part_names", true)?;
+    opt_kwargs.set_item("enable_contact_telemetry", false)?;
+    opt_kwargs.set_item("physics_preset", "DEFAULT")?;
+
+    let options = siminfo_mod
+        .getattr("SimOptions")?
+        .call((), Some(&opt_kwargs))?;
+
     let kwargs = PyDict::new(py);
     kwargs.set_item("dt", dt)?;
-    let info = py
-        .import("simulator.SimInfo")?
+    kwargs.set_item("options", options)?;
+
+    let info = siminfo_mod
         .getattr("SimInfo")?
         .call_method("from_json_string", (json,), Some(&kwargs))?;
+
     let sim = py
         .import("simulator.main")?
         .getattr("Simulator")?
         .call_method1("create", (info,))?;
+
     Ok(sim.unbind())
 }
 
@@ -186,12 +244,19 @@ impl Simulator {
         let deduped = dedup_inputs(inputs);
         Python::with_gil(|py| -> PyResult<Vec<ObjectTransform>> {
             let sim = self.py_obj.bind(py);
-            let state = if deduped.is_empty() {
-                sim.call_method1("step", (py.None(),))?
-            } else {
-                let json = serde_json::to_string(&deduped).expect("UserIn 직렬화 실패");
-                sim.call_method1("step", (json,))?
-            };
+
+            let mut state = sim.call_method1("step", (py.None(),))?;
+
+            if !deduped.is_empty() {
+                let json_mod = py.import("json")?;
+
+                for input in &deduped {
+                    let input_json = serde_json::to_string(input).expect("UserIn 직렬화 실패");
+                    let event_dict = json_mod.call_method1("loads", (input_json,))?;
+                    state = sim.call_method1("step", (event_dict,))?;
+                }
+            }
+
             py_state_to_transforms(&state)
         })
         .map_err(|e| format!("Python step 실패: {e}"))
