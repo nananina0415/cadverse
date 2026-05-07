@@ -118,15 +118,29 @@ impl NetThread {
 
     pub fn notice_sim_online(&self, folder: std::path::PathBuf) -> anyhow::Result<()> {
         let net = self.net.clone();
+        println!("[net] spawning HTTP acceptor loop");
         self.async_rt.spawn(async move {
+            println!("[net] HTTP acceptor loop running");
             loop {
-                let Some(conn) = net.accept_http_conn().await else { break };
+                println!("[net] waiting for HTTP conn...");
+                let Some(conn) = net.accept_http_conn().await else {
+                    println!("[net] accept_http_conn returned None, loop exit");
+                    break;
+                };
+                println!("[net] HTTP conn received, spawning handler");
                 let folder = folder.clone();
                 tokio::spawn(async move {
-                    let _ = p2p_core::serve_h3_response(conn, |path| {
-                        let file_path = folder.join(path.trim_start_matches('/'));
+                    if let Err(e) = p2p_core::serve_h3_response(conn, |path| {
+                        println!("[HTTP] {path}");
+                        let file_path = if path == "/local_sim_qr.txt" {
+                            crate::qr_path()
+                        } else {
+                            folder.join(path.trim_start_matches('/'))
+                        };
                         std::fs::read(&file_path).unwrap_or_default().into()
-                    }).await;
+                    }).await {
+                        println!("[net] serve_h3_response error: {e}");
+                    }
                 });
             }
         });

@@ -42,6 +42,7 @@ if ($r) {
     Write-Host "링커: $($linker.FullName)"
 
     # [shell] 빌드
+    $env:RUSTFLAGS = "-C link-arg=-Wl,-z,max-page-size=16384"
     cargo build --target aarch64-linux-android -p unity-ffi --manifest-path (Join-Path $p2p "Cargo.toml") --release
     if ($LASTEXITCODE -ne 0) { Write-Error "Android 빌드 실패"; exit $LASTEXITCODE }
 

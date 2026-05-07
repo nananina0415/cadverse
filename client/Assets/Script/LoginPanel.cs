@@ -59,7 +59,7 @@ namespace Cadverse
 
             var card = MakeRect("Card", backdrop);
             card.anchorMin = card.anchorMax = card.pivot = new Vector2(0.5f, 0.5f);
-            card.sizeDelta = new Vector2(480f, 560f);
+            card.sizeDelta = new Vector2(640f, 800f);
             card.gameObject.AddComponent<Image>().color = Hex(0x1E2D3E);
 
             var layout = card.gameObject.AddComponent<VerticalLayoutGroup>();

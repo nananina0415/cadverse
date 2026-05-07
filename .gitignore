@@ -1,41 +1,29 @@
-# ── Rust ──────────────────────────────────────────────
-**/target/
-**/.cargo/config.toml
+# APK build artifacts
+client/CADverse-*.apk
 
-# ── Python ────────────────────────────────────────────
-__pycache__/
-*.py[cod]
-*.egg-info/
-.pytest_cache/
-server/pychrono/build/*
-
-# ── conda-pack bundle ─────────────────────────────────
-python_env.tar.gz
-python_env/
-
-# ── Unity ─────────────────────────────────────────────
+# Unity generated / cache
 client/Library/
 client/Temp/
 client/Logs/
-client/Obj/
-client/Build/
-client/Builds/
+client/.utmp/
 client/UserSettings/
-client/.vs/
-client/.vscode/
+client/CADverse_BurstDebugInformation_DoNotShip/
 client/*.csproj
 client/*.sln
 client/*.slnx
-client/Assets/DefaultVolumeProfile.asset
-client/Assets/DefaultVolumeProfile.asset.meta
-client/Assets/Resources/PerformanceTestRunInfo.json
-client/Assets/Resources/PerformanceTestRunInfo.json.meta
-client/Assets/Resources/PerformanceTestRunSettings.json
-client/Assets/Resources/PerformanceTestRunSettings.json.meta
-client/Assets/XR/Temp/
-client/Assets/XR/Temp.meta
-client/CADverse_BurstDebugInformation_DoNotShip/
-client/**/*.meta linguist-generated=true
+client/.vscode/
 
-# ── Deploy ────────────────────────────────────────────
+# Rust build
+p2p/target/
+server/target/
+
+# Python
+__pycache__/
+*.egg-info/
+server/pychrono/build/
+
+# User-specific Cargo config (contains local absolute paths)
+server/.cargo/
+
+# Deploy artifacts
 deploy/

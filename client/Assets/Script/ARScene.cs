@@ -22,12 +22,21 @@ namespace Cadverse
             manager.trackablesChanged.AddListener(OnTrackedImagesChanged);
         }
 
+        static async Task<byte[]> RequestWithTimeout(System.Func<byte[]> fn, int timeoutMs = 10_000)
+        {
+            var task    = Task.Run(fn);
+            var timeout = Task.Delay(timeoutMs);
+            if (await Task.WhenAny(task, timeout) == timeout)
+                throw new TimeoutException("서버 응답 시간 초과 (10s)");
+            return await task;
+        }
+
         public static async Task<ARScene> Create(Addr addr, ARTrackedImageManager manager)
         {
             var net = AppManager.Net;
 
             // (1) QR 마커 텍스처 → AR 라이브러리 등록
-            byte[] qrData = await Task.Run(() => net.RequestHttp(addr.RawJson, "/local_sim_qr.txt"));
+            byte[] qrData = await RequestWithTimeout(() => net.RequestHttp(addr.RawJson, "/local_sim_qr.txt"));
             var texture = BuildQrTexture(Encoding.UTF8.GetString(qrData));
 
             var lib = manager.CreateRuntimeLibrary(null) as MutableRuntimeReferenceImageLibrary;
@@ -42,7 +51,7 @@ namespace Cadverse
             UnityEngine.Object.Destroy(texture);
 
             // (2) 메타데이터 파싱
-            byte[] metaData = await Task.Run(() => net.RequestHttp(addr.RawJson, "/metadata.json"));
+            byte[] metaData = await RequestWithTimeout(() => net.RequestHttp(addr.RawJson, "/metadata.json"));
             var transforms = ParseTransforms(Encoding.UTF8.GetString(metaData));
 
             // (3) _root 생성
@@ -59,7 +68,7 @@ namespace Cadverse
                 string name = kvp.Key;
                 float[] matrix = kvp.Value;
 
-                byte[] objData = await Task.Run(() => net.RequestHttp(addr.RawJson, $"/meshes/{name}.obj"));
+                byte[] objData = await RequestWithTimeout(() => net.RequestHttp(addr.RawJson, $"/meshes/{name}.obj"));
                 var mesh = ObjParser.Parse(objData);
 
                 var go = new GameObject(name);

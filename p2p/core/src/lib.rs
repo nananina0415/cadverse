@@ -168,12 +168,15 @@ pub async fn serve_h3_response<F>(conn: iroh::endpoint::Connection, body_fn: F) 
 where
     F: FnOnce(&str) -> Bytes,
 {
+    println!("[h3::serve] building H3 connection");
     let h3_conn = h3_iroh::Connection::new(conn);
     let mut h3_server: h3::server::Connection<_, Bytes> =
         h3::server::builder().build(h3_conn).await?;
+    println!("[h3::serve] H3 built, waiting for request");
     if let Some(resolver) = h3_server.accept().await? {
         let (req, mut stream) = resolver.resolve_request().await?;
         let path = req.uri().path();
+        println!("[h3::serve] request: {path}");
         let body = body_fn(path);
         stream
             .send_response(http::Response::builder().status(200).body(())?)
@@ -569,6 +572,7 @@ async fn accept_loop(
             } else if alpn == DATA_ALPN {
                 let _ = data_tx.send(conn).await;
             } else if alpn == HTTP_ALPN {
+                println!("[p2p::accept] HTTP conn arrived, forwarding");
                 let _ = http_tx.send(conn).await;
             }
         });

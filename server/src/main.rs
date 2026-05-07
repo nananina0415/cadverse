@@ -312,11 +312,12 @@ fn show_group_info(setting: &NetSetting, peers: &[p2p_core::PeerInfo]) {
 pub fn setup_python() {
     #[cfg(debug_assertions)]
     {
-        let conda_prefix = std::env::var("CONDA_PREFIX")
-            .expect("CONDA_PREFIX not set. Activate the cadverse environment first.");
+        let conda_base = std::env::var("CONDA_BASE")
+            .expect("CONDA_BASE not set. Run setup-dev-env.ps1 first.");
+        let conda_env = format!("{}/envs/cadverse", conda_base);
         unsafe {
-            std::env::set_var("PYTHONHOME", &conda_prefix);
-            std::env::set_var("PYTHONPATH", format!("{}/Lib/site-packages", conda_prefix));
+            std::env::set_var("PYTHONHOME", &conda_env);
+            std::env::set_var("PYTHONPATH", format!("{}/Lib/site-packages", conda_env));
         }
     }
 
