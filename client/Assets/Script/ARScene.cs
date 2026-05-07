@@ -19,7 +19,7 @@ namespace Cadverse
         {
             _manager = manager;
             _root = root;
-            manager.trackedImagesChanged += OnTrackedImagesChanged;
+            manager.trackablesChanged.AddListener(OnTrackedImagesChanged);
         }
 
         public static async Task<ARScene> Create(Addr addr, ARTrackedImageManager manager)
@@ -80,7 +80,7 @@ namespace Cadverse
             return new ARScene(manager, root);
         }
 
-        void OnTrackedImagesChanged(ARTrackedImagesChangedEventArgs e)
+        void OnTrackedImagesChanged(ARTrackablesChangedEventArgs<ARTrackedImage> e)
         {
             foreach (var img in e.added)
                 if (img.referenceImage.name == "sim_marker")
@@ -93,14 +93,14 @@ namespace Cadverse
                 if (img.referenceImage.name == "sim_marker")
                     _root.SetActive(img.trackingState == TrackingState.Tracking);
 
-            foreach (var img in e.removed)
-                if (img.referenceImage.name == "sim_marker")
+            foreach (var kvp in e.removed)
+                if (kvp.Value.referenceImage.name == "sim_marker")
                     _root.SetActive(false);
         }
 
         public void Dispose()
         {
-            _manager.trackedImagesChanged -= OnTrackedImagesChanged;
+            _manager.trackablesChanged.RemoveListener(OnTrackedImagesChanged);
             _manager.referenceLibrary = _manager.CreateRuntimeLibrary(null);
             UnityEngine.Object.Destroy(_root);
         }
