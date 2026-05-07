@@ -14,13 +14,13 @@ python_env.tar.gz
 python_env/
 
 # ── Unity ─────────────────────────────────────────────
-client/[Ll]ibrary/
-client/[Tt]emp/
-client/[Ll]ogs/
-client/[Oo]bj/
-client/[Bb]uild/
-client/[Bb]uilds/
-client/[Uu]ser[Ss]ettings/
+client/Library/
+client/Temp/
+client/Logs/
+client/Obj/
+client/Build/
+client/Builds/
+client/UserSettings/
 client/.vs/
 client/.vscode/
 client/*.csproj
