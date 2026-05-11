@@ -100,6 +100,14 @@ impl P2PNet {
         }
     }
 
+    pub fn find_sim_server_by_name(&self, name: &str) -> Option<PeerInfo> {
+        self.get_peers()
+            .into_iter()
+            .find(|peer| {
+                peer.name == name && matches!(peer.peer_type, PeerType::SimServer)
+            })
+    }
+
     pub async fn accept_data(&self) -> Option<Connection> {
         self.data_rx.lock().await.recv().await.map(Connection)
     }
@@ -117,21 +125,51 @@ impl P2PNet {
         let conn = self.node.endpoint.connect(addr, HTTP_ALPN).await?;
         let h3_conn = h3_iroh::Connection::new(conn);
         let (mut driver, mut send_request) = h3::client::new(h3_conn).await?;
-        tokio::spawn(async move { let _ = driver.wait_idle().await; });
+
+        tokio::spawn(async move {
+            let _ = driver.wait_idle().await;
+        });
+
+        let path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{path}")
+        };
+
+        let uri = format!("https://cadverse.local{path}");
 
         let req = http::Request::builder()
             .method(http::Method::GET)
-            .uri(path)
+            .uri(uri)
+            .header(http::header::HOST, "cadverse.local")
             .body(())?;
+
         let mut stream = send_request.send_request(req).await?;
         stream.finish().await?;
 
         let _resp = stream.recv_response().await?;
+
         let mut body = Vec::new();
-        while let Some(chunk) = stream.recv_data().await? {
-            use bytes::Buf;
-            body.extend_from_slice(chunk.chunk());
+
+        loop {
+            match stream.recv_data().await {
+                Ok(Some(chunk)) => {
+                    use bytes::Buf;
+                    body.extend_from_slice(chunk.chunk());
+                }
+                Ok(None) => {
+                    break;
+                }
+                Err(e) => {
+                    if !body.is_empty() {
+                        return Ok(body);
+                    }
+
+                    return Err(e.into());
+                }
+            }
         }
+
         Ok(body)
     }
 
@@ -171,16 +209,22 @@ where
     let h3_conn = h3_iroh::Connection::new(conn);
     let mut h3_server: h3::server::Connection<_, Bytes> =
         h3::server::builder().build(h3_conn).await?;
+
     if let Some(resolver) = h3_server.accept().await? {
         let (req, mut stream) = resolver.resolve_request().await?;
         let path = req.uri().path();
         let body = body_fn(path);
+
         stream
             .send_response(http::Response::builder().status(200).body(())?)
             .await?;
+
         stream.send_data(body).await?;
         stream.finish().await?;
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
+
     Ok(())
 }
 

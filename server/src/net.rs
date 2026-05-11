@@ -1,5 +1,13 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    fs,
+    path::{Component, Path, PathBuf},
+    sync::{Arc, Mutex},
+};
+
+use anyhow::{anyhow, Context};
 use p2p_core::{PeerInfo, PeerType, NodeAddr, JoinForm, NetId, Password};
+use serde::{Deserialize, Serialize};
+
 use crate::utils::{TripleBufWriter, TripleBufReader};
 use crate::sim::{UserIn, SimOut};
 
@@ -8,6 +16,70 @@ pub struct NetSetting {
     pub password: String,
     pub name: String,
     pub peer_type: PeerType,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ModelManifest {
+    files: Vec<String>,
+}
+
+fn collect_model_files(base: &Path, dir: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            collect_model_files(base, &path, out)?;
+        } else if path.is_file() {
+            let rel = path
+                .strip_prefix(base)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+
+            out.push(rel);
+        }
+    }
+
+    Ok(())
+}
+
+fn build_model_manifest(folder: &Path) -> ModelManifest {
+    let mut files = Vec::new();
+
+    if let Err(e) = collect_model_files(folder, folder, &mut files) {
+        eprintln!("[manifest] 파일 목록 생성 실패: {e}");
+    }
+
+    ModelManifest { files }
+}
+
+fn is_safe_relative_path(path: &str) -> bool {
+    let p = Path::new(path);
+
+    !p.is_absolute()
+        && p.components().all(|component| {
+            matches!(component, Component::Normal(_))
+        })
+}
+
+fn sanitize_folder_name(name: &str) -> String {
+    let s: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+
+    if s.is_empty() {
+        "remote_model".to_string()
+    } else {
+        s
+    }
 }
 
 pub struct NetThread {
@@ -106,18 +178,45 @@ impl NetThread {
 
     pub fn notice_sim_online(&self, folder: std::path::PathBuf) -> anyhow::Result<()> {
         let net = self.net.clone();
+
         self.async_rt.spawn(async move {
             loop {
                 let Some(conn) = net.accept_http_conn().await else { break };
                 let folder = folder.clone();
+
                 tokio::spawn(async move {
                     let _ = p2p_core::serve_h3_response(conn, |path| {
-                        let file_path = folder.join(path.trim_start_matches('/'));
-                        std::fs::read(&file_path).unwrap_or_default().into()
+                        let path = path.trim_start_matches('/');
+
+                        // 원격 모델 불러오기를 위한 파일 목록 요청
+                        if path == "__cadverse_manifest.json" {
+                            let manifest = build_model_manifest(&folder);
+
+                            return serde_json::to_vec(&manifest)
+                                .unwrap_or_default()
+                                .into();
+                        }
+
+                        // 폴더 밖 파일 접근 방지
+                        if !is_safe_relative_path(path) {
+                            eprintln!("[http] 안전하지 않은 경로 요청 차단: {path}");
+                            return Vec::new().into();
+                        }
+
+                        let file_path = folder.join(path);
+
+                        match std::fs::read(&file_path) {
+                            Ok(data) => data.into(),
+                            Err(e) => {
+                                eprintln!("[http] file read failed: {} ({e})", file_path.display());
+                                Vec::new().into()
+                            }
+                        }
                     }).await;
                 });
             }
         });
+
         self.async_rt.block_on(self.net.notice_sim_online())?;
         let mut t = self.my_peer_type.lock().expect("my_peer_type mutex poisoned");
         *t = PeerType::SimServer;
@@ -138,5 +237,92 @@ impl NetThread {
                 PeerType::SimServer => Some(p.addr),
                 _ => None,
             })
+    }
+
+    pub fn import_remote_model(&self, name: &str, import_root: PathBuf) -> anyhow::Result<PathBuf> {
+        let peer = self.net
+            .find_sim_server_by_name(name)
+            .ok_or_else(|| anyhow!("그룹원이 존재하지 않거나 시뮬레이션이 실행 중이지 않습니다."))?;
+
+        let safe_name = sanitize_folder_name(name);
+        let target_dir = import_root.join(&safe_name);
+        let tmp_dir = import_root.join(format!(".{}_tmp", safe_name));
+
+        let net = self.net.clone();
+
+        self.async_rt.block_on(async move {
+            println!("원격 모델 파일 목록을 요청합니다. 대상: {}", peer.name);
+
+            let manifest_bytes = match net
+                .request_http(peer.addr.clone(), "/__cadverse_manifest.json")
+                .await
+            {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    anyhow::bail!("대상의 시뮬레이션이 종료된 상태입니다");
+                }
+            };
+
+            let manifest: ModelManifest = serde_json::from_slice(&manifest_bytes)
+                .context("원격 모델 파일 목록 파싱 실패")?;
+
+            if manifest.files.is_empty() {
+                anyhow::bail!("대상의 시뮬레이션이 종료된 상태입니다");
+            }
+
+            println!("원격 모델 파일 {}개를 불러옵니다.", manifest.files.len());
+
+            if tmp_dir.exists() {
+                fs::remove_dir_all(&tmp_dir)
+                    .with_context(|| format!("임시 폴더 삭제 실패: {}", tmp_dir.display()))?;
+            }
+
+            fs::create_dir_all(&tmp_dir)
+                .with_context(|| format!("임시 폴더 생성 실패: {}", tmp_dir.display()))?;
+
+            for rel in manifest.files {
+                if !is_safe_relative_path(&rel) {
+                    eprintln!("[remote import] 안전하지 않은 경로 생략: {rel}");
+                    continue;
+                }
+
+                let request_path = format!("/{}", rel);
+
+                let data = net
+                    .request_http(peer.addr.clone(), &request_path)
+                    .await
+                    .with_context(|| format!("대상의 시뮬레이션이 종료된 상태입니다: {rel}"))?;
+
+                if data.is_empty() {
+                    anyhow::bail!("대상의 시뮬레이션이 종료된 상태입니다 또는 파일 데이터가 비어 있습니다: {rel}");
+                }
+
+                let out_path = tmp_dir.join(&rel);
+
+                if let Some(parent) = out_path.parent() {
+                    fs::create_dir_all(parent)
+                        .with_context(|| format!("폴더 생성 실패: {}", parent.display()))?;
+                }
+
+                fs::write(&out_path, data)
+                    .with_context(|| format!("파일 저장 실패: {}", out_path.display()))?;
+            }
+
+            if target_dir.exists() {
+                fs::remove_dir_all(&target_dir)
+                    .with_context(|| format!("기존 모델 폴더 삭제 실패: {}", target_dir.display()))?;
+            }
+
+            fs::rename(&tmp_dir, &target_dir)
+                .with_context(|| {
+                    format!(
+                        "임시 폴더를 모델 폴더로 변경 실패: {} -> {}",
+                        tmp_dir.display(),
+                        target_dir.display()
+                    )
+                })?;
+
+            Ok::<PathBuf, anyhow::Error>(target_dir)
+        })
     }
 }
