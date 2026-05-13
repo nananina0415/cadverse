@@ -209,12 +209,12 @@ pub extern "C" fn cv_conn_free(conn: *mut FfiConn) {
     }
 }
 
-/// HTTP/3으로 파일을 요청한다. addr_json은 PeerInfo.addr 필드 값.
+/// QUIC uni-stream으로 파일을 요청한다. addr_json은 PeerInfo.addr 필드 값.
 ///
 /// 블로킹 함수. 성공 시 수신 바이트 수, 실패 시 -1 반환.
 /// out 버퍼가 부족하면 앞부분만 복사되므로 충분히 크게 잡을 것.
 #[unsafe(no_mangle)]
-pub extern "C" fn cv_request_http(
+pub extern "C" fn cv_request_file(
     net: *mut FfiNet,
     addr_json: *const c_char,
     path: *const c_char,
@@ -228,19 +228,19 @@ pub extern "C" fn cv_request_http(
     let addr: p2p_core::NodeAddr = match serde_json::from_str(&from_cstr(addr_json)) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("[cv_request_http] addr 역직렬화 실패: {e}");
+            eprintln!("[cv_request_file] addr 역직렬화 실패: {e}");
             return -1;
         }
     };
     let path = from_cstr(path);
-    match net.rt.block_on(net.net.request_http(addr, &path)) {
+    match net.rt.block_on(net.net.request_file(addr, &path)) {
         Ok(bytes) => {
             let n = bytes.len().min(out_len as usize);
             unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, n); }
             n as i32
         }
         Err(e) => {
-            eprintln!("[cv_request_http] 요청 실패: {e}");
+            eprintln!("[cv_request_file] 요청 실패: {e}");
             -1
         }
     }
