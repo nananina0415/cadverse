@@ -181,38 +181,14 @@ impl NetThread {
 
         self.async_rt.spawn(async move {
             loop {
-                let Some(conn) = net.accept_http_conn().await else { break };
+                let Some(conn) = net.accept_file_conn().await else { break };
+                println!("[file] connection accepted");
                 let folder = folder.clone();
 
                 tokio::spawn(async move {
-                    let _ = p2p_core::serve_h3_response(conn, |path| {
-                        let path = path.trim_start_matches('/');
-
-                        // 원격 모델 불러오기를 위한 파일 목록 요청
-                        if path == "__cadverse_manifest.json" {
-                            let manifest = build_model_manifest(&folder);
-
-                            return serde_json::to_vec(&manifest)
-                                .unwrap_or_default()
-                                .into();
-                        }
-
-                        // 폴더 밖 파일 접근 방지
-                        if !is_safe_relative_path(path) {
-                            eprintln!("[http] 안전하지 않은 경로 요청 차단: {path}");
-                            return Vec::new().into();
-                        }
-
-                        let file_path = folder.join(path);
-
-                        match std::fs::read(&file_path) {
-                            Ok(data) => data.into(),
-                            Err(e) => {
-                                eprintln!("[http] file read failed: {} ({e})", file_path.display());
-                                Vec::new().into()
-                            }
-                        }
-                    }).await;
+                    if let Err(e) = serve_file(conn, &folder).await {
+                        println!("[file] serve error: {e}");
+                    }
                 });
             }
         });
@@ -254,7 +230,7 @@ impl NetThread {
             println!("원격 모델 파일 목록을 요청합니다. 대상: {}", peer.name);
 
             let manifest_bytes = match net
-                .request_http(peer.addr.clone(), "/__cadverse_manifest.json")
+                .request_file(peer.addr.clone(), "/__cadverse_manifest.json")
                 .await
             {
                 Ok(bytes) => bytes,
@@ -289,7 +265,7 @@ impl NetThread {
                 let request_path = format!("/{}", rel);
 
                 let data = net
-                    .request_http(peer.addr.clone(), &request_path)
+                    .request_file(peer.addr.clone(), &request_path)
                     .await
                     .with_context(|| format!("대상의 시뮬레이션이 종료된 상태입니다: {rel}"))?;
 
@@ -325,4 +301,33 @@ impl NetThread {
             Ok::<PathBuf, anyhow::Error>(target_dir)
         })
     }
+}
+
+async fn serve_file(conn: p2p_core::RawConn, folder: &std::path::Path) -> anyhow::Result<()> {
+    let mut recv = conn.accept_uni().await?;
+    let path_bytes = recv.read_to_end(1024).await?;
+    let path = String::from_utf8(path_bytes)?;
+    let file_path = if path == "/local_sim_qr.txt" {
+        crate::qr_path()
+    } else {
+        folder.join(path.trim_start_matches('/'))
+    };
+    let data = if path == "/__cadverse_manifest.json" {
+        let manifest = build_model_manifest(folder);
+        serde_json::to_vec(&manifest).unwrap_or_default()
+    } else {
+        std::fs::read(&file_path).unwrap_or_default()
+    };
+    println!("[FILE] {path} ({} bytes)", data.len());
+    let mut send = conn.open_uni().await?;
+    send.write_all(&data).await?;
+    send.finish()?;
+    // 클라이언트가 데이터를 다 읽고 연결을 닫을 때까지 대기
+    // (conn을 즉시 드롭하면 CONNECTION_CLOSE가 먼저 도착해 클라이언트 read 실패)
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        conn.accept_uni(),
+    ).await;
+    println!("[FILE] done: {path}");
+    Ok(())
 }
