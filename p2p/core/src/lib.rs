@@ -1,5 +1,3 @@
-mod h3_iroh;
-
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -7,7 +5,6 @@ use std::{
 };
 
 use anyhow::Result;
-use bytes::Bytes;
 use iroh::{endpoint::presets, Endpoint, EndpointAddr, EndpointId};
 use pbkdf2::pbkdf2_hmac;
 use serde::{Deserialize, Serialize};
@@ -20,6 +17,7 @@ pub struct NetId(pub String);
 pub struct Password(pub String);
 
 pub type NodeAddr = EndpointAddr;
+pub type RawConn = iroh::endpoint::Connection;
 
 pub struct Node {
     endpoint: Endpoint,
@@ -81,7 +79,7 @@ pub struct P2PNet {
     peers: Peers,
     coord_conn: Option<iroh::endpoint::Connection>,
     data_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<iroh::endpoint::Connection>>>,
-    http_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<iroh::endpoint::Connection>>>,
+    file_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<iroh::endpoint::Connection>>>,
 }
 
 impl P2PNet {
@@ -104,8 +102,8 @@ impl P2PNet {
         self.data_rx.lock().await.recv().await.map(Connection)
     }
 
-    pub async fn accept_http_conn(&self) -> Option<iroh::endpoint::Connection> {
-        self.http_rx.lock().await.recv().await
+    pub async fn accept_file_conn(&self) -> Option<RawConn> {
+        self.file_rx.lock().await.recv().await
     }
 
     pub async fn connect_udp(&self, addr: NodeAddr) -> Result<Connection> {
@@ -113,26 +111,14 @@ impl P2PNet {
         Ok(Connection(conn))
     }
 
-    pub async fn request_http(&self, addr: NodeAddr, path: &str) -> Result<Vec<u8>> {
-        let conn = self.node.endpoint.connect(addr, HTTP_ALPN).await?;
-        let h3_conn = h3_iroh::Connection::new(conn);
-        let (mut driver, mut send_request) = h3::client::new(h3_conn).await?;
-        tokio::spawn(async move { let _ = driver.wait_idle().await; });
-
-        let req = http::Request::builder()
-            .method(http::Method::GET)
-            .uri(path)
-            .body(())?;
-        let mut stream = send_request.send_request(req).await?;
-        stream.finish().await?;
-
-        let _resp = stream.recv_response().await?;
-        let mut body = Vec::new();
-        while let Some(chunk) = stream.recv_data().await? {
-            use bytes::Buf;
-            body.extend_from_slice(chunk.chunk());
-        }
-        Ok(body)
+    pub async fn request_file(&self, addr: NodeAddr, path: &str) -> Result<Vec<u8>> {
+        let conn = self.node.endpoint.connect(addr, FILE_ALPN).await?;
+        let mut send = conn.open_uni().await?;
+        send.write_all(path.as_bytes()).await?;
+        send.finish()?;
+        let mut recv = conn.accept_uni().await?;
+        let data = recv.read_to_end(64 * 1024 * 1024).await?;
+        Ok(data)
     }
 
     pub async fn notice_sim_online(&self) -> Result<()> {
@@ -164,26 +150,6 @@ impl P2PNet {
     }
 }
 
-pub async fn serve_h3_response<F>(conn: iroh::endpoint::Connection, body_fn: F) -> Result<()>
-where
-    F: FnOnce(&str) -> Bytes,
-{
-    let h3_conn = h3_iroh::Connection::new(conn);
-    let mut h3_server: h3::server::Connection<_, Bytes> =
-        h3::server::builder().build(h3_conn).await?;
-    if let Some(resolver) = h3_server.accept().await? {
-        let (req, mut stream) = resolver.resolve_request().await?;
-        let path = req.uri().path();
-        let body = body_fn(path);
-        stream
-            .send_response(http::Response::builder().status(200).body(())?)
-            .await?;
-        stream.send_data(body).await?;
-        stream.finish().await?;
-    }
-    Ok(())
-}
-
 pub async fn join_p2p_net(form: JoinForm) -> Result<P2PNet> {
     let endpoint = create_endpoint().await?;
     endpoint.online().await;
@@ -193,7 +159,7 @@ pub async fn join_p2p_net(form: JoinForm) -> Result<P2PNet> {
     let coord_id = read_coordinator_id(&keypair).await;
 
     let (data_tx, data_rx) = mpsc::channel(32);
-    let (http_tx, http_rx) = mpsc::channel(32);
+    let (file_tx, file_rx) = mpsc::channel(32);
 
     match coord_id {
         None => {
@@ -214,7 +180,7 @@ pub async fn join_p2p_net(form: JoinForm) -> Result<P2PNet> {
             });
 
             let accept_handle = tokio::spawn(accept_loop(
-                endpoint.clone(), Some(peers.clone()), data_tx, http_tx,
+                endpoint.clone(), Some(peers.clone()), data_tx, file_tx,
             ));
             tokio::spawn(heartbeat_checker(peers.clone()));
 
@@ -224,7 +190,7 @@ pub async fn join_p2p_net(form: JoinForm) -> Result<P2PNet> {
                 peers: Peers::Coord(peers),
                 coord_conn: None,
                 data_rx: Arc::new(tokio::sync::Mutex::new(data_rx)),
-                http_rx: Arc::new(tokio::sync::Mutex::new(http_rx)),
+                file_rx: Arc::new(tokio::sync::Mutex::new(file_rx)),
             })
         }
         Some(coord_id) => {
@@ -244,7 +210,7 @@ pub async fn join_p2p_net(form: JoinForm) -> Result<P2PNet> {
             tokio::spawn(peer_heartbeat_loop(conn.clone()));
 
             let accept_handle = tokio::spawn(accept_loop(
-                endpoint.clone(), None, data_tx, http_tx,
+                endpoint.clone(), None, data_tx, file_tx,
             ));
             let node = Node { endpoint, _accept_task: accept_handle };
             Ok(P2PNet {
@@ -252,7 +218,7 @@ pub async fn join_p2p_net(form: JoinForm) -> Result<P2PNet> {
                 peers: Peers::Peer(peers),
                 coord_conn: Some(conn),
                 data_rx: Arc::new(tokio::sync::Mutex::new(data_rx)),
-                http_rx: Arc::new(tokio::sync::Mutex::new(http_rx)),
+                file_rx: Arc::new(tokio::sync::Mutex::new(file_rx)),
             })
         }
     }
@@ -295,14 +261,14 @@ pub async fn join_as_client(form: JoinForm) -> Result<P2PNet> {
     }
 
     let (data_tx, data_rx) = mpsc::channel(32);
-    let (http_tx, http_rx) = mpsc::channel(32);
+    let (file_tx, file_rx) = mpsc::channel(32);
 
     let peers: Arc<Mutex<Vec<PeerInfo>>> = Arc::new(Mutex::new(Vec::new()));
     tokio::spawn(peer_recv_loop(conn.clone(), peers.clone()));
     tokio::spawn(peer_heartbeat_loop(conn.clone()));
 
     let accept_handle = tokio::spawn(accept_loop(
-        endpoint.clone(), None, data_tx, http_tx,
+        endpoint.clone(), None, data_tx, file_tx,
     ));
     let node = Node { endpoint, _accept_task: accept_handle };
     Ok(P2PNet {
@@ -310,7 +276,7 @@ pub async fn join_as_client(form: JoinForm) -> Result<P2PNet> {
         peers: Peers::Peer(peers),
         coord_conn: Some(conn),
         data_rx: Arc::new(tokio::sync::Mutex::new(data_rx)),
-        http_rx: Arc::new(tokio::sync::Mutex::new(http_rx)),
+        file_rx: Arc::new(tokio::sync::Mutex::new(file_rx)),
     })
 }
 
@@ -318,7 +284,7 @@ pub async fn join_as_client(form: JoinForm) -> Result<P2PNet> {
 
 const COORD_ALPN: &[u8] = b"cv-coord/0";
 pub const DATA_ALPN: &[u8] = b"cv-data/0";
-const HTTP_ALPN: &[u8] = b"h3";
+const FILE_ALPN: &[u8] = b"cv-file/0";
 const PKARR_RELAY: &str = "https://dns.iroh.link/pkarr";
 
 #[derive(Serialize, Deserialize)]
@@ -394,7 +360,7 @@ async fn publish_coordinator_id(keypair: &pkarr::Keypair, my_id: EndpointId) -> 
         .sign(keypair)
         .map_err(|e| anyhow::anyhow!("sign error: {e}"))?;
 
-    let payload: Bytes = signed.to_relay_payload();
+    let payload = signed.to_relay_payload();
     client
         .put(&url)
         .header("Content-Type", "application/octet-stream")
@@ -454,7 +420,6 @@ async fn register_peer_and_ack(
     info: PeerInfo,
     conn: &iroh::endpoint::Connection,
 ) {
-    // 같은 타입 내 이름 중복 체크
     let conflict = {
         let map = peers.lock().unwrap();
         map.values().any(|slot| {
@@ -541,13 +506,13 @@ async fn accept_loop(
     endpoint: Endpoint,
     coord_peers: Option<PeerMap>,
     data_tx: mpsc::Sender<iroh::endpoint::Connection>,
-    http_tx: mpsc::Sender<iroh::endpoint::Connection>,
+    file_tx: mpsc::Sender<iroh::endpoint::Connection>,
 ) {
     loop {
         let Some(incoming) = endpoint.accept().await else { break };
         let coord_peers = coord_peers.clone();
         let data_tx = data_tx.clone();
-        let http_tx = http_tx.clone();
+        let file_tx = file_tx.clone();
         tokio::spawn(async move {
             let mut accepting = match incoming.accept() {
                 Ok(a) => a,
@@ -568,8 +533,8 @@ async fn accept_loop(
                 }
             } else if alpn == DATA_ALPN {
                 let _ = data_tx.send(conn).await;
-            } else if alpn == HTTP_ALPN {
-                let _ = http_tx.send(conn).await;
+            } else if alpn == FILE_ALPN {
+                let _ = file_tx.send(conn).await;
             }
         });
     }
@@ -637,7 +602,7 @@ async fn peer_heartbeat_loop(conn: iroh::endpoint::Connection) {
 
 async fn create_endpoint() -> Result<Endpoint> {
     let endpoint = Endpoint::builder(presets::N0)
-        .alpns(vec![COORD_ALPN.to_vec(), DATA_ALPN.to_vec(), HTTP_ALPN.to_vec()])
+        .alpns(vec![COORD_ALPN.to_vec(), DATA_ALPN.to_vec(), FILE_ALPN.to_vec()])
         .bind()
         .await?;
     Ok(endpoint)
