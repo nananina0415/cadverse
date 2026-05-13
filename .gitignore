@@ -12,6 +12,8 @@ client/*.csproj
 client/*.sln
 client/*.slnx
 client/.vscode/
+client/Assets/_Recovery/
+client/Assets/_Recovery.meta
 
 # Rust build
 p2p/target/

@@ -59,8 +59,10 @@ namespace Cadverse
             root.transform.localRotation = Quaternion.Euler(90f, 180f, 0f); // ※ 런타임 검증 필요
             root.SetActive(false);
 
-            var mat = new Material(Shader.Find("Universal Render Pipeline/Lit"));
-            mat.color = new Color(0.749f, 0.749f, 0.749f);
+            var mat = Resources.Load<Material>("Materials/SimMesh");
+            if (mat == null)
+                throw new InvalidOperationException("Materials/SimMesh 에셋을 찾을 수 없습니다.");
+            mat = new Material(mat);
 
             // (4) 파트별 OBJ 다운로드 → 메시 생성
             foreach (var kvp in transforms)

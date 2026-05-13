@@ -70,7 +70,7 @@ namespace Cadverse
         [DllImport(Lib)] static extern IntPtr cv_get_peers_json(IntPtr net);
         [DllImport(Lib)] static extern void   cv_string_free(IntPtr s);
         [DllImport(Lib)] static extern IntPtr cv_connect_udp(IntPtr net, string addrJson);
-        [DllImport(Lib)] static extern int    cv_request_http(IntPtr net, string addrJson, string path, byte[] outBuf, uint outLen);
+        [DllImport(Lib)] static extern int    cv_request_file(IntPtr net, string addrJson, string path, byte[] outBuf, uint outLen);
 
         IntPtr _handle;
 
@@ -112,7 +112,7 @@ namespace Cadverse
         }
 
         /// <summary>
-        /// HTTP/3으로 파일을 요청한다.
+        /// QUIC uni-stream으로 파일을 요청한다.
         /// path 예: "/metadata.json", "/meshes/part.obj"
         /// 블로킹 — Task.Run 안에서 호출할 것.
         /// </summary>
@@ -121,9 +121,9 @@ namespace Cadverse
         {
             ThrowIfDisposed();
             byte[] buf = new byte[maxBytes];
-            int n = cv_request_http(_handle, addrJson, path, buf, (uint)buf.Length);
+            int n = cv_request_file(_handle, addrJson, path, buf, (uint)buf.Length);
             if (n < 0)
-                throw new InvalidOperationException($"cv_request_http 실패: path={path}");
+                throw new InvalidOperationException($"cv_request_file 실패: path={path}");
             byte[] result = new byte[n];
             Buffer.BlockCopy(buf, 0, result, 0, n);
             return result;
