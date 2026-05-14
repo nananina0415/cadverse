@@ -12,6 +12,8 @@ namespace Cadverse
         public static P2PNet      Net     { get; private set; }
         public static QRScanner   Scanner { get; private set; }
 
+        static AppManager _instance;
+
         ARTrackedImageManager _imageManager;
         ARScene               _scene;
 
@@ -25,8 +27,11 @@ namespace Cadverse
 
         void Awake()
         {
+            _instance = this;
             LoginManager.Create(this);
         }
+
+        public static void Toast(string msg) => _instance?.ShowToast(msg);
 
         public void OnLoginComplete(P2PNet net)
         {
@@ -44,6 +49,7 @@ namespace Cadverse
             try
             {
                 _scene = await ARScene.Create(addr, _imageManager);
+                ShowToast($"씬 생성 완료, {_scene.MeshCount}개 메시");
             }
             catch (System.Exception e)
             {

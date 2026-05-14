@@ -124,7 +124,7 @@ fn main() {
                 printsh!("어떤 그룹원의 시뮬레이션에 참가하시겠습니까?: ");
                 let name = input::<String>();
                 if let Some(addr) = net.sim_info(&name) {
-                    show_qr(serde_json::to_string(&addr).expect("NodeAddr 직렬화 실패"));
+                    show_qr(addr.id.as_bytes().to_vec());
                 } else {
                     println!("그룹원이 존재하지 않거나 시뮬레이션이 실행 중이지 않습니다");
                     continue;
@@ -233,8 +233,8 @@ pub(crate) fn qr_path() -> std::path::PathBuf {
 }
 
 pub(crate) fn save_local_sim_qr_txt(addr: &p2p_core::NodeAddr) {
-    let json = serde_json::to_string(addr).expect("NodeAddr 직렬화 실패");
-    let code = match make_qr(&json) {
+    // 32 raw bytes → QR Version 3 (29×29), 클라이언트에서 RawBytes로 읽어 hex 복원
+    let code = match qrcode::QrCode::with_error_correction_level(addr.id.as_bytes(), qrcode::EcLevel::M) {
         Ok(c) => c,
         Err(e) => { eprintln!("[save_local_sim_qr_txt] QR 생성 실패: {e}"); return; }
     };
@@ -251,7 +251,7 @@ pub(crate) fn save_local_sim_qr_txt(addr: &p2p_core::NodeAddr) {
     }
 }
 
-fn show_qr(data: String) {
+fn show_qr(data: Vec<u8>) {
     const QR_SIZE_CM: f32 = 5.0;
 
     #[cfg(target_os = "windows")]
@@ -285,7 +285,7 @@ fn show_qr(data: String) {
         let dpi = get_system_dpi();
         let target_size_px = cm_to_pixels(QR_SIZE_CM, dpi);
 
-        let code = match make_qr(&data) {
+        let code = match qrcode::QrCode::with_error_correction_level(&data, qrcode::EcLevel::M) {
             Ok(c) => c,
             Err(e) => { eprintln!("[show_qr] QR 생성 실패: {e}"); return; }
         };
@@ -320,7 +320,7 @@ fn show_qr(data: String) {
             }
         }
 
-        let title = format!("CADverse QR - {} ({:.1}cm)", data, QR_SIZE_CM);
+        let title = format!("CADverse QR ({:.1}cm)", QR_SIZE_CM);
         let mut window = match minifb::Window::new(
             &title,
             window_size, window_size,

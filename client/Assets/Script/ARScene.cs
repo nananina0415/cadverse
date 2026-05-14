@@ -14,11 +14,16 @@ namespace Cadverse
     {
         readonly ARTrackedImageManager _manager;
         readonly GameObject _root;
+        readonly Texture2D  _markerTexture;
+        ARAnchor    _anchor;
+        public int MeshCount;
+        TrackingState _lastTrackingState = TrackingState.None;
 
-        ARScene(ARTrackedImageManager manager, GameObject root)
+        ARScene(ARTrackedImageManager manager, GameObject root, Texture2D markerTexture)
         {
-            _manager = manager;
-            _root = root;
+            _manager       = manager;
+            _root          = root;
+            _markerTexture = markerTexture;
             manager.trackablesChanged.AddListener(OnTrackedImagesChanged);
         }
 
@@ -47,8 +52,8 @@ namespace Cadverse
             while (!jobState.jobHandle.IsCompleted)
                 await Task.Yield();
             jobState.jobHandle.Complete();
-            manager.referenceLibrary = lib;
-            UnityEngine.Object.Destroy(texture);
+            if (jobState.status != AddReferenceImageJobStatus.Success)
+                throw new InvalidOperationException($"마커 이미지 등록 실패: {jobState.status}");
 
             // (2) 메타데이터 파싱
             byte[] metaData = await RequestWithTimeout(() => net.RequestHttp(addr.RawJson, "/metadata.json"));
@@ -56,7 +61,7 @@ namespace Cadverse
 
             // (3) _root 생성
             var root = new GameObject("_root");
-            root.transform.localRotation = Quaternion.Euler(90f, 180f, 0f); // ※ 런타임 검증 필요
+            root.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
             root.SetActive(false);
 
             var mat = Resources.Load<Material>("Materials/SimMesh");
@@ -65,55 +70,106 @@ namespace Cadverse
             mat = new Material(mat);
 
             // (4) 파트별 OBJ 다운로드 → 메시 생성
+            bool firstMesh = true;
             foreach (var kvp in transforms)
             {
-                string name = kvp.Key;
+                string name   = kvp.Key;
                 float[] matrix = kvp.Value;
 
                 byte[] objData = await RequestWithTimeout(() => net.RequestHttp(addr.RawJson, $"/meshes/{name}.obj"));
                 var mesh = ObjParser.Parse(objData);
 
                 var go = new GameObject(name);
-                go.AddComponent<MeshFilter>().mesh = mesh;
+                go.AddComponent<MeshFilter>().mesh     = mesh;
                 go.AddComponent<MeshRenderer>().material = mat;
                 go.transform.SetParent(root.transform, false);
 
                 var m = CoordConvert.FusionToUnity(matrix);
                 go.transform.localPosition = new Vector3(m.m03, m.m13, m.m23);
                 go.transform.localRotation = m.rotation;
-                go.transform.localScale = new Vector3(
+                go.transform.localScale    = new Vector3(
                     new Vector3(m.m00, m.m10, m.m20).magnitude,
                     new Vector3(m.m01, m.m11, m.m21).magnitude,
                     new Vector3(m.m02, m.m12, m.m22).magnitude
                 );
+
+                if (firstMesh)
+                {
+                    AppManager.Toast($"{name} pos={go.transform.localPosition} scale={go.transform.localScale}");
+                    firstMesh = false;
+                }
             }
 
-            return new ARScene(manager, root);
+            // (5) ARScene 생성(리스너 등록) → referenceLibrary 설정 (순서 중요)
+            var scene = new ARScene(manager, root, texture);
+            scene.MeshCount = transforms.Count;
+            manager.referenceLibrary = lib;
+            manager.enabled = true;
+            return scene;
         }
 
         void OnTrackedImagesChanged(ARTrackablesChangedEventArgs<ARTrackedImage> e)
         {
+            AppManager.Toast($"trackables: +{e.added.Count} ~{e.updated.Count}");
+
             foreach (var img in e.added)
                 if (img.referenceImage.name == "sim_marker")
                 {
-                    _root.transform.SetParent(img.transform, false);
-                    _root.SetActive(img.trackingState == TrackingState.Tracking);
+                    AppManager.Toast($"마커 added: {img.trackingState}");
+                    if (img.trackingState == TrackingState.Tracking)
+                        AttachToMarker(img.transform);
                 }
 
             foreach (var img in e.updated)
                 if (img.referenceImage.name == "sim_marker")
-                    _root.SetActive(img.trackingState == TrackingState.Tracking);
+                {
+                    if (img.trackingState != _lastTrackingState)
+                    {
+                        _lastTrackingState = img.trackingState;
+                        AppManager.Toast($"마커 updated: {img.trackingState}");
+                    }
+                    if (img.trackingState == TrackingState.Tracking)
+                        AttachToMarker(img.transform);
+                    else
+                        AttachToAnchor();
+                }
 
             foreach (var kvp in e.removed)
                 if (kvp.Value.referenceImage.name == "sim_marker")
-                    _root.SetActive(false);
+                    AttachToAnchor();
+        }
+
+        void AttachToMarker(Transform markerTransform)
+        {
+            if (_anchor != null)
+            {
+                UnityEngine.Object.Destroy(_anchor.gameObject);
+                _anchor = null;
+            }
+            _root.transform.SetParent(markerTransform, false);
+            _root.transform.localPosition = Vector3.zero;
+            _root.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
+            _root.SetActive(true);
+        }
+
+        void AttachToAnchor()
+        {
+            if (_anchor != null) return;
+            if (!_root.activeSelf) return;
+
+            var anchorGO = new GameObject("SimAnchor");
+            anchorGO.transform.SetPositionAndRotation(_root.transform.position, _root.transform.rotation);
+            _anchor = anchorGO.AddComponent<ARAnchor>();
+            _root.transform.SetParent(_anchor.transform, true);
         }
 
         public void Dispose()
         {
             _manager.trackablesChanged.RemoveListener(OnTrackedImagesChanged);
             _manager.referenceLibrary = _manager.CreateRuntimeLibrary(null);
+            if (_anchor != null) UnityEngine.Object.Destroy(_anchor.gameObject);
             UnityEngine.Object.Destroy(_root);
+            UnityEngine.Object.Destroy(_markerTexture);
         }
 
         // "0"/"1" 그리드 → Texture2D (1=검정, 0=흰색, 모듈당 10px)

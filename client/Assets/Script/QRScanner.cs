@@ -52,6 +52,8 @@ namespace Cadverse
             var src     = new RGBLuminanceSource(buffer, width, height, RGBLuminanceSource.BitmapFormat.RGBA32);
             var results = _reader.DecodeMultiple(src);
             if (results == null || results.Length != 1) return null;
+            var raw = results[0].RawBytes;
+            if (raw != null && raw.Length == 32) return Addr.FromRawKey(raw);
             return Addr.TryParse(results[0].Text);
         }
 

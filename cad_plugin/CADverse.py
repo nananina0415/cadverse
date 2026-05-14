@@ -2,6 +2,7 @@ import adsk.core, adsk.fusion, traceback
 import importlib
 import os
 import json
+import re
 
 # 같은 폴더에 있는 모듈 불러오기
 from . import extract_mesh
@@ -27,7 +28,20 @@ def run(context):
 
         save_folder = folderDlg.folder # 사용자가 선택한 경로
 
-        # 3. 데이터 추출 실행 (각 파일의 run 함수 호출)
+        # 3. 한글 부품명 검사
+        design = app.activeProduct
+        korean = re.compile(r'[가-힣ᄀ-ᇿ㄰-㆏]')
+        bad = [occ.component.name for occ in design.rootComponent.allOccurrences
+               if korean.search(occ.component.name)]
+        if bad:
+            ui.messageBox(
+                '추출 실패: 부품 이름에 한글이 포함되어 있습니다.\n\n'
+                + '한글 이름 목록:\n' + '\n'.join(f'  - {n}' for n in bad)
+                + '\n\n부품 이름을 영문/숫자로 변경 후 다시 시도하세요.'
+            )
+            return
+
+        # 4. 데이터 추출 실행 (각 파일의 run 함수 호출)
 
         # (A) 형상 추출: 폴더 경로를 넘겨줘서 OBJ를 저장하게 하고, 위치 정보는 받아옴
         transforms_data = extract_mesh.run(context, save_folder)
@@ -35,7 +49,7 @@ def run(context):
         # (B) 조인트 추출: 조인트 리스트 데이터를 받아옴
         joints_data = extract_meta.run(context)
 
-        # 4. 데이터 병합 (하나의 JSON 구조로 만들기)
+        # 5. 데이터 병합 (하나의 JSON 구조로 만들기)
         final_metadata = {
             "info": {
                 "version": "2.0",

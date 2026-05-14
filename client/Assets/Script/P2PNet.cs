@@ -15,12 +15,29 @@ namespace Cadverse
 
         Addr(string rawJson, string id) { RawJson = rawJson; Id = id; }
 
-        public static Addr TryParse(string json)
+        public static Addr FromRawKey(byte[] key)
         {
-            if (string.IsNullOrEmpty(json)) return null;
-            var id = ExtractId(json);
+            var hex = BitConverter.ToString(key).Replace("-", "").ToLower();
+            return new Addr($"{{\"id\":\"{hex}\",\"addrs\":[]}}", hex);
+        }
+
+        public static Addr TryParse(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return null;
+            // 64자 hex 문자열이면 JSON으로 복원
+            if (IsHex64(text))
+                return new Addr($"{{\"id\":\"{text}\",\"addrs\":[]}}", text);
+            var id = ExtractId(text);
             if (id == null) return null;
-            return new Addr(json, id);
+            return new Addr(text, id);
+        }
+
+        static bool IsHex64(string s)
+        {
+            if (s.Length != 64) return false;
+            foreach (char c in s)
+                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+            return true;
         }
 
         // {"id":"...","addrs":[...]} 에서 id 값만 추출

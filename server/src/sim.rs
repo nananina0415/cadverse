@@ -477,6 +477,7 @@ impl SimThread {
             let flag = flag.clone();
             let cond = cond.clone();
             crate::watchdog::Watchdog::new(folder.clone(), move |new_folder, data| {
+                if !new_folder.join("metadata.json").exists() { return; }
                 match load_model_from_folder(&new_folder) {
                     Ok((m, init)) => {
                         *data.lock().expect("watchdog data mutex poisoned") = Some((m, init));
