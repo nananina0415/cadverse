@@ -52,9 +52,25 @@ namespace Cadverse
             var src     = new RGBLuminanceSource(buffer, width, height, RGBLuminanceSource.BitmapFormat.RGBA32);
             var results = _reader.DecodeMultiple(src);
             if (results == null || results.Length != 1) return null;
-            var raw = results[0].RawBytes;
-            if (raw != null && raw.Length == 32) return Addr.FromRawKey(raw);
-            return Addr.TryParse(results[0].Text);
+
+            var result = results[0];
+
+            // BYTE_SEGMENTS: byte-mode QR의 실제 decoded payload. RawBytes/Text는 binary에 신뢰 불가.
+            // RawBytes = raw bit array (payload 아님), Text = 개행문자 변환으로 binary 오염 (ZXing.Net #235)
+            if (result.ResultMetadata != null &&
+                result.ResultMetadata.TryGetValue(ResultMetadataType.BYTE_SEGMENTS, out var segsObj) &&
+                segsObj is System.Collections.Generic.IList<byte[]> segs &&
+                segs.Count > 0)
+            {
+                int total = 0;
+                foreach (var s in segs) total += s.Length;
+                var raw = new byte[total];
+                int pos = 0;
+                foreach (var s in segs) { Buffer.BlockCopy(s, 0, raw, pos, s.Length); pos += s.Length; }
+                if (raw.Length == 32) return Addr.FromRawKey(raw);
+            }
+
+            return Addr.TryParse(result.Text);
         }
 
         IEnumerator ScanLoop()
