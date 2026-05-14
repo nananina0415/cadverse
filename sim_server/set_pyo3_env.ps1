@@ -7,7 +7,7 @@ Write-Host "Setting up PyO3 environment variable..." -ForegroundColor Cyan
 Write-Host ""
 
 # Get Python path from conda environment
-$pythonPath = "C:\Users\nananina\anaconda3\envs\cadverse_dev\python.exe"
+$pythonPath = "C:\Users\김민준\anaconda3\envs\cadverse_dev\python.exe"
 
 # Check if Python exists
 if (Test-Path $pythonPath) {

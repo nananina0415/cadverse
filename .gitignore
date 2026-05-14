@@ -163,3 +163,13 @@ GEMINI.md
 
 # Utility 스크립트 (필요시 git show로 복구)
 convert_obj_scale.py
+
+# --- Unity ARtest Project Ignore Rules ---
+ARtest/[Ll]ibrary/
+ARtest/[Tt]emp/
+ARtest/[Oo]bj/
+ARtest/[Bb]uild/
+ARtest/[Ll]ogs/
+ARtest/[Uu]ser[Ss]ettings/
+# 만약 메모리 덤프나 다른 임시파일도 생기면 아래도 추가
+ARtest/MemoryCaptures/

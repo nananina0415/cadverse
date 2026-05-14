@@ -40,7 +40,8 @@ members = [
     "crates/server",
     "crates/sim_manager",
     "crates/data_loader",
-    "crates/mock_ar_client"
+    "crates/mock_ar_client",
+    "crates/s2s"
 ]
 resolver = "2"
 
