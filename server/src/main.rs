@@ -8,11 +8,12 @@ const MAX_NAME_BYTES: usize = 64;
 
 #[repr(usize)]
 pub enum UIMenu {
-    Exit            = 0,
-    StartSimulation = 1,
-    StopSimulation  = 2,
-    EnterSimulation = 3,
-    ShowGroupInfo   = 4,
+    Exit              = 0,
+    StartSimulation   = 1,
+    StopSimulation    = 2,
+    EnterSimulation   = 3,
+    ShowGroupInfo     = 4,
+    ImportRemoteModel = 5,
     WrongInput,
 }
 
@@ -24,6 +25,7 @@ impl From<usize> for UIMenu {
             2 => UIMenu::StopSimulation,
             3 => UIMenu::EnterSimulation,
             4 => UIMenu::ShowGroupInfo,
+            5 => UIMenu::ImportRemoteModel,
             _ => UIMenu::WrongInput,
         }
     }
@@ -76,7 +78,7 @@ fn main() {
 
     // 사용자 입력 루프
     loop {
-        println!("1. 시뮬레이션 시작  2. 시뮬레이션 종료  3. 시뮬레이션 입장  4. 그룹 정보  0. 종료");
+        println!("1. 시뮬레이션 시작  2. 시뮬레이션 종료  3. 시뮬레이션 입장  4. 그룹 정보  5. 그룹원 모델 불러오기  0. 종료");
         printsh!("> ");
         match input::<usize>().into() {
             StartSimulation => {
@@ -130,6 +132,68 @@ fn main() {
             }
             ShowGroupInfo => {
                 show_group_info(&net_setting, &net.peer_list());
+            }
+            ImportRemoteModel => {
+                show_group_info(&net_setting, &net.peer_list());
+
+                printsh!("어떤 그룹원의 모델을 복사해오겠습니까?: ");
+                let target_name = input::<String>();
+                let target_name = target_name.trim().to_string();
+
+                if target_name == net_setting.name {
+                    println!("자기 자신의 모델은 원격 모델 불러오기 대상이 아닙니다.");
+                    println!("다른 그룹원의 이름을 입력해주세요.");
+                    continue;
+                }
+
+                let import_root = std::path::PathBuf::from("imported_models");
+
+                let imported_folder = match net.import_remote_model(&target_name, import_root) {
+                    Ok(path) => {
+                        println!("원격 모델 불러오기에 성공했습니다. ({})", path.display());
+                        path
+                    }
+                    Err(e) => {
+                        println!("원격 모델 불러오기에 실패했습니다: {e}");
+                        continue;
+                    }
+                };
+
+                // 기존 시뮬레이션이 실행 중이면 먼저 종료
+                if let Some(s) = sim.take() {
+                    sim_io = Some(s.stop());
+
+                    if let Err(e) = net.notice_sim_offline() {
+                        println!("시뮬레이션 오프라인 알림 실패: {e}");
+                    }
+
+                    println!("기존 시뮬레이션을 종료했습니다.");
+                }
+
+                // 불러온 모델 폴더로 시뮬레이션 재시작
+                if let Some(io) = sim_io.take() {
+                    setup_python();
+
+                    println!("불러온 모델로 시뮬레이션을 시작합니다. ({})", imported_folder.display());
+
+                    match SimThread::new(imported_folder.clone(), io) {
+                        Ok(s) => {
+                            sim = Some(s);
+
+                            if let Err(e) = net.notice_sim_online(imported_folder) {
+                                println!("시뮬레이션 온라인 알림 실패: {e}");
+                            }
+
+                            println!("시뮬레이션이 시작되었습니다.");
+                        }
+                        Err((e, io)) => {
+                            println!("시뮬레이션 시작 실패: {e}");
+                            sim_io = Some(io);
+                        }
+                    }
+                } else {
+                    println!("시뮬레이션 IO 버퍼를 사용할 수 없습니다.");
+                }
             }
             Exit => {
                 break;

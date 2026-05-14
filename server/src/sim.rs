@@ -151,6 +151,16 @@ pub struct Simulator {
 }
 
 fn build_py_sim(py: Python, model: &SimModel, dt: f64) -> PyResult<Py<PyAny>> {
+    // Python 3.8+: PATH 대신 add_dll_directory로 conda 환경의 DLL 경로를 명시
+    #[cfg(windows)]
+    py.run_bound(
+        "import os; [os.add_dll_directory(d) for d in [\
+            os.path.join(os.environ.get('CONDA_PREFIX',''), 'Library', 'bin'),\
+            os.path.join(os.environ.get('CONDA_PREFIX',''), 'Library', 'mingw-w64', 'bin'),\
+        ] if d and os.path.isdir(d)]",
+        None, None,
+    )?;
+
     let mut value = serde_json::to_value(model).expect("SimModel 직렬화 실패");
 
     // Python SceneMeta가 기대하는 top-level / body 필드 보정

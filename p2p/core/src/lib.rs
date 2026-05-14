@@ -98,6 +98,14 @@ impl P2PNet {
         }
     }
 
+    pub fn find_sim_server_by_name(&self, name: &str) -> Option<PeerInfo> {
+        self.get_peers()
+            .into_iter()
+            .find(|peer| {
+                peer.name == name && matches!(peer.peer_type, PeerType::SimServer)
+            })
+    }
+
     pub async fn accept_data(&self) -> Option<Connection> {
         self.data_rx.lock().await.recv().await.map(Connection)
     }
