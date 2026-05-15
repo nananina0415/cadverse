@@ -1,12 +1,39 @@
 import adsk.core, adsk.fusion, traceback
-import importlib
-import os
-import json
-import re
+import os, re, shutil, json
 
-# 같은 폴더에 있는 모듈 불러오기
-from . import extract_mesh
-from . import extract_meta
+from . import extract as _extract
+
+# ── 전역 상태 ──────────────────────────────────────────────────────────────────
+
+_handlers = []   # Fusion 360 핸들러 참조 유지 (GC 방지)
+_palette  = None
+
+PALETTE_ID = 'cadverse_palette'
+
+# ── 경로 헬퍼 ──────────────────────────────────────────────────────────────────
+
+def _plugin_dir() -> str:
+    return os.path.dirname(os.path.abspath(__file__))
+
+def _config_path() -> str:
+    return os.path.join(_plugin_dir(), 'config.json')
+
+def _model_path(username: str) -> str:
+    sim_server_dir = os.path.join(_plugin_dir(), '..', 'sim_server')
+    return os.path.normpath(os.path.join(sim_server_dir, 'models', username))
+
+def _load_config() -> dict:
+    try:
+        with open(_config_path()) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _save_config(cfg: dict):
+    with open(_config_path(), 'w') as f:
+        json.dump(cfg, f, indent=2)
+
+# ── Addin 진입점 ───────────────────────────────────────────────────────────────
 
 def run(context):
     ui = None
@@ -14,61 +41,82 @@ def run(context):
         app = adsk.core.Application.get()
         ui  = app.userInterface
 
-        # 1. 코드 수정 사항 반영 (Hot Reload)
-        importlib.reload(extract_mesh)
-        importlib.reload(extract_meta)
-
-        # 2. [UI] 저장할 폴더 선택 창 띄우기
-        folderDlg = ui.createFolderDialog()
-        folderDlg.title = "AR 데이터 저장 경로 선택"
-
-        # 취소 버튼 누르면 스크립트 종료
-        if folderDlg.showDialog() != adsk.core.DialogResults.DialogOK:
-            return
-
-        save_folder = folderDlg.folder # 사용자가 선택한 경로
-
-        # 3. 한글 부품명 검사
-        design = app.activeProduct
-        korean = re.compile(r'[가-힣ᄀ-ᇿ㄰-㆏]')
-        bad = [occ.component.name for occ in design.rootComponent.allOccurrences
-               if korean.search(occ.component.name)]
-        if bad:
-            ui.messageBox(
-                '추출 실패: 부품 이름에 한글이 포함되어 있습니다.\n\n'
-                + '한글 이름 목록:\n' + '\n'.join(f'  - {n}' for n in bad)
-                + '\n\n부품 이름을 영문/숫자로 변경 후 다시 시도하세요.'
+        palette = ui.palettes.itemById(PALETTE_ID)
+        if palette:
+            palette.isVisible = True
+        else:
+            palette = ui.palettes.add(
+                id=PALETTE_ID,
+                name='CADverse',
+                htmlFileURL='palette.html',
+                isVisible=True,
+                showCloseButton=True,
+                isResizable=True,
+                width=300,
+                height=500,
             )
-            return
 
-        # 4. 데이터 추출 실행 (각 파일의 run 함수 호출)
+            palette.dockingOption = adsk.core.PaletteDockingOptions.PaletteDockOptionsToVerticalOnly
+            palette.dockingState  = adsk.core.PaletteDockingStates.PaletteDockStateLeft
 
-        # (A) 형상 추출: 폴더 경로를 넘겨줘서 OBJ를 저장하게 하고, 위치 정보는 받아옴
-        transforms_data = extract_mesh.run(context, save_folder)
+            on_html = _HTMLEventHandler()
+            palette.incomingFromHTML.add(on_html)
+            _handlers.append(on_html)
 
-        # (B) 조인트 추출: 조인트 리스트 데이터를 받아옴
-        joints_data = extract_meta.run(context)
-
-        # 5. 데이터 병합 (하나의 JSON 구조로 만들기)
-        final_metadata = {
-            "info": {
-                "version": "2.0",
-                "description": "Fusion 360 to AR/Unity Exporter",
-                "coordinate_system": "Right-Handed (Z-up)",
-                "matrix_format": "Row-Major 4x4 Flattened Array (Index 0,1,2 is X-Axis Vector)",                "units": "Translation: cm (Fusion Default), Rotation: Degree"
-            },
-            "transforms": transforms_data, # 부품 위치 정보
-            "joints": joints_data          # 조인트/관절 정보
-        }
-
-        # 5. 통합된 JSON 파일 저장
-        json_path = os.path.join(save_folder, "metadata.json")
-        with open(json_path, "w") as f:
-            json.dump(final_metadata, f, indent=2)
-
-        # 6. 최종 완료 메시지
-        ui.messageBox(f'추출 완료!\n\n[저장 위치]\n{save_folder}\n\n[생성 파일]\n1. meshes/ (OBJ 파일들)\n2. metadata.json (위치+조인트 통합본)')
+        global _palette
+        _palette = palette
 
     except:
         if ui:
-            ui.messageBox('Main Error:\n{}'.format(traceback.format_exc()))
+            ui.messageBox('CADverse 시작 오류:\n{}'.format(traceback.format_exc()))
+
+
+def stop(context):
+    ui = None
+    try:
+        app = adsk.core.Application.get()
+        ui  = app.userInterface
+
+        palette = ui.palettes.itemById(PALETTE_ID)
+        if palette:
+            palette.deleteMe()
+
+        _handlers.clear()
+
+    except:
+        if ui:
+            ui.messageBox('CADverse 종료 오류:\n{}'.format(traceback.format_exc()))
+
+# ── Palette → Python 명령 처리 ─────────────────────────────────────────────────
+
+class _HTMLEventHandler(adsk.core.HTMLEventHandler):
+    def __init__(self):
+        super().__init__()
+
+    def notify(self, args):
+        try:
+            ev     = adsk.core.HTMLEventArgs.cast(args)
+            action = ev.action
+            data   = json.loads(ev.data) if ev.data else {}
+
+            if action == 'get_config':
+                cfg = _load_config()
+                if cfg:
+                    _send_to_palette('config_saved', cfg)
+
+            elif action == 'save_config':
+                _save_config(data)
+                _send_to_palette('config_saved', data)
+
+            # Phase 4: pause / resume / qr_show / qr_hide 처리 예정
+
+        except:
+            pass
+
+
+def _send_to_palette(action: str, data: dict):
+    if _palette and _palette.isValid:
+        _palette.sendInfoToHTML(action, json.dumps(data, ensure_ascii=False))
+
+# ── DocumentSaved / DocumentClosed 이벤트 (Phase 5에서 구현) ──────────────────
+# 이벤트 핸들러 등록은 Phase 5에서 추가
