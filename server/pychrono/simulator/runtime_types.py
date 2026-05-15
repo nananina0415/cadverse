@@ -483,6 +483,107 @@ class DiagnosticItem:
             out["target"] = str(self.target)
         return out
 
+
+@dataclass(frozen=True)
+class EventFeedback:
+    """
+    이벤트 기반 사용자 피드백 항목.
+
+    목적:
+    - diagnostics가 개발자/디버그용 진단에 가깝다면,
+      eventFeedback은 AR/클라이언트가 사용자에게 보여줄 메시지/알림음 이벤트이다.
+    - 실제 소리 재생은 Python 엔진이 하지 않고,
+      soundId / soundType / volume / pitch를 클라이언트가 해석해서 처리한다.
+
+    예:
+    - AR_INPUT_NO_MOTION
+    - EXCESSIVE_CONTACT_FORCE
+    - JOINT_LIMIT_REACHED
+    - SNAP_READY
+    - GEAR_BACKLASH_ACTIVE
+    - HIGH_SPEED_WARNING
+    """
+    eventType: str
+    severity: str = "info"
+    message: str = ""
+    target: Optional[str] = None
+
+    # sound feedback metadata
+    soundId: Optional[str] = None
+    soundType: Optional[str] = None
+    volume: Optional[float] = None
+    pitch: Optional[float] = None
+
+    # optional numeric context
+    value: Optional[float] = None
+    threshold: Optional[float] = None
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "EventFeedback":
+        if not isinstance(d, dict):
+            raise ValueError(f"EventFeedback must be object, got: {type(d)}")
+
+        event_type = str(_get_first(d, ["eventType", "event_type", "type"], ""))
+        severity = str(_get_first(d, ["severity", "level"], "info"))
+        message = str(_get_first(d, ["message", "msg", "description"], ""))
+        target = _get_first(d, ["target", "name", "joint", "body", "actuator"], None)
+
+        sound_id = _get_first(d, ["soundId", "sound_id"], None)
+        sound_type = _get_first(d, ["soundType", "sound_type"], None)
+
+        volume_raw = _get_first(d, ["volume"], None)
+        pitch_raw = _get_first(d, ["pitch"], None)
+
+        value_raw = _get_first(d, ["value"], None)
+        threshold_raw = _get_first(d, ["threshold"], None)
+
+        volume = float(volume_raw) if volume_raw is not None else None
+        pitch = float(pitch_raw) if pitch_raw is not None else None
+
+        if volume is not None:
+            volume = max(0.0, min(1.0, float(volume)))
+        if pitch is not None:
+            pitch = max(0.1, min(4.0, float(pitch)))
+
+        return EventFeedback(
+            eventType=event_type,
+            severity=severity,
+            message=message,
+            target=str(target) if target is not None else None,
+            soundId=str(sound_id) if sound_id is not None else None,
+            soundType=str(sound_type) if sound_type is not None else None,
+            volume=volume,
+            pitch=pitch,
+            value=float(value_raw) if value_raw is not None else None,
+            threshold=float(threshold_raw) if threshold_raw is not None else None,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {
+            "eventType": str(self.eventType),
+            "severity": str(self.severity),
+            "message": str(self.message),
+        }
+        if self.target is not None:
+            out["target"] = str(self.target)
+
+        if self.soundId is not None:
+            out["soundId"] = str(self.soundId)
+        if self.soundType is not None:
+            out["soundType"] = str(self.soundType)
+        if self.volume is not None:
+            out["volume"] = max(0.0, min(1.0, float(self.volume)))
+        if self.pitch is not None:
+            out["pitch"] = max(0.1, min(4.0, float(self.pitch)))
+
+        if self.value is not None:
+            out["value"] = float(self.value)
+        if self.threshold is not None:
+            out["threshold"] = float(self.threshold)
+
+        return out
+
+
 @dataclass(frozen=True)
 class InteractionTelemetry:
     """
@@ -628,6 +729,9 @@ class SimState:
 
     (2-3.4) Optional build warnings:
     - warnings: List[str]
+
+    (Event feedback) Optional user-facing feedback:
+    - eventFeedback: List[EventFeedback]
     """
     sim_time: float
     parts: List[PartState]
@@ -658,6 +762,9 @@ class SimState:
 
     # (Optional) build warnings (e.g., joint limit best-effort unsupported)
     warnings: Optional[List[str]] = None
+
+    # (Optional) user-facing event feedback with sound metadata
+    eventFeedback: Optional[List[EventFeedback]] = None
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "SimState":
@@ -731,6 +838,15 @@ class SimState:
         if isinstance(warnings_raw, list):
             warnings = [str(x) for x in warnings_raw if x is not None]
 
+        event_feedback_raw = _get_first(d, ["eventFeedback", "event_feedback", "events"], None)
+        eventFeedback: Optional[List[EventFeedback]] = None
+        if isinstance(event_feedback_raw, list):
+            eventFeedback = [
+                EventFeedback.from_dict(x)
+                for x in event_feedback_raw
+                if isinstance(x, dict)
+            ]
+
         parts: List[PartState] = []
 
         if isinstance(raw_parts, list) and raw_parts:
@@ -770,6 +886,7 @@ class SimState:
             actuatorTelemetry=actuatorTelemetry,
             diagnostics=diagnostics,
             warnings=warnings,
+            eventFeedback=eventFeedback,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -799,6 +916,8 @@ class SimState:
             out["diagnostics"] = [x.to_dict() for x in self.diagnostics]
         if self.warnings is not None:
             out["warnings"] = [str(x) for x in self.warnings]
+        if self.eventFeedback is not None:
+            out["eventFeedback"] = [x.to_dict() for x in self.eventFeedback]
         return out
 
 
