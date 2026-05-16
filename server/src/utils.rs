@@ -20,7 +20,7 @@ where
     loop {
         match read_line().trim().parse() {
             Ok(v) => return v,
-            Err(e) => println!("잘못된 입력: {e:?}"),
+            Err(_) => {}
         }
     }
 }

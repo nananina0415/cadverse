@@ -2,56 +2,41 @@ mod utils;
 mod net;
 mod sim;
 mod watchdog;
+mod pipe;
 
-
-const MAX_NAME_BYTES: usize = 64;
-
-#[repr(usize)]
-pub enum UIMenu {
-    Exit              = 0,
-    StartSimulation   = 1,
-    StopSimulation    = 2,
-    EnterSimulation   = 3,
-    ShowGroupInfo     = 4,
-    ImportRemoteModel = 5,
-    WrongInput,
-}
-
-impl From<usize> for UIMenu {
-    fn from(v: usize) -> UIMenu {
-        match v {
-            0 => UIMenu::Exit,
-            1 => UIMenu::StartSimulation,
-            2 => UIMenu::StopSimulation,
-            3 => UIMenu::EnterSimulation,
-            4 => UIMenu::ShowGroupInfo,
-            5 => UIMenu::ImportRemoteModel,
-            _ => UIMenu::WrongInput,
-        }
-    }
-}
+use std::sync::{Arc, Mutex, mpsc};
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use net::{NetSetting, NetThread};
-use utils::{TripleBuffer, input};
+use utils::TripleBuffer;
 use sim::{UserIn, SimOut, SimThread, SimIoBuf};
-use UIMenu::*;
+use pipe::{PipeCmd, StatusMsg, MemberStatus};
+
+struct AppState {
+    username:   String,
+    password:   String,
+    model_dir:  std::path::PathBuf,
+    net:        Option<NetThread>,
+    sim:        Option<SimThread>,
+    sim_io:     Option<SimIoBuf>,
+    sim_error:  Option<String>,
+    extracting: bool,
+}
+
+fn exe_dir() -> std::path::PathBuf {
+    std::env::current_exe()
+        .expect("실행 파일 경로 획득 실패")
+        .parent()
+        .expect("실행 파일 부모 디렉토리 획득 실패")
+        .to_path_buf()
+}
 
 fn main() {
-    printsh!("사용자 이름: ");
-    let name = input::<String>();
+    let (cmd_tx, cmd_rx) = mpsc::channel::<PipeCmd>();
+    let (status_tx, status_rx) = tokio::sync::watch::channel(StatusMsg::default());
 
-    printsh!("그룹 이름: ");
-    let net_id = input::<String>();
-
-    let password = format!("{:06}", rand::Rng::gen_range(&mut rand::thread_rng(), 0..1_000_000));
-    println!("그룹 비밀번호: {password}");
-
-    let net_setting = NetSetting {
-        net_id,
-        password,
-        name,
-        peer_type: p2p_core::PeerType::MidServer,
-    };
+    pipe::start(cmd_tx, status_rx);
 
     let (userin_r, userin_w, userin_swap) = TripleBuffer::new([
         Vec::<UserIn>::with_capacity(32),
@@ -64,190 +49,212 @@ fn main() {
         SimOut::default(),
     ]);
 
-    let mut sim_io = Some(SimIoBuf {
-        userin_r,
-        userin_swap,
-        simout_w,
-        simout_swap,
-    });
-    
-    // 서버 스레드 실행
-    let net = NetThread::new(&net_setting, userin_w, simout_r);
+    let mut state = AppState {
+        username:  String::new(),
+        password:  String::new(),
+        model_dir: std::path::PathBuf::new(),
+        net:       None,
+        sim:       None,
+        sim_io:    Some(SimIoBuf { userin_r, userin_swap, simout_w, simout_swap }),
+        sim_error:  None,
+        extracting: false,
+    };
 
-    let mut sim: Option<SimThread> = None;
+    let shared_status: Arc<Mutex<StatusMsg>> = Arc::new(Mutex::new(StatusMsg::default()));
 
-    // 사용자 입력 루프
+    let net_userin_w  = userin_w;
+    let net_simout_r  = simout_r;
+    let mut net_userin_w_opt  = Some(net_userin_w);
+    let mut net_simout_r_opt  = Some(net_simout_r);
+
+    let mut last_status = StatusMsg::default();
+
+    let push_status = {
+        let shared = shared_status.clone();
+        move |state: &AppState, last: &mut StatusMsg, tx: &tokio::sync::watch::Sender<StatusMsg>| {
+            let s = build_status(state);
+            if s != *last {
+                *last = s.clone();
+                *shared.lock().unwrap() = s.clone();
+                let _ = tx.send(s);
+            }
+        }
+    };
+
     loop {
-        println!("1. 시뮬레이션 시작  2. 시뮬레이션 종료  3. 시뮬레이션 입장  4. 그룹 정보  5. 그룹원 모델 불러오기  0. 종료");
-        printsh!("> ");
-        match input::<usize>().into() {
-            StartSimulation => {
-                if let Some(io) = sim_io.take() {
-                    setup_python();
-                    printsh!("시뮬레이션 데이터가 있는 폴더: ");
-                    let sim_folder = match std::path::absolute(input::<std::path::PathBuf>()) {
-                        Ok(p) => p,
-                        Err(e) => { println!("폴더 경로 오류: {e}"); continue; }
-                    };
-                    println!("시뮬레이션을 시작합니다. ({})", sim_folder.display());
-                    match SimThread::new(sim_folder.clone(), io) {
-                        Ok(s) => {
-                            sim = Some(s);
-                            if let Err(e) = net.notice_sim_online(sim_folder) {
-                                println!("시뮬레이션 온라인 알림 실패: {e}");
-                            }
-                        }
-                        Err((e, io)) => {
-                            println!("시뮬레이션 시작 실패: {e}");
-                            sim_io = Some(io);
-                        }
-                    }
-                    println!("시뮬레이션이 시작되었습니다.");
-                } else {
-                    println!("이미 시뮬레이션이 실행 중입니다.");
-                }
-            }
-            StopSimulation => {
-                if let Some(s) = sim.take() {
-                    sim_io = Some(s.stop());
-                    if let Err(e) = net.notice_sim_offline() {
-                        println!("시뮬레이션 오프라인 알림 실패: {e}");
-                    }
-                }
-                else {
-                    println!("실행 중인 시뮬레이션이 없습니다.");
-                }
-                println!("시뮬레이션이 종료되었습니다.");
-            }
-            EnterSimulation => {
-                show_group_info(&net_setting, &net.peer_list()); // 나중에 현재 시뮬 실행중인 사용자만 보일것.
-                printsh!("어떤 그룹원의 시뮬레이션에 참가하시겠습니까?: ");
-                let name = input::<String>();
-                if let Some(addr) = net.sim_info(&name) {
-                    show_qr(addr.id.as_bytes().to_vec());
-                } else {
-                    println!("그룹원이 존재하지 않거나 시뮬레이션이 실행 중이지 않습니다");
+        let cmd = cmd_rx.recv_timeout(Duration::from_millis(500));
+        if let Err(mpsc::RecvTimeoutError::Disconnected) = cmd { break; }
+        if let Err(mpsc::RecvTimeoutError::Timeout) = cmd {
+            push_status(&state, &mut last_status, &status_tx);
+            continue;
+        }
+        eprintln!("[cmd] {:?}", cmd);
+        match cmd {
+            Ok(PipeCmd::Init { username, group, password, mode }) => {
+                if net_userin_w_opt.is_none() {
+                    eprintln!("[init] 이미 초기화됨, 무시");
+                    push_status(&state, &mut last_status, &status_tx);
                     continue;
                 }
-            }
-            ShowGroupInfo => {
-                show_group_info(&net_setting, &net.peer_list());
-            }
-            ImportRemoteModel => {
-                show_group_info(&net_setting, &net.peer_list());
-
-                printsh!("어떤 그룹원의 모델을 복사해오겠습니까?: ");
-                let target_name = input::<String>();
-                let target_name = target_name.trim().to_string();
-
-                if target_name == net_setting.name {
-                    println!("자기 자신의 모델은 원격 모델 불러오기 대상이 아닙니다.");
-                    println!("다른 그룹원의 이름을 입력해주세요.");
-                    continue;
-                }
-
-                let import_root = std::path::PathBuf::from("imported_models");
-
-                let imported_folder = match net.import_remote_model(&target_name, import_root) {
-                    Ok(path) => {
-                        println!("원격 모델 불러오기에 성공했습니다. ({})", path.display());
-                        path
-                    }
-                    Err(e) => {
-                        println!("원격 모델 불러오기에 실패했습니다: {e}");
-                        continue;
-                    }
+                let pw = if mode == "create" {
+                    format!("{:06}", rand::Rng::gen_range(&mut rand::thread_rng(), 0..1_000_000))
+                } else {
+                    password
                 };
 
-                // 기존 시뮬레이션이 실행 중이면 먼저 종료
-                if let Some(s) = sim.take() {
-                    sim_io = Some(s.stop());
+                let net_setting = NetSetting {
+                    net_id:    group.clone(),
+                    password:  pw.clone(),
+                    name:      username.clone(),
+                    peer_type: p2p_core::PeerType::MidServer,
+                };
 
-                    if let Err(e) = net.notice_sim_offline() {
-                        println!("시뮬레이션 오프라인 알림 실패: {e}");
-                    }
+                #[cfg(debug_assertions)]
+                let model_dir = exe_dir()
+                    .parent().expect("target/debug 상위 없음")
+                    .parent().expect("target 상위 없음")
+                    .parent().expect("server 상위 없음")
+                    .join("models").join(&username);
+                #[cfg(not(debug_assertions))]
+                let model_dir = exe_dir().join("models").join(&username);
+                std::fs::create_dir_all(&model_dir).ok();
+                eprintln!("[init] user={username} group={group} mode={mode} model_dir={}", model_dir.display());
 
-                    println!("기존 시뮬레이션을 종료했습니다.");
+                let net = NetThread::new(
+                    &net_setting,
+                    net_userin_w_opt.take().expect("userin_w 이미 소비됨"),
+                    net_simout_r_opt.take().expect("simout_r 이미 소비됨"),
+                );
+                eprintln!("[init] NetThread 생성 완료");
+
+                #[cfg(not(debug_assertions))]
+                if !exe_dir().join("python_env").exists() {
+                    eprintln!("[init] python_env 없음 → 압축 해제 시작");
+                    state.extracting = true;
+                    push_status(&state, &mut last_status, &status_tx);
                 }
 
-                // 불러온 모델 폴더로 시뮬레이션 재시작
-                if let Some(io) = sim_io.take() {
-                    setup_python();
+                setup_python();
+                eprintln!("[init] setup_python 완료");
 
-                    println!("불러온 모델로 시뮬레이션을 시작합니다. ({})", imported_folder.display());
+                state.extracting = false;
+                state.username  = username;
+                state.password  = pw;
+                state.model_dir = model_dir;
+                state.net       = Some(net);
+                push_status(&state, &mut last_status, &status_tx);
+            }
 
-                    match SimThread::new(imported_folder.clone(), io) {
-                        Ok(s) => {
-                            sim = Some(s);
-
-                            if let Err(e) = net.notice_sim_online(imported_folder) {
-                                println!("시뮬레이션 온라인 알림 실패: {e}");
-                            }
-
-                            println!("시뮬레이션이 시작되었습니다.");
-                        }
-                        Err((e, io)) => {
-                            println!("시뮬레이션 시작 실패: {e}");
-                            sim_io = Some(io);
-                        }
+            Ok(PipeCmd::Pause) => {
+                if let Some(s) = state.sim.take() {
+                    eprintln!("[pause] 시뮬 정지 시작");
+                    push_status(&state, &mut last_status, &status_tx);
+                    let io = s.stop();
+                    state.sim_io = Some(io);
+                    eprintln!("[pause] 시뮬 정지 완료");
+                    if let Some(net) = state.net.as_ref() {
+                        let _ = net.notice_sim_offline();
                     }
                 } else {
-                    println!("시뮬레이션 IO 버퍼를 사용할 수 없습니다.");
+                    eprintln!("[pause] 실행 중인 시뮬 없음");
+                    push_status(&state, &mut last_status, &status_tx);
                 }
             }
-            Exit => {
-                break;
+
+            Ok(PipeCmd::Resume) => {
+                push_status(&state, &mut last_status, &status_tx);
+                if state.sim.is_none() {
+                    let has_io  = state.sim_io.is_some();
+                    let has_net = state.net.is_some();
+                    eprintln!("[resume] 시뮬 시작 시도 (has_io={has_io} has_net={has_net})");
+                    if let (Some(io), Some(net)) = (state.sim_io.take(), state.net.as_ref()) {
+                        eprintln!("[resume] SimThread::new 호출 중...");
+                        match SimThread::new(state.model_dir.clone(), io, status_tx.clone(), shared_status.clone()) {
+                            Ok(s) => {
+                                eprintln!("[resume] SimThread 생성 성공");
+                                state.sim = Some(s);
+                                push_status(&state, &mut last_status, &status_tx);
+                                let _ = net.notice_sim_online(state.model_dir.clone());
+                            }
+                            Err((e, io)) => {
+                                eprintln!("[resume] SimThread 생성 실패: {e}");
+                                state.sim_io = Some(io);
+                                state.sim_error = Some(e);
+                                push_status(&state, &mut last_status, &status_tx);
+                                state.sim_error = None;
+                            }
+                        }
+                    } else {
+                        eprintln!("[resume] io 또는 net 없어서 시작 불가");
+                        push_status(&state, &mut last_status, &status_tx);
+                    }
+                } else {
+                    eprintln!("[resume] 이미 시뮬 실행 중");
+                    push_status(&state, &mut last_status, &status_tx);
+                }
             }
-            WrongInput => {
-                // 보이자마자 리프레시될텐데, 일단 그냥 둬.
-                println!("잘못된 입력입니다.");
+
+            Ok(PipeCmd::QrShow) => {
+                if let Some(net) = state.net.as_ref() {
+                    if state.sim.is_some() {
+                        show_qr(net.my_node_id());
+                    }
+                }
             }
+
+            Ok(PipeCmd::QrHide) => {}
+
+            _ => {}
         }
     }
 }
 
+fn build_status(state: &AppState) -> StatusMsg {
+    let sim_running = state.sim.is_some();
+    let reloading = state.sim.as_ref()
+        .map(|s| s.reloading.load(Ordering::Relaxed))
+        .unwrap_or(false);
+    let sim_error = state.sim_error.clone();
 
-/*
-    Python::with_gil(|py| {
-        let simulator = py.import("simulator").expect("simulator 패키지를 찾을 수 없음");
-        let result: String = simulator
-            .call_method0("hello")
-            .expect("hello() 호출 실패")
-            .extract()
-            .expect("반환값 추출 실패");
-        println!("{}", result);
-    });
-*/
+    let mut members: Vec<MemberStatus> = vec![MemberStatus {
+        name:   state.username.clone(),
+        is_me:  true,
+        server: state.net.is_some(),
+        client: false,
+        sim:    sim_running,
+    }];
 
+    if let Some(net) = state.net.as_ref() {
+        for peer in net.peer_list() {
+            let is_ar = matches!(peer.peer_type, p2p_core::PeerType::ArClient { .. });
+            if let Some(existing) = members.iter_mut().find(|m| m.name == peer.name) {
+                if is_ar { existing.client = true; }
+                else {
+                    existing.server = true;
+                    if matches!(peer.peer_type, p2p_core::PeerType::SimServer) {
+                        existing.sim = true;
+                    }
+                }
+                continue;
+            }
+            members.push(MemberStatus {
+                name:   peer.name.clone(),
+                is_me:  false,
+                server: !is_ar,
+                client: is_ar,
+                sim:    !is_ar && matches!(peer.peer_type, p2p_core::PeerType::SimServer),
+            });
+        }
+    }
 
-fn make_qr(data: &str) -> anyhow::Result<qrcode::QrCode> {
-    Ok(qrcode::QrCode::with_error_correction_level(data.as_bytes(), qrcode::EcLevel::M)?)
-}
-
-pub(crate) fn qr_path() -> std::path::PathBuf {
-    std::env::current_exe()
-        .expect("실행 파일 경로 획득 실패")
-        .parent()
-        .expect("실행 파일 부모 디렉토리 획득 실패")
-        .join("local_sim_qr.txt")
-}
-
-pub(crate) fn save_local_sim_qr_txt(addr: &p2p_core::NodeAddr) {
-    // 32 raw bytes → QR Version 3 (29×29), 클라이언트에서 RawBytes로 읽어 hex 복원
-    let code = match qrcode::QrCode::with_error_correction_level(addr.id.as_bytes(), qrcode::EcLevel::M) {
-        Ok(c) => c,
-        Err(e) => { eprintln!("[save_local_sim_qr_txt] QR 생성 실패: {e}"); return; }
-    };
-
-    let width = code.width();
-    let content = code.to_colors()
-        .chunks(width)
-        .map(|row| row.iter().map(|c| if *c == qrcode::Color::Dark { '1' } else { '0' }).collect::<String>())
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    if let Err(e) = std::fs::write(qr_path(), content) {
-        eprintln!("[save_local_sim_qr_txt] 저장 실패: {e}");
+    StatusMsg {
+        sim_running,
+        paused: false,
+        reloading,
+        extracting: state.extracting,
+        password: state.password.clone(),
+        members,
+        sim_error,
     }
 }
 
@@ -277,18 +284,14 @@ fn show_qr(data: Vec<u8>) {
     fn get_system_dpi() -> f32 { 96.0 }
 
     fn cm_to_pixels(cm: f32, dpi: f32) -> u32 {
-        let inches = cm / 2.54;
-        (inches * dpi) as u32
+        ((cm / 2.54) * dpi) as u32
     }
 
     std::thread::spawn(move || {
         let dpi = get_system_dpi();
         let target_size_px = cm_to_pixels(QR_SIZE_CM, dpi);
 
-        let code = match qrcode::QrCode::with_error_correction_level(&data, qrcode::EcLevel::M) {
-            Ok(c) => c,
-            Err(e) => { eprintln!("[show_qr] QR 생성 실패: {e}"); return; }
-        };
+        let Ok(code) = qrcode::QrCode::with_error_correction_level(&data, qrcode::EcLevel::M) else { return };
         let qr_modules = code.render::<char>()
             .quiet_zone(false)
             .module_dimensions(1, 1)
@@ -296,12 +299,9 @@ fn show_qr(data: Vec<u8>) {
 
         let qr_lines: Vec<&str> = qr_modules.lines().collect();
         let qr_module_count = qr_lines.first().map(|l| l.chars().count()).unwrap_or(0);
-
-        let module_size = (target_size_px as f32 / qr_module_count as f32).ceil() as usize;
-        let module_size = module_size.max(1);
-
-        let qr_size = module_size * qr_module_count;
-        let margin = module_size * 2;
+        let module_size = ((target_size_px as f32 / qr_module_count as f32).ceil() as usize).max(1);
+        let qr_size    = module_size * qr_module_count;
+        let margin     = module_size * 2;
         let window_size = qr_size + margin * 2;
 
         let mut buffer: Vec<u32> = vec![0xFFFFFFFF; window_size * window_size];
@@ -321,56 +321,33 @@ fn show_qr(data: Vec<u8>) {
         }
 
         let title = format!("CADverse QR ({:.1}cm)", QR_SIZE_CM);
-        let mut window = match minifb::Window::new(
-            &title,
-            window_size, window_size,
-            minifb::WindowOptions {
-                scale: minifb::Scale::X1,
-                scale_mode: minifb::ScaleMode::Center,
-                resize: false,
-                ..minifb::WindowOptions::default()
-            },
-        ) {
-            Ok(w) => w,
-            Err(e) => { eprintln!("QR 창 생성 실패: {e}"); return; }
-        };
+        let Ok(mut window) = minifb::Window::new(
+            &title, window_size, window_size,
+            minifb::WindowOptions { scale: minifb::Scale::X1, resize: false, ..Default::default() },
+        ) else { return };
         window.set_target_fps(30);
         while window.is_open() && !window.is_key_down(minifb::Key::Escape) {
-            window.update_with_buffer(&buffer, window_size, window_size).unwrap_or_else(|e| {
-                eprintln!("QR 버퍼 업데이트 오류: {e}");
-            });
+            window.update_with_buffer(&buffer, window_size, window_size).unwrap_or(());
         }
     });
 }
 
+pub(crate) fn qr_path() -> std::path::PathBuf {
+    exe_dir().join("local_sim_qr.txt")
+}
 
-fn show_group_info(setting: &NetSetting, peers: &[p2p_core::PeerInfo]) {
-    println!("그룹명: {}  사용자명: {}  비밀번호: {}", setting.net_id, setting.name, setting.password);
-
-    let group_peers: Vec<_> = peers.iter()
-        .filter(|p| !matches!(p.peer_type, p2p_core::PeerType::ArClient { .. }))
-        .collect();
-
-    println!("=== 그룹원 목록 ({}) ===", group_peers.len());
-    for p in group_peers {
-        let sim = if matches!(p.peer_type, p2p_core::PeerType::SimServer) { " [시뮬 실행중]" } else { "" };
-        println!("  {}{}", p.name, sim);
-    }
-
-    #[cfg(debug_assertions)]
-    {
-        let clients: Vec<_> = peers.iter()
-            .filter(|p| matches!(p.peer_type, p2p_core::PeerType::ArClient { .. }))
-            .collect();
-        if !clients.is_empty() {
-            println!("=== [DEBUG] AR 클라이언트 ({}) ===", clients.len());
-            for p in clients {
-                if let p2p_core::PeerType::ArClient { udp_port } = p.peer_type {
-                    println!("  {} [port={}]", p.name, udp_port);
-                }
-            }
-        }
-    }
+pub(crate) fn save_local_sim_qr_txt(addr: &p2p_core::NodeAddr) {
+    let code = match qrcode::QrCode::with_error_correction_level(addr.id.as_bytes(), qrcode::EcLevel::M) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("[save_local_sim_qr_txt] QR 생성 실패: {e}"); return; }
+    };
+    let width = code.width();
+    let content = code.to_colors()
+        .chunks(width)
+        .map(|row| row.iter().map(|c| if *c == qrcode::Color::Dark { '1' } else { '0' }).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let _ = std::fs::write(qr_path(), content);
 }
 
 pub fn setup_python() {
@@ -382,19 +359,15 @@ pub fn setup_python() {
         unsafe {
             std::env::set_var("PYTHONHOME", &conda_env);
             std::env::set_var("PYTHONPATH", format!("{}/Lib/site-packages", conda_env));
+            std::env::set_var("CONDA_PREFIX", &conda_env);
         }
     }
 
     #[cfg(not(debug_assertions))]
     {
-        let exe_dir = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_path_buf();
-        let python_env = exe_dir.join("python_env");
+        let python_env = exe_dir().join("python_env");
         if !python_env.exists() {
-            let bundle = exe_dir.join("python_env.tar.gz");
+            let bundle = exe_dir().join("python_env.tar.gz");
             assert!(bundle.exists(), "python_env.tar.gz not found next to executable");
             std::fs::create_dir_all(&python_env).unwrap();
             let status = std::process::Command::new("tar")

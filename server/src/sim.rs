@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex, atomic::{AtomicU8, Ordering}};
+use std::sync::{Arc, Condvar, Mutex, atomic::{AtomicBool, AtomicU8, Ordering}};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use crate::utils::{TripleBufReader, TripleBufWriter, TripleBufSwapper};
+use crate::pipe::StatusMsg;
 
 // ── SimIoBuf ──────────────────────────────────────────────────────────────────
 
@@ -151,6 +152,9 @@ pub struct Simulator {
 }
 
 fn build_py_sim(py: Python, model: &SimModel, dt: f64) -> PyResult<Py<PyAny>> {
+    // stdout을 stderr로 리다이렉트해 stdout 파이프 프로토콜 오염 방지
+    py.run_bound("import sys; sys.stdout = sys.stderr", None, None)?;
+
     // Python 3.8+: PATH 대신 add_dll_directory로 conda 환경의 DLL 경로를 명시
     #[cfg(windows)]
     py.run_bound(
@@ -460,31 +464,53 @@ pub struct SimThread {
     _watchdog: crate::watchdog::Watchdog<(SimModel, SimOut)>,
     flag: Arc<AtomicU8>,
     cond: Arc<(Mutex<()>, Condvar)>,
+    pub reloading: Arc<AtomicBool>,
 }
 
 impl SimThread {
-    pub fn new(folder: PathBuf, mut sim_io_buf: SimIoBuf) -> Result<SimThread, (String, SimIoBuf)> {
+    pub fn new(
+        folder: PathBuf,
+        mut sim_io_buf: SimIoBuf,
+        status_tx: tokio::sync::watch::Sender<StatusMsg>,
+        shared_status: Arc<Mutex<StatusMsg>>,
+    ) -> Result<SimThread, (String, SimIoBuf)> {
+        eprintln!("[sim::new] 모델 로드 시작: {}", folder.display());
         let (model, init) = match load_model_from_folder(&folder) {
-            Ok(v) => v,
-            Err(e) => return Err((e, sim_io_buf)),
+            Ok(v) => { eprintln!("[sim::new] 모델 로드 성공"); v }
+            Err(e) => { eprintln!("[sim::new] 모델 로드 실패: {e}"); return Err((e, sim_io_buf)); }
         };
         sim_io_buf.clear_and_init(init);
 
         let flag = Arc::new(AtomicU8::new(FLAG_RUN));
         let cond = Arc::new((Mutex::new(()), Condvar::new()));
+        let reloading = Arc::new(AtomicBool::new(false));
+        let data_ready = Arc::new(AtomicBool::new(false));
 
         let watchdog = {
             let flag = flag.clone();
             let cond = cond.clone();
+            let wd_tx = status_tx.clone();
+            let wd_shared = shared_status.clone();
+            let wd_data_ready = data_ready.clone();
             crate::watchdog::Watchdog::new(folder.clone(), move |new_folder, data| {
-                if !new_folder.join("metadata.json").exists() { return; }
+                eprintln!("[watchdog] 파일 변경 감지: {}", new_folder.display());
+                if !new_folder.join("metadata.json").exists() {
+                    eprintln!("[watchdog] metadata.json 없음, 무시");
+                    return;
+                }
                 match load_model_from_folder(&new_folder) {
                     Ok((m, init)) => {
+                        eprintln!("[watchdog] 모델 로드 성공 → 재로딩 요청");
+                        let mut s = wd_shared.lock().unwrap().clone();
+                        s.reloading = true;
+                        let _ = wd_tx.send(s);
                         *data.lock().expect("watchdog data mutex poisoned") = Some((m, init));
+                        wd_data_ready.store(true, Ordering::Release);
                         flag.store(FLAG_PAUSE, Ordering::Relaxed);
+                        let _guard = cond.0.lock().expect("cond mutex poisoned");
                         cond.1.notify_one();
                     }
-                    Err(e) => eprintln!("watchdog: 모델 로드 실패: {e}"),
+                    Err(e) => { eprintln!("[watchdog] 모델 로드 실패: {e}"); }
                 }
             }).expect("watchdog 생성 실패")
         };
@@ -493,14 +519,17 @@ impl SimThread {
             let flag = flag.clone();
             let cond = cond.clone();
             let reload_data = watchdog.data.clone();
+            let reloading = reloading.clone();
+            let sim_data_ready = data_ready.clone();
+            let th_tx = status_tx;
+            let th_shared = shared_status;
             move || {
-                let mut simulator = match Simulator::new(&model) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        eprintln!("시뮬레이터 생성 실패: {e}");
-                        return sim_io_buf;
-                    }
+                eprintln!("[sim::thread] Simulator::new 호출 중...");
+                let Ok(mut simulator) = Simulator::new(&model) else {
+                    eprintln!("[sim::thread] Simulator::new 실패 → 종료");
+                    return sim_io_buf
                 };
+                eprintln!("[sim::thread] 시뮬 루프 시작");
                 loop {
                     match flag.load(Ordering::Relaxed) {
                         FLAG_RUN => {
@@ -513,26 +542,54 @@ impl SimThread {
                                     sim_io_buf.simout_swap.swap_and_clear();
                                 }
                                 Err(e) => {
-                                    eprintln!("시뮬 step 실패: {e}");
+                                    eprintln!("[sim::thread] step 오류 → 종료: {e}");
                                     break;
                                 }
                             }
                         }
                         FLAG_PAUSE => {
-                            let (lock, cv) = &*cond;
-                            let guard = lock.lock().expect("cond mutex poisoned");
-                            let _guard = cv.wait(guard).expect("condvar wait 실패");
+                            {
+                                let (lock, cv) = &*cond;
+                                let mut guard = lock.lock().expect("cond mutex poisoned");
+                                eprintln!("[sim::thread] FLAG_PAUSE 진입, data_ready={}", sim_data_ready.load(Ordering::Relaxed));
+                                while flag.load(Ordering::Relaxed) == FLAG_PAUSE
+                                    && !sim_data_ready.load(Ordering::Acquire)
+                                {
+                                    eprintln!("[sim::thread] condvar 대기 중...");
+                                    guard = cv.wait(guard).expect("condvar wait 실패");
+                                    eprintln!("[sim::thread] condvar 깨어남 (flag={} data_ready={})", flag.load(Ordering::Relaxed), sim_data_ready.load(Ordering::Relaxed));
+                                }
+                            }
                             if let Some((m, init)) = reload_data.lock().expect("reload_data mutex poisoned").take() {
-                                if let Err(e) = simulator.reload(&m) {
-                                    eprintln!("시뮬레이터 재생성 실패: {e}");
+                                eprintln!("[sim::thread] 재로딩 시작");
+                                sim_data_ready.store(false, Ordering::Relaxed);
+                                reloading.store(true, Ordering::Relaxed);
+                                if simulator.reload(&m).is_err() {
+                                    eprintln!("[sim::thread] reload 실패 → 종료");
+                                    reloading.store(false, Ordering::Relaxed);
+                                    let mut s = th_shared.lock().unwrap().clone();
+                                    s.reloading = false;
+                                    let _ = th_tx.send(s);
                                     break;
                                 }
+                                eprintln!("[sim::thread] reload 완료 → FLAG_RUN");
                                 sim_io_buf.clear_and_init(init);
+                                reloading.store(false, Ordering::Relaxed);
+                                flag.store(FLAG_RUN, Ordering::Relaxed);
+                                let mut s = th_shared.lock().unwrap().clone();
+                                s.reloading = false;
+                                let _ = th_tx.send(s);
+                            } else {
+                                eprintln!("[sim::thread] FLAG_PAUSE 이탈 (데이터 없음, flag={})", flag.load(Ordering::Relaxed));
                             }
                         }
-                        _ => break,
+                        _ => {
+                            eprintln!("[sim::thread] FLAG_HALT → 루프 종료");
+                            break;
+                        }
                     }
                 }
+                eprintln!("[sim::thread] 스레드 종료");
                 sim_io_buf
             }
         });
@@ -542,12 +599,19 @@ impl SimThread {
             _watchdog: watchdog,
             flag,
             cond,
+            reloading,
         })
     }
 
     pub fn stop(self) -> SimIoBuf {
+        eprintln!("[sim::stop] FLAG_HALT 설정 후 join 대기");
         self.flag.store(FLAG_HALT, Ordering::Relaxed);
-        self.cond.1.notify_one();
-        self.thread_handle.join().expect("시뮬 스레드 join 실패")
+        {
+            let _guard = self.cond.0.lock().expect("cond mutex poisoned");
+            self.cond.1.notify_one();
+        }
+        let io = self.thread_handle.join().expect("시뮬 스레드 join 실패");
+        eprintln!("[sim::stop] join 완료");
+        io
     }
 }

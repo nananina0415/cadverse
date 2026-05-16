@@ -19,4 +19,4 @@ conda activate cadverse
 
 # [shell] Invoke cargo
 # env update and conda-pack are handled inside build.rs
-cargo build --manifest-path Cargo.toml $(if ($r) { "--release" })
+cargo build --manifest-path "$PSScriptRoot\Cargo.toml" $(if ($r) { "--release" })

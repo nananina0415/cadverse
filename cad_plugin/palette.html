@@ -179,6 +179,22 @@
       color: #fff;
     }
 
+    /* ── 에러 배너 ── */
+    .error-banner {
+      display: none;
+      padding: 8px 10px;
+      background: #5a1f1f;
+      border: 1px solid #8b3030;
+      border-radius: 4px;
+      color: #f88;
+      font-size: 12px;
+      margin-bottom: 10px;
+      word-break: break-all;
+    }
+    @media (prefers-color-scheme: light) {
+      .error-banner { background: #fde8e8; border-color: #f5a0a0; color: #c00; }
+    }
+
     /* ── 안내 문구 ── */
     .hint {
       font-size: 11px;
@@ -186,6 +202,9 @@
       text-align: center;
       margin-top: 10px;
     }
+
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+    #hint-connecting, .hint.loading { animation: pulse 1.4s ease-in-out infinite; }
   </style>
 </head>
 <body>
@@ -195,6 +214,9 @@
     <div class="dot-server-status" id="server-dot"></div>
     <h1>CADverse</h1>
   </div>
+
+  <!-- 에러 배너 -->
+  <div class="error-banner" id="error-banner"></div>
 
   <!-- ══ 초기 설정 섹션 (config 없을 때) ══ -->
   <div id="setup-section">
@@ -230,6 +252,7 @@
       <span class="key">비밀번호</span><span class="value" id="disp-pw">—</span>
       <span class="key">나</span>     <span class="value" id="disp-me">—</span>
     </div>
+    <p class="hint" id="hint-connecting" style="display:none">서버 초기화 중…</p>
 
     <hr>
 
@@ -257,16 +280,43 @@
   <script>
     // ── Fusion 360 → JS 메시지 수신 ────────────────────────────────────────────
     window.fusionJavaScriptHandler = {
-      handleData: function(action, data) {
-        const d = data ? JSON.parse(data) : {};
+      handle: function(action, data) {
+        let d;
+        try { d = data ? JSON.parse(data) : {}; }
+        catch(e) { d = (data && typeof data === 'object') ? data : {}; }
+        console.log('[py->js*] action=' + action);
+        if (action === 'config_loaded') onConfigLoaded(d);
         if (action === 'config_saved') onConfigSaved(d);
         if (action === 'status')       onStatus(d);
+        if (action === 'server_error') onServerError(d);
+        if (action === 'server_status' && d.error) onServerError({ message: d.error });
+        return 'success';
       }
     };
 
     // ── JS → Fusion 360 메시지 송신 ────────────────────────────────────────────
     function sendToFusion(action, data) {
-      if (window.adsk) window.adsk.fusionSendData(action, JSON.stringify(data));
+      if (window.adsk && window.adsk.fusionSendData) {
+        window.adsk.fusionSendData(action, JSON.stringify(data));
+      }
+    }
+
+    // adsk 브릿지 준비될 때까지 폴링 후 초기화
+    function waitForBridge(callback, interval) {
+      if (window.adsk && window.adsk.fusionSendData) {
+        callback();
+      } else {
+        setTimeout(() => waitForBridge(callback, interval), interval || 100);
+      }
+    }
+
+    // ── 서버 에러 표시 ─────────────────────────────────────────────────────────
+    function onServerError(d) {
+      _serverError = true;
+      const el = document.getElementById('error-banner');
+      el.textContent = '⚠ ' + d.message;
+      el.style.display = 'block';
+      document.getElementById('server-dot').classList.remove('connected');
     }
 
     // ── 모드 전환 ───────────────────────────────────────────────────────────────
@@ -285,36 +335,93 @@
       const password = _mode === 'join' ? document.getElementById('input-password').value.trim() : '';
       if (!username || !group) return;
       if (_mode === 'join' && !password) return;
+
+      const btn = document.querySelector('#setup-section .btn-primary');
+      btn.textContent = '저장 중…';
+      btn.disabled = true;
+
       sendToFusion('save_config', { username, group_name: group, group_password: password, mode: _mode });
+    }
+
+    function onConfigLoaded(cfg) {
+      document.getElementById('input-username').value = cfg.username    || '';
+      document.getElementById('input-group').value    = cfg.group_name  || '';
+      if (cfg.mode) setMode(cfg.mode);
     }
 
     function onConfigSaved(cfg) {
       document.getElementById('setup-section').style.display = 'none';
       document.getElementById('main-section').style.display  = 'block';
       document.getElementById('disp-group').textContent = cfg.group_name;
-      document.getElementById('disp-pw').textContent    = '●'.repeat(cfg.group_password.length);
+      document.getElementById('disp-pw').textContent    = cfg.group_password || '(생성 중…)';
       document.getElementById('disp-me').textContent    = cfg.username;
+      document.getElementById('error-banner').style.display = 'none';
+      document.getElementById('hint-connecting').style.display = 'block';
+    }
+
+    let _serverError     = false;
+    let _serverConnected = false;
+    let _hasPassword     = false;
+    let _simRunning      = false;
+    let _simStarting     = false;
+    let _simStopping     = false;
+    let _paused          = false;
+
+    // ── 안내 문구 업데이트 ─────────────────────────────────────────────────────
+    function updateHint(reloading, extracting) {
+      const el = document.getElementById('hint-idle');
+      if (extracting) {
+        el.className = 'hint loading';
+        el.textContent = 'Python 환경 압축 해제 중…';
+        el.style.display = 'block';
+      } else if (_simStarting) {
+        el.className = 'hint loading';
+        el.textContent = '시뮬레이션 시작 중…';
+        el.style.display = 'block';
+      } else if (reloading) {
+        el.className = 'hint loading';
+        el.textContent = '모델 재로딩 중…';
+        el.style.display = 'block';
+      } else if (!_simRunning) {
+        el.className = 'hint';
+        el.textContent = 'CAD 파일을 저장하면 시뮬레이션이 시작됩니다.';
+        el.style.display = 'block';
+      } else {
+        el.className = 'hint';
+        el.style.display = 'none';
+      }
     }
 
     // ── 서버 상태 수신 ──────────────────────────────────────────────────────────
-    let _paused = false;
-
     function onStatus(s) {
-      // 서버 연결 상태 dot
-      document.getElementById('server-dot').className =
-        'dot-server-status' + (s.sim_running ? ' connected' : '');
+      _serverConnected = true;
+      document.getElementById('hint-connecting').style.display = 'none';
+      document.getElementById('server-dot').classList.add('connected');
 
-      // 버튼 활성화
-      const simOn = s.sim_running;
-      document.getElementById('btn-pause').disabled = !simOn;
-      document.getElementById('btn-qr').disabled    = !simOn;
-      document.getElementById('hint-idle').style.display = simOn ? 'none' : 'block';
+      if (s.password) {
+        _hasPassword = true;
+        document.getElementById('disp-pw').textContent = s.password;
+      }
 
-      // 일시정지 버튼 라벨
-      _paused = s.paused;
-      document.getElementById('btn-pause').textContent = _paused ? '▶ 재개' : '⏸ 일시정지';
+      if (s.sim_error) {
+        _simStarting = false;
+        onServerError({ message: s.sim_error });
+      }
+      if (_simStarting && s.sim_running)  { _simStarting = false; }
+      if (_simStopping && !s.sim_running) { _simStopping = false; }
+      _simRunning = s.sim_running;
+      _paused     = s.paused;
 
-      // 그룹원 리스트 갱신
+      const btn = document.getElementById('btn-pause');
+      btn.disabled = !_serverConnected || !_hasPassword || _simStarting || _simStopping;
+      if (_simStarting)      { btn.textContent = '시작 중…'; }
+      else if (_simStopping) { btn.textContent = '중단 중…'; }
+      else                   { btn.textContent = _simRunning ? '⏸ 일시정지' : '▶ 시뮬 시작'; }
+
+      document.getElementById('btn-qr').disabled = !s.sim_running;
+
+      updateHint(s.reloading, s.extracting);
+
       const list = document.getElementById('member-list');
       list.innerHTML = '';
       (s.members || []).forEach(m => {
@@ -323,20 +430,34 @@
         row.innerHTML = `
           <span class="member-name${m.is_me ? ' me' : ''}">${m.name}${m.is_me ? ' (나)' : ''}</span>
           <div class="indicators">
-            <div class="ind ${m.server  ? 'orange' : ''}" title="서버"></div>
-            <div class="ind ${m.client  ? 'blue'   : ''}" title="클라이언트"></div>
-            <div class="ind ${m.sim     ? 'green'  : ''}" title="시뮬레이션"></div>
+            <div class="ind ${m.client ? 'blue'  : ''}" title="클라이언트"></div>
+            <div class="ind ${m.sim    ? 'green' : ''}" title="시뮬레이션"></div>
           </div>`;
         list.appendChild(row);
       });
     }
 
     // ── 버튼 핸들러 ────────────────────────────────────────────────────────────
-    function togglePause() { sendToFusion(_paused ? 'resume' : 'pause', {}); }
-    function showQr()      { sendToFusion('qr_show', {}); }
+    function togglePause() {
+      const btn = document.getElementById('btn-pause');
+      if (_simRunning) {
+        _simStopping = true;
+        btn.textContent = '중단 중…';
+        btn.disabled = true;
+        sendToFusion('pause', {});
+      } else {
+        _simStarting = true;
+        btn.textContent = '시작 중…';
+        btn.disabled = true;
+        updateHint(false);
+        console.log('[js*->py] resume');
+        sendToFusion('resume', {});
+      }
+    }
+    function showQr() { sendToFusion('qr_show', {}); }
 
-    // ── 시작 시 config 요청 ─────────────────────────────────────────────────────
-    window.addEventListener('load', () => sendToFusion('get_config', {}));
+    // ── 시작 시 adsk 준비 후 config 요청 ──────────────────────────────────────
+    window.addEventListener('load', () => waitForBridge(() => sendToFusion('get_config', {})));
   </script>
 </body>
 </html>

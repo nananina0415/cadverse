@@ -47,9 +47,7 @@ fn collect_model_files(base: &Path, dir: &Path, out: &mut Vec<String>) -> std::i
 fn build_model_manifest(folder: &Path) -> ModelManifest {
     let mut files = Vec::new();
 
-    if let Err(e) = collect_model_files(folder, folder, &mut files) {
-        eprintln!("[manifest] 파일 목록 생성 실패: {e}");
-    }
+    let _ = collect_model_files(folder, folder, &mut files);
 
     ModelManifest { files }
 }
@@ -170,8 +168,6 @@ impl NetThread {
 
         if let Some(my_info) = net.get_peers().into_iter().find(|p| p.name == setting.name) {
             crate::save_local_sim_qr_txt(&my_info.addr);
-        } else {
-            eprintln!("[NetThread] 자신의 주소를 찾을 수 없어 QR 생성 스킵");
         }
 
         NetThread { async_rt: rt, net, my_peer_type, ar_clients }
@@ -194,14 +190,8 @@ impl NetThread {
         self.async_rt.spawn(async move {
             loop {
                 let Some(conn) = net.accept_file_conn().await else { break };
-                println!("[file] connection accepted");
                 let folder = folder.clone();
-
-                tokio::spawn(async move {
-                    if let Err(e) = serve_file(conn, &folder).await {
-                        println!("[file] serve error: {e}");
-                    }
-                });
+                tokio::spawn(async move { let _ = serve_file(conn, &folder).await; });
             }
         });
 
@@ -217,6 +207,10 @@ impl NetThread {
         let mut t = self.my_peer_type.lock().expect("my_peer_type mutex poisoned");
         *t = PeerType::MidServer;
         Ok(())
+    }
+
+    pub fn my_node_id(&self) -> Vec<u8> {
+        self.net.my_addr().id.as_bytes().to_vec()
     }
 
     pub fn sim_info(&self, name: &str) -> Option<NodeAddr> {
@@ -240,7 +234,6 @@ impl NetThread {
         let net = self.net.clone();
 
         self.async_rt.block_on(async move {
-            println!("원격 모델 파일 목록을 요청합니다. 대상: {}", peer.name);
 
             let manifest_bytes = match net
                 .request_file(peer.addr.clone(), "/__cadverse_manifest.json")
@@ -259,8 +252,6 @@ impl NetThread {
                 anyhow::bail!("대상의 시뮬레이션이 종료된 상태입니다");
             }
 
-            println!("원격 모델 파일 {}개를 불러옵니다.", manifest.files.len());
-
             if tmp_dir.exists() {
                 fs::remove_dir_all(&tmp_dir)
                     .with_context(|| format!("임시 폴더 삭제 실패: {}", tmp_dir.display()))?;
@@ -270,10 +261,7 @@ impl NetThread {
                 .with_context(|| format!("임시 폴더 생성 실패: {}", tmp_dir.display()))?;
 
             for rel in manifest.files {
-                if !is_safe_relative_path(&rel) {
-                    eprintln!("[remote import] 안전하지 않은 경로 생략: {rel}");
-                    continue;
-                }
+                if !is_safe_relative_path(&rel) { continue; }
 
                 let request_path = format!("/{}", rel);
 
@@ -331,16 +319,13 @@ async fn serve_file(conn: p2p_core::RawConn, folder: &std::path::Path) -> anyhow
     } else {
         std::fs::read(&file_path).unwrap_or_default()
     };
-    println!("[FILE] {path} ({} bytes)", data.len());
     let mut send = conn.open_uni().await?;
     send.write_all(&data).await?;
     send.finish()?;
-    // 클라이언트가 데이터를 다 읽고 연결을 닫을 때까지 대기
-    // (conn을 즉시 드롭하면 CONNECTION_CLOSE가 먼저 도착해 클라이언트 read 실패)
+    // conn을 즉시 드롭하면 CONNECTION_CLOSE가 먼저 도착해 클라이언트 read 실패
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         conn.accept_uni(),
     ).await;
-    println!("[FILE] done: {path}");
     Ok(())
 }

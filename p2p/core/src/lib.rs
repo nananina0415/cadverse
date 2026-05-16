@@ -171,7 +171,6 @@ pub async fn join_p2p_net(form: JoinForm) -> Result<P2PNet> {
 
     match coord_id {
         None => {
-            println!("[join] becoming coordinator");
             publish_coordinator_id(&keypair, endpoint.id()).await?;
 
             let my_info = PeerInfo {
@@ -202,7 +201,6 @@ pub async fn join_p2p_net(form: JoinForm) -> Result<P2PNet> {
             })
         }
         Some(coord_id) => {
-            println!("[join] coordinator found: {coord_id}");
             let coord_addr: NodeAddr = coord_id.into();
             let conn = endpoint.connect(coord_addr, COORD_ALPN).await?;
 
@@ -244,7 +242,6 @@ pub async fn join_as_client(form: JoinForm) -> Result<P2PNet> {
     let coord_id = read_coordinator_id(&keypair).await
         .ok_or_else(|| anyhow::anyhow!("네트워크를 찾을 수 없습니다. 그룹명/비밀번호를 확인해주세요."))?;
 
-    println!("[join_as_client] coordinator found: {coord_id}");
     let coord_addr: NodeAddr = coord_id.into();
     let conn = endpoint.connect(coord_addr, COORD_ALPN).await?;
 
@@ -408,9 +405,7 @@ async fn broadcast_to_all_except(peers: &PeerMap, list: &[PeerInfo], except_id: 
             .collect()
     };
     for conn in conns {
-        if let Err(e) = send_to_peer(&conn, &ToPeer::Broadcast(list.to_vec())).await {
-            eprintln!("[coord] broadcast error: {e}");
-        }
+        let _ = send_to_peer(&conn, &ToPeer::Broadcast(list.to_vec())).await;
     }
 }
 
@@ -436,9 +431,7 @@ async fn register_peer_and_ack(
     };
 
     if conflict {
-        if let Err(e) = send_to_peer(conn, &ToPeer::NameConflict).await {
-            eprintln!("[coord] name conflict 전송 실패: {e}");
-        }
+        let _ = send_to_peer(conn, &ToPeer::NameConflict).await;
         return;
     }
 
@@ -451,9 +444,7 @@ async fn register_peer_and_ack(
         });
         map.values().map(|s| s.info.clone()).collect::<Vec<_>>()
     };
-    if let Err(e) = send_to_peer(conn, &ToPeer::Ack(list.clone())).await {
-        eprintln!("[coord] ack error: {e}");
-    }
+    let _ = send_to_peer(conn, &ToPeer::Ack(list.clone())).await;
     broadcast_to_all_except(peers, &list, Some(peer_id)).await;
 }
 
@@ -482,7 +473,7 @@ async fn handle_coord_conn(conn: iroh::endpoint::Connection, peers: PeerMap) {
         };
         let msg: ToCoord = match serde_json::from_slice(&data) {
             Ok(m) => m,
-            Err(e) => { eprintln!("[coord] parse error: {e}"); continue; }
+            Err(_) => continue,
         };
 
         match msg {
@@ -524,15 +515,15 @@ async fn accept_loop(
         tokio::spawn(async move {
             let mut accepting = match incoming.accept() {
                 Ok(a) => a,
-                Err(e) => { eprintln!("[accept] error: {e}"); return; }
+                Err(_) => return,
             };
             let alpn = match accepting.alpn().await {
                 Ok(a) => a,
-                Err(e) => { eprintln!("[accept] alpn error: {e}"); return; }
+                Err(_) => return,
             };
             let conn = match accepting.await {
                 Ok(c) => c,
-                Err(e) => { eprintln!("[accept] conn error: {e}"); return; }
+                Err(_) => return,
             };
 
             if alpn == COORD_ALPN {
@@ -588,7 +579,7 @@ async fn peer_recv_loop(conn: iroh::endpoint::Connection, peers: Arc<Mutex<Vec<P
         };
         let msg: ToPeer = match serde_json::from_slice(&data) {
             Ok(m) => m,
-            Err(e) => { eprintln!("[peer] parse error: {e}"); continue; }
+            Err(_) => continue,
         };
         let list = match msg {
             ToPeer::Ack(list) | ToPeer::Broadcast(list) => list,
@@ -601,10 +592,7 @@ async fn peer_recv_loop(conn: iroh::endpoint::Connection, peers: Arc<Mutex<Vec<P
 async fn peer_heartbeat_loop(conn: iroh::endpoint::Connection) {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(4)).await;
-        if let Err(e) = send_to_coord(&conn, &ToCoord::Heartbeat).await {
-            eprintln!("[peer] heartbeat error: {e}");
-            break;
-        }
+        if send_to_coord(&conn, &ToCoord::Heartbeat).await.is_err() { break; }
     }
 }
 
