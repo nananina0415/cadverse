@@ -38,7 +38,8 @@ namespace Cadverse
             Net = net;
             _imageManager = FindAnyObjectByType<ARTrackedImageManager>();
             var cameraManager = FindAnyObjectByType<ARCameraManager>();
-            Scanner = QRScanner.Create(cameraManager, OnQRChanged);
+            if (cameraManager != null)
+                Scanner = QRScanner.Create(cameraManager, OnQRChanged);
         }
 
         async void OnQRChanged(Addr addr)
