@@ -4,24 +4,20 @@ mod sim;
 mod watchdog;
 mod pipe;
 
-use std::sync::{Arc, Mutex, mpsc};
-use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, mpsc, atomic::Ordering};
 use std::time::Duration;
 
 use net::{NetSetting, NetThread};
 use utils::TripleBuffer;
-use sim::{UserIn, SimOut, SimThread, SimIoBuf};
+use sim::{UserIn, SimFrame, SimManager, SimIoBuf};
 use pipe::{PipeCmd, StatusMsg, MemberStatus};
 
 struct AppState {
-    username:   String,
-    password:   String,
-    model_dir:  std::path::PathBuf,
-    net:        Option<NetThread>,
-    sim:        Option<SimThread>,
-    sim_io:     Option<SimIoBuf>,
-    sim_error:  Option<String>,
-    extracting: bool,
+    username:    String,
+    password:    String,
+    net:         Option<NetThread>,
+    sim_manager: Option<SimManager>,
+    extracting:  bool,
 }
 
 fn exe_dir() -> std::path::PathBuf {
@@ -33,6 +29,9 @@ fn exe_dir() -> std::path::PathBuf {
 }
 
 fn main() {
+    setup_python();
+    pyo3::prepare_freethreaded_python();
+
     let (cmd_tx, cmd_rx) = mpsc::channel::<PipeCmd>();
     let (status_tx, status_rx) = tokio::sync::watch::channel(StatusMsg::default());
 
@@ -44,28 +43,27 @@ fn main() {
         Vec::<UserIn>::with_capacity(32),
     ]);
     let (simout_r, simout_w, simout_swap) = TripleBuffer::new([
-        SimOut::default(),
-        SimOut::default(),
-        SimOut::default(),
+        SimFrame::default(),
+        SimFrame::default(),
+        SimFrame::default(),
     ]);
 
+    let sim_io_buf = SimIoBuf { userin_r, userin_swap, simout_w, simout_swap };
+
     let mut state = AppState {
-        username:  String::new(),
-        password:  String::new(),
-        model_dir: std::path::PathBuf::new(),
-        net:       None,
-        sim:       None,
-        sim_io:    Some(SimIoBuf { userin_r, userin_swap, simout_w, simout_swap }),
-        sim_error:  None,
-        extracting: false,
+        username:    String::new(),
+        password:    String::new(),
+        net:         None,
+        sim_manager: Some(SimManager::new(sim_io_buf)),
+        extracting:  false,
     };
 
     let shared_status: Arc<Mutex<StatusMsg>> = Arc::new(Mutex::new(StatusMsg::default()));
 
-    let net_userin_w  = userin_w;
-    let net_simout_r  = simout_r;
-    let mut net_userin_w_opt  = Some(net_userin_w);
-    let mut net_simout_r_opt  = Some(net_simout_r);
+    let net_userin_w = userin_w;
+    let net_simout_r = simout_r;
+    let mut net_userin_w_opt = Some(net_userin_w);
+    let mut net_simout_r_opt = Some(net_simout_r);
 
     let mut last_status = StatusMsg::default();
 
@@ -108,17 +106,7 @@ fn main() {
                     name:      username.clone(),
                     peer_type: p2p_core::PeerType::MidServer,
                 };
-
-                #[cfg(debug_assertions)]
-                let model_dir = exe_dir()
-                    .parent().expect("target/debug 상위 없음")
-                    .parent().expect("target 상위 없음")
-                    .parent().expect("server 상위 없음")
-                    .join("models").join(&username);
-                #[cfg(not(debug_assertions))]
-                let model_dir = exe_dir().join("models").join(&username);
-                std::fs::create_dir_all(&model_dir).ok();
-                eprintln!("[init] user={username} group={group} mode={mode} model_dir={}", model_dir.display());
+                eprintln!("[init] user={username} group={group} mode={mode}");
 
                 let net = NetThread::new(
                     &net_setting,
@@ -127,76 +115,67 @@ fn main() {
                 );
                 eprintln!("[init] NetThread 생성 완료");
 
-                #[cfg(not(debug_assertions))]
-                if !exe_dir().join("python_env").exists() {
-                    eprintln!("[init] python_env 없음 → 압축 해제 시작");
-                    state.extracting = true;
+                state.username   = username;
+                state.password   = pw;
+                state.net        = Some(net);
+                push_status(&state, &mut last_status, &status_tx);
+            }
+
+            Ok(PipeCmd::Resume { model_path }) => {
+                eprintln!("[resume] model_path={model_path}");
+                if state.net.is_none() {
+                    eprintln!("[resume] net 없음, 무시");
                     push_status(&state, &mut last_status, &status_tx);
+                    continue;
                 }
+                if let Some(mgr) = state.sim_manager.as_ref() {
+                    push_status(&state, &mut last_status, &status_tx);
+                    let path = std::path::Path::new(&model_path);
+                    match mgr.start(path) {
+                        Ok(()) => {
+                            eprintln!("[resume] 시뮬 시작 완료");
+                            if let Some(net) = state.net.as_ref() {
+                                let _ = net.notice_sim_online(path.to_path_buf());
+                            }
+                        }
+                        Err(e) => eprintln!("[resume] 시뮬 시작 실패: {e}"),
+                    }
+                }
+                push_status(&state, &mut last_status, &status_tx);
+            }
 
-                setup_python();
-                eprintln!("[init] setup_python 완료");
-
-                state.extracting = false;
-                state.username  = username;
-                state.password  = pw;
-                state.model_dir = model_dir;
-                state.net       = Some(net);
+            Ok(PipeCmd::Reload { model_path }) => {
+                eprintln!("[reload] model_path={model_path}");
+                if let Some(mgr) = state.sim_manager.as_ref() {
+                    mgr.reloading.store(true, Ordering::Relaxed);
+                    push_status(&state, &mut last_status, &status_tx);
+                    let path = std::path::Path::new(&model_path);
+                    match mgr.start(path) {
+                        Ok(()) => eprintln!("[reload] 완료"),
+                        Err(e) => eprintln!("[reload] 실패: {e}"),
+                    }
+                    mgr.reloading.store(false, Ordering::Relaxed);
+                }
                 push_status(&state, &mut last_status, &status_tx);
             }
 
             Ok(PipeCmd::Pause) => {
-                if let Some(s) = state.sim.take() {
-                    eprintln!("[pause] 시뮬 정지 시작");
-                    push_status(&state, &mut last_status, &status_tx);
-                    let io = s.stop();
-                    state.sim_io = Some(io);
-                    eprintln!("[pause] 시뮬 정지 완료");
+                eprintln!("[pause] 시뮬 정지 요청");
+                if let Some(mgr) = state.sim_manager.as_ref() {
+                    mgr.stop();
                     if let Some(net) = state.net.as_ref() {
                         let _ = net.notice_sim_offline();
                     }
-                } else {
-                    eprintln!("[pause] 실행 중인 시뮬 없음");
-                    push_status(&state, &mut last_status, &status_tx);
                 }
-            }
-
-            Ok(PipeCmd::Resume) => {
                 push_status(&state, &mut last_status, &status_tx);
-                if state.sim.is_none() {
-                    let has_io  = state.sim_io.is_some();
-                    let has_net = state.net.is_some();
-                    eprintln!("[resume] 시뮬 시작 시도 (has_io={has_io} has_net={has_net})");
-                    if let (Some(io), Some(net)) = (state.sim_io.take(), state.net.as_ref()) {
-                        eprintln!("[resume] SimThread::new 호출 중...");
-                        match SimThread::new(state.model_dir.clone(), io, status_tx.clone(), shared_status.clone()) {
-                            Ok(s) => {
-                                eprintln!("[resume] SimThread 생성 성공");
-                                state.sim = Some(s);
-                                push_status(&state, &mut last_status, &status_tx);
-                                let _ = net.notice_sim_online(state.model_dir.clone());
-                            }
-                            Err((e, io)) => {
-                                eprintln!("[resume] SimThread 생성 실패: {e}");
-                                state.sim_io = Some(io);
-                                state.sim_error = Some(e);
-                                push_status(&state, &mut last_status, &status_tx);
-                                state.sim_error = None;
-                            }
-                        }
-                    } else {
-                        eprintln!("[resume] io 또는 net 없어서 시작 불가");
-                        push_status(&state, &mut last_status, &status_tx);
-                    }
-                } else {
-                    eprintln!("[resume] 이미 시뮬 실행 중");
-                    push_status(&state, &mut last_status, &status_tx);
-                }
             }
 
             Ok(PipeCmd::QrShow) => {
                 if let Some(net) = state.net.as_ref() {
-                    if state.sim.is_some() {
+                    let is_running = state.sim_manager.as_ref()
+                        .map(|m| m.is_running())
+                        .unwrap_or(false);
+                    if is_running {
                         show_qr(net.my_node_id());
                     }
                 }
@@ -210,11 +189,10 @@ fn main() {
 }
 
 fn build_status(state: &AppState) -> StatusMsg {
-    let sim_running = state.sim.is_some();
-    let reloading = state.sim.as_ref()
-        .map(|s| s.reloading.load(Ordering::Relaxed))
-        .unwrap_or(false);
-    let sim_error = state.sim_error.clone();
+    let (sim_running, reloading, sim_error) = match state.sim_manager.as_ref() {
+        Some(m) => (m.is_running(), m.is_reloading(), m.take_error()),
+        None    => (false, false, None),
+    };
 
     let mut members: Vec<MemberStatus> = vec![MemberStatus {
         name:   state.username.clone(),
@@ -300,8 +278,8 @@ fn show_qr(data: Vec<u8>) {
         let qr_lines: Vec<&str> = qr_modules.lines().collect();
         let qr_module_count = qr_lines.first().map(|l| l.chars().count()).unwrap_or(0);
         let module_size = ((target_size_px as f32 / qr_module_count as f32).ceil() as usize).max(1);
-        let qr_size    = module_size * qr_module_count;
-        let margin     = module_size * 2;
+        let qr_size     = module_size * qr_module_count;
+        let margin      = module_size * 2;
         let window_size = qr_size + margin * 2;
 
         let mut buffer: Vec<u32> = vec![0xFFFFFFFF; window_size * window_size];
@@ -356,10 +334,12 @@ pub fn setup_python() {
         let conda_base = std::env::var("CONDA_BASE")
             .expect("CONDA_BASE not set. Run setup-dev-env.ps1 first.");
         let conda_env = format!("{}/envs/cadverse", conda_base);
+        let current_path = std::env::var("PATH").unwrap_or_default();
         unsafe {
             std::env::set_var("PYTHONHOME", &conda_env);
             std::env::set_var("PYTHONPATH", format!("{}/Lib/site-packages", conda_env));
             std::env::set_var("CONDA_PREFIX", &conda_env);
+            std::env::set_var("PATH", format!("{}/Library/bin;{}", conda_env, current_path));
         }
     }
 

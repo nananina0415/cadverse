@@ -1,24 +1,23 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex, atomic::{AtomicBool, AtomicU8, Ordering}};
+use std::sync::{Arc, Condvar, Mutex, atomic::{AtomicBool, Ordering}};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use crate::utils::{TripleBufReader, TripleBufWriter, TripleBufSwapper};
-use crate::pipe::StatusMsg;
 
 // ── SimIoBuf ──────────────────────────────────────────────────────────────────
 
 pub struct SimIoBuf {
     pub userin_r:    TripleBufReader<Vec<UserIn>>,
     pub userin_swap: TripleBufSwapper<Vec<UserIn>>,
-    pub simout_w:    TripleBufWriter<SimOut>,
-    pub simout_swap: TripleBufSwapper<SimOut>,
+    pub simout_w:    TripleBufWriter<SimFrame>,
+    pub simout_swap: TripleBufSwapper<SimFrame>,
 }
 
 impl SimIoBuf {
     pub fn clear_and_init(&mut self, init: SimOut) {
         self.userin_swap.swap_and_clear();
-        *self.simout_w.write() = init;
+        *self.simout_w.write() = SimFrame::State(init);
         self.simout_swap.swap_and_clear();
     }
 }
@@ -78,6 +77,21 @@ pub struct SimOut {
 
 impl crate::utils::Clearable for SimOut {
     fn clear(&mut self) { self.objects.clear(); }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SimFrame {
+    State(SimOut),
+    Reload,
+}
+
+impl Default for SimFrame {
+    fn default() -> Self { SimFrame::State(SimOut::default()) }
+}
+
+impl crate::utils::Clearable for SimFrame {
+    fn clear(&mut self) { *self = SimFrame::default(); }
 }
 
 // ── SimModel (metadata_types.py::SceneMeta 미러) ──────────────────────────────
@@ -153,9 +167,10 @@ pub struct Simulator {
 
 fn build_py_sim(py: Python, model: &SimModel, dt: f64) -> PyResult<Py<PyAny>> {
     // stdout을 stderr로 리다이렉트해 stdout 파이프 프로토콜 오염 방지
+    eprintln!("[build_py_sim] 1: stdout redirect");
     py.run_bound("import sys; sys.stdout = sys.stderr", None, None)?;
 
-    // Python 3.8+: PATH 대신 add_dll_directory로 conda 환경의 DLL 경로를 명시
+    eprintln!("[build_py_sim] 2: add_dll_directory");
     #[cfg(windows)]
     py.run_bound(
         "import os; [os.add_dll_directory(d) for d in [\
@@ -165,9 +180,9 @@ fn build_py_sim(py: Python, model: &SimModel, dt: f64) -> PyResult<Py<PyAny>> {
         None, None,
     )?;
 
+    eprintln!("[build_py_sim] 3: json serialize");
     let mut value = serde_json::to_value(model).expect("SimModel 직렬화 실패");
 
-    // Python SceneMeta가 기대하는 top-level / body 필드 보정
     if let Some(obj) = value.as_object_mut() {
         obj.entry("sceneName".to_string())
             .or_insert(serde_json::json!("rust_loaded_scene"));
@@ -207,8 +222,10 @@ fn build_py_sim(py: Python, model: &SimModel, dt: f64) -> PyResult<Py<PyAny>> {
 
     let json = serde_json::to_string(&value).expect("SimModel 직렬화 실패");
 
+    eprintln!("[build_py_sim] 4: import simulator.SimInfo");
     let siminfo_mod = py.import("simulator.SimInfo")?;
 
+    eprintln!("[build_py_sim] 5: SimOptions");
     let opt_kwargs = PyDict::new(py);
     opt_kwargs.set_item("dt", dt)?;
     opt_kwargs.set_item("allow_obj_auto_approx", true)?;
@@ -221,6 +238,7 @@ fn build_py_sim(py: Python, model: &SimModel, dt: f64) -> PyResult<Py<PyAny>> {
         .getattr("SimOptions")?
         .call((), Some(&opt_kwargs))?;
 
+    eprintln!("[build_py_sim] 6: SimInfo.from_json_string");
     let kwargs = PyDict::new(py);
     kwargs.set_item("dt", dt)?;
     kwargs.set_item("options", options)?;
@@ -229,11 +247,15 @@ fn build_py_sim(py: Python, model: &SimModel, dt: f64) -> PyResult<Py<PyAny>> {
         .getattr("SimInfo")?
         .call_method("from_json_string", (json,), Some(&kwargs))?;
 
-    let sim = py
-        .import("simulator.main")?
+    eprintln!("[build_py_sim] 7: import simulator.main");
+    let sim_mod = py.import("simulator.main")?;
+
+    eprintln!("[build_py_sim] 8: Simulator.create");
+    let sim = sim_mod
         .getattr("Simulator")?
         .call_method1("create", (info,))?;
 
+    eprintln!("[build_py_sim] 9: 완료");
     Ok(sim.unbind())
 }
 
@@ -453,165 +475,151 @@ fn load_model_from_folder(folder: &PathBuf) -> Result<(SimModel, SimOut), String
     Ok((SimModel { bodies, joints }, SimOut::default()))
 }
 
-// ── SimThread ─────────────────────────────────────────────────────────────────
+// ── SimLoop ───────────────────────────────────────────────────────────────────
 
-const FLAG_RUN:   u8 = 0;
-const FLAG_PAUSE: u8 = 1;
-const FLAG_HALT:  u8 = 2;
-
-pub struct SimThread {
-    thread_handle: std::thread::JoinHandle<SimIoBuf>,
-    _watchdog: crate::watchdog::Watchdog<(SimModel, SimOut)>,
-    flag: Arc<AtomicU8>,
-    cond: Arc<(Mutex<()>, Condvar)>,
-    pub reloading: Arc<AtomicBool>,
+pub struct SimLoop {
+    next_sim:    Arc<Mutex<Option<(Simulator, SimOut)>>>,
+    run_flag:    Arc<AtomicBool>,
+    cond:        Arc<(Mutex<()>, Condvar)>,
+    sim_running: Arc<AtomicBool>,
+    _thread:     std::thread::JoinHandle<()>,
 }
 
-impl SimThread {
-    pub fn new(
-        folder: PathBuf,
-        mut sim_io_buf: SimIoBuf,
-        status_tx: tokio::sync::watch::Sender<StatusMsg>,
-        shared_status: Arc<Mutex<StatusMsg>>,
-    ) -> Result<SimThread, (String, SimIoBuf)> {
-        eprintln!("[sim::new] 모델 로드 시작: {}", folder.display());
-        let (model, init) = match load_model_from_folder(&folder) {
-            Ok(v) => { eprintln!("[sim::new] 모델 로드 성공"); v }
-            Err(e) => { eprintln!("[sim::new] 모델 로드 실패: {e}"); return Err((e, sim_io_buf)); }
-        };
-        sim_io_buf.clear_and_init(init);
+impl SimLoop {
+    pub fn new(mut sim_io_buf: SimIoBuf) -> Self {
+        let next_sim    = Arc::new(Mutex::new(None::<(Simulator, SimOut)>));
+        let run_flag    = Arc::new(AtomicBool::new(false));
+        let cond        = Arc::new((Mutex::new(()), Condvar::new()));
+        let sim_running = Arc::new(AtomicBool::new(false));
 
-        let flag = Arc::new(AtomicU8::new(FLAG_RUN));
-        let cond = Arc::new((Mutex::new(()), Condvar::new()));
-        let reloading = Arc::new(AtomicBool::new(false));
-        let data_ready = Arc::new(AtomicBool::new(false));
-
-        let watchdog = {
-            let flag = flag.clone();
-            let cond = cond.clone();
-            let wd_tx = status_tx.clone();
-            let wd_shared = shared_status.clone();
-            let wd_data_ready = data_ready.clone();
-            crate::watchdog::Watchdog::new(folder.clone(), move |new_folder, data| {
-                eprintln!("[watchdog] 파일 변경 감지: {}", new_folder.display());
-                if !new_folder.join("metadata.json").exists() {
-                    eprintln!("[watchdog] metadata.json 없음, 무시");
-                    return;
-                }
-                match load_model_from_folder(&new_folder) {
-                    Ok((m, init)) => {
-                        eprintln!("[watchdog] 모델 로드 성공 → 재로딩 요청");
-                        let mut s = wd_shared.lock().unwrap().clone();
-                        s.reloading = true;
-                        let _ = wd_tx.send(s);
-                        *data.lock().expect("watchdog data mutex poisoned") = Some((m, init));
-                        wd_data_ready.store(true, Ordering::Release);
-                        flag.store(FLAG_PAUSE, Ordering::Relaxed);
-                        let _guard = cond.0.lock().expect("cond mutex poisoned");
-                        cond.1.notify_one();
-                    }
-                    Err(e) => { eprintln!("[watchdog] 모델 로드 실패: {e}"); }
-                }
-            }).expect("watchdog 생성 실패")
-        };
-
-        let thread_handle = std::thread::spawn({
-            let flag = flag.clone();
-            let cond = cond.clone();
-            let reload_data = watchdog.data.clone();
-            let reloading = reloading.clone();
-            let sim_data_ready = data_ready.clone();
-            let th_tx = status_tx;
-            let th_shared = shared_status;
+        let thread = std::thread::spawn({
+            let next_sim    = next_sim.clone();
+            let run_flag    = run_flag.clone();
+            let cond        = cond.clone();
+            let sim_running = sim_running.clone();
             move || {
-                eprintln!("[sim::thread] Simulator::new 호출 중...");
-                let Ok(mut simulator) = Simulator::new(&model) else {
-                    eprintln!("[sim::thread] Simulator::new 실패 → 종료");
-                    return sim_io_buf
-                };
-                eprintln!("[sim::thread] 시뮬 루프 시작");
+                eprintln!("[sim_loop] 스레드 시작");
                 loop {
-                    match flag.load(Ordering::Relaxed) {
-                        FLAG_RUN => {
-                            sim_io_buf.userin_swap.swap_and_clear();
-                            let inputs = sim_io_buf.userin_r.read();
-                            match simulator.step(inputs) {
-                                Ok(objects) => {
-                                    let out = sim_io_buf.simout_w.write();
-                                    out.objects = objects;
-                                    sim_io_buf.simout_swap.swap_and_clear();
-                                }
-                                Err(e) => {
-                                    eprintln!("[sim::thread] step 오류 → 종료: {e}");
-                                    break;
-                                }
-                            }
-                        }
-                        FLAG_PAUSE => {
-                            {
-                                let (lock, cv) = &*cond;
-                                let mut guard = lock.lock().expect("cond mutex poisoned");
-                                eprintln!("[sim::thread] FLAG_PAUSE 진입, data_ready={}", sim_data_ready.load(Ordering::Relaxed));
-                                while flag.load(Ordering::Relaxed) == FLAG_PAUSE
-                                    && !sim_data_ready.load(Ordering::Acquire)
-                                {
-                                    eprintln!("[sim::thread] condvar 대기 중...");
-                                    guard = cv.wait(guard).expect("condvar wait 실패");
-                                    eprintln!("[sim::thread] condvar 깨어남 (flag={} data_ready={})", flag.load(Ordering::Relaxed), sim_data_ready.load(Ordering::Relaxed));
-                                }
-                            }
-                            if let Some((m, init)) = reload_data.lock().expect("reload_data mutex poisoned").take() {
-                                eprintln!("[sim::thread] 재로딩 시작");
-                                sim_data_ready.store(false, Ordering::Relaxed);
-                                reloading.store(true, Ordering::Relaxed);
-                                if simulator.reload(&m).is_err() {
-                                    eprintln!("[sim::thread] reload 실패 → 종료");
-                                    reloading.store(false, Ordering::Relaxed);
-                                    let mut s = th_shared.lock().unwrap().clone();
-                                    s.reloading = false;
-                                    let _ = th_tx.send(s);
-                                    break;
-                                }
-                                eprintln!("[sim::thread] reload 완료 → FLAG_RUN");
-                                sim_io_buf.clear_and_init(init);
-                                reloading.store(false, Ordering::Relaxed);
-                                flag.store(FLAG_RUN, Ordering::Relaxed);
-                                let mut s = th_shared.lock().unwrap().clone();
-                                s.reloading = false;
-                                let _ = th_tx.send(s);
-                            } else {
-                                eprintln!("[sim::thread] FLAG_PAUSE 이탈 (데이터 없음, flag={})", flag.load(Ordering::Relaxed));
-                            }
-                        }
-                        _ => {
-                            eprintln!("[sim::thread] FLAG_HALT → 루프 종료");
-                            break;
+                    // IDLE: run_flag=true 가 될 때까지 대기
+                    {
+                        let (lock, cv) = &*cond;
+                        let mut guard = lock.lock().expect("cond mutex poisoned");
+                        while !run_flag.load(Ordering::Acquire) {
+                            guard = cv.wait(guard).expect("condvar wait 실패");
                         }
                     }
+
+                    // run_flag 가 true 지만 next_sim 이 없으면 루프 다시
+                    let pair = next_sim.lock().expect("next_sim mutex poisoned").take();
+                    let (mut sim, init) = match pair {
+                        Some(v) => v,
+                        None    => { run_flag.store(false, Ordering::Relaxed); continue; }
+                    };
+
+                    sim_io_buf.clear_and_init(init);
+                    sim_running.store(true, Ordering::Relaxed);
+                    eprintln!("[sim_loop] 루프 시작");
+
+                    // RUNNING
+                    while run_flag.load(Ordering::Relaxed) {
+                        // 교체 요청 확인
+                        if let Some((new_sim, _)) = next_sim.lock().expect("next_sim mutex poisoned").take() {
+                            eprintln!("[sim_loop] 시뮬레이터 교체");
+                            sim_io_buf.userin_swap.swap_and_clear();
+                            *sim_io_buf.simout_w.write() = SimFrame::Reload;
+                            sim_io_buf.simout_swap.swap_and_clear();
+                            sim = new_sim;
+                        }
+
+                        sim_io_buf.userin_swap.swap_and_clear();
+                        let inputs = sim_io_buf.userin_r.read();
+                        match sim.step(inputs) {
+                            Ok(objects) => {
+                                *sim_io_buf.simout_w.write() = SimFrame::State(SimOut { timestamp: 0.0, objects });
+                                sim_io_buf.simout_swap.swap_and_clear();
+                            }
+                            Err(e) => {
+                                eprintln!("[sim_loop] step 오류 → 정지: {e}");
+                                run_flag.store(false, Ordering::Relaxed);
+                                break;
+                            }
+                        }
+                    }
+
+                    sim_running.store(false, Ordering::Relaxed);
+                    eprintln!("[sim_loop] 루프 정지");
+                    // sim 여기서 drop (Python 객체 해제)
                 }
-                eprintln!("[sim::thread] 스레드 종료");
-                sim_io_buf
             }
         });
 
-        Ok(SimThread {
-            thread_handle,
-            _watchdog: watchdog,
-            flag,
-            cond,
-            reloading,
-        })
+        Self { next_sim, run_flag, cond, sim_running, _thread: thread }
     }
 
-    pub fn stop(self) -> SimIoBuf {
-        eprintln!("[sim::stop] FLAG_HALT 설정 후 join 대기");
-        self.flag.store(FLAG_HALT, Ordering::Relaxed);
-        {
-            let _guard = self.cond.0.lock().expect("cond mutex poisoned");
-            self.cond.1.notify_one();
-        }
-        let io = self.thread_handle.join().expect("시뮬 스레드 join 실패");
-        eprintln!("[sim::stop] join 완료");
-        io
+    // 새 시뮬레이터 세팅 후 실행 (idle·running 모두 동작)
+    pub fn set_sim(&self, sim: Simulator, init: SimOut) {
+        *self.next_sim.lock().expect("next_sim mutex poisoned") = Some((sim, init));
+        self.run_flag.store(true, Ordering::Release);
+        let _g = self.cond.0.lock().expect("cond mutex poisoned");
+        self.cond.1.notify_one();
+    }
+
+    pub fn stop(&self) {
+        self.run_flag.store(false, Ordering::Relaxed);
+        // running 루프는 다음 step 후 run_flag 확인 → 자동 종료
+        // idle 상태면 이미 멈춰있으므로 notify 불필요
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.sim_running.load(Ordering::Relaxed)
     }
 }
+
+// ── SimManager ────────────────────────────────────────────────────────────────
+
+pub struct SimManager {
+    pub sim_loop:  SimLoop,
+    pub reloading: Arc<AtomicBool>,
+    pub sim_error: Arc<Mutex<Option<String>>>,
+}
+
+impl SimManager {
+    pub fn new(sim_io_buf: SimIoBuf) -> Self {
+        let sim_loop  = SimLoop::new(sim_io_buf);
+        let reloading = Arc::new(AtomicBool::new(false));
+        let sim_error = Arc::new(Mutex::new(None::<String>));
+        Self { sim_loop, reloading, sim_error }
+    }
+
+    // 시뮬 시작 (블로킹: Simulator::new 포함)
+    pub fn start(&self, model_path: &std::path::Path) -> Result<(), String> {
+        eprintln!("[sim_mgr] 모델 로드: {}", model_path.display());
+        let (model, init) = load_model_from_folder(&model_path.to_path_buf())?;
+        eprintln!("[sim_mgr] Simulator::new 호출 중...");
+        match Simulator::new(&model) {
+            Ok(sim) => {
+                eprintln!("[sim_mgr] Simulator 생성 완료 → SimLoop 실행");
+                self.sim_loop.set_sim(sim, init);
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("[sim_mgr] Simulator 생성 실패: {e}");
+                *self.sim_error.lock().expect("sim_error mutex poisoned") = Some(e.clone());
+                Err(e)
+            }
+        }
+    }
+
+    // 시뮬 정지 (논블로킹: 플래그만 세움)
+    pub fn stop(&self) {
+        eprintln!("[sim_mgr] stop");
+        self.sim_loop.stop();
+    }
+
+    pub fn is_running(&self) -> bool { self.sim_loop.is_running() }
+    pub fn is_reloading(&self) -> bool { self.reloading.load(Ordering::Relaxed) }
+    pub fn take_error(&self) -> Option<String> {
+        self.sim_error.lock().expect("sim_error mutex poisoned").take()
+    }
+}
+

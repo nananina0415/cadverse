@@ -20,8 +20,11 @@ class RustServer:
     def init(self, username: str, group: str, password: str, mode: str):
         self._send({'cmd': 'init', 'username': username, 'group': group, 'password': password, 'mode': mode})
 
-    def resume(self):
-        self._send({'cmd': 'resume'})
+    def resume(self, model_path: str):
+        self._send({'cmd': 'resume', 'model_path': model_path})
+
+    def reload(self, model_path: str):
+        self._send({'cmd': 'reload', 'model_path': model_path})
 
     def pause(self):
         self._send({'cmd': 'pause'})

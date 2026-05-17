@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum PipeCmd {
     Init { username: String, group: String, password: String, mode: String },
+    Resume { model_path: String },
+    Reload  { model_path: String },
     Pause,
-    Resume,
     QrShow,
     QrHide,
 }

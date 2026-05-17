@@ -84,6 +84,7 @@ class _DocumentSavedHandler(adsk.core.DocumentEventHandler):
             if not product or product.objectType != adsk.fusion.Design.classType():
                 return
             _extract.run(None, _model_dir)
+            _server.reload(_model_dir)
         except Exception as e:
             _plog(f'[DocSaved] extract 실패: {e}')
 
@@ -398,7 +399,7 @@ class _HTMLEventHandler(adsk.core.HTMLEventHandler):
                             _extract.run(None, _model_dir)
                     except Exception as e:
                         _plog(f'[HTML] resume extract 실패: {e}')
-                _server.resume()
+                _server.resume(_model_dir or '')
 
             elif action == 'pause':
                 _server.pause()

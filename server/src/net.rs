@@ -9,7 +9,7 @@ use p2p_core::{PeerInfo, PeerType, NodeAddr, JoinForm, NetId, Password};
 use serde::{Deserialize, Serialize};
 
 use crate::utils::{TripleBufWriter, TripleBufReader};
-use crate::sim::{UserIn, SimOut};
+use crate::sim::{UserIn, SimFrame};
 
 pub struct NetSetting {
     pub net_id: String,
@@ -94,7 +94,7 @@ impl Drop for NetThread {
 }
 
 impl NetThread {
-    pub fn new(setting: &NetSetting, userin_w: TripleBufWriter<Vec<UserIn>>, simout_r: TripleBufReader<SimOut>) -> NetThread {
+    pub fn new(setting: &NetSetting, userin_w: TripleBufWriter<Vec<UserIn>>, simout_r: TripleBufReader<SimFrame>) -> NetThread {
         let rt = tokio::runtime::Runtime::new()
             .expect("tokio 런타임 생성 실패");
 
@@ -142,12 +142,26 @@ impl NetThread {
             });
         }
 
-        // SimOut 버퍼 읽기 → 모든 AR 클라이언트로 브로드캐스트
+        // SimFrame 버퍼 읽기 → 모든 AR 클라이언트로 브로드캐스트
         {
             let ar_clients = ar_clients.clone();
             rt.spawn(async move {
+                let mut reload_sent = false;
                 loop {
-                    let data = serde_json::to_vec(simout_r.read()).expect("SimOut 직렬화 실패");
+                    let data = match simout_r.read() {
+                        SimFrame::State(out) => {
+                            reload_sent = false;
+                            serde_json::to_vec(out).expect("SimOut 직렬화 실패")
+                        }
+                        SimFrame::Reload => {
+                            if reload_sent {
+                                tokio::time::sleep(std::time::Duration::from_millis(16)).await;
+                                continue;
+                            }
+                            reload_sent = true;
+                            br#"{"type":"reload"}"#.to_vec()
+                        }
+                    };
                     let clients = ar_clients.lock().expect("ar_clients mutex poisoned").clone();
                     let mut dead = vec![];
                     for (i, conn) in clients.iter().enumerate() {

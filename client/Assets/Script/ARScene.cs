@@ -197,6 +197,26 @@ namespace Cadverse
             return tex;
         }
 
+        [System.Serializable] class _SimStateFrame { public _SimObject[] objects; }
+        [System.Serializable] class _SimObject    { public string name; public float[] position; public float[] rotation; }
+
+        // 서버 SimOut(State 프레임) 적용 — 파트 localPosition/localRotation 갱신
+        // position: Fusion(X,Y,Z) m → Unity localPosition(X,Z,Y)
+        // rotation: (w,x,y,z) Fusion → Unity Quaternion(-x,-z,-y,w)
+        // Y↔Z swap changes handedness (RH→LH), reversing rotation direction → negate xyz
+        public void ApplySimOut(string json)
+        {
+            var frame = JsonUtility.FromJson<_SimStateFrame>(json);
+            if (frame?.objects == null) return;
+            foreach (var obj in frame.objects)
+            {
+                var t = _root.transform.Find(obj.name);
+                if (t == null || obj.position?.Length < 3 || obj.rotation?.Length < 4) continue;
+                t.localPosition = new Vector3(obj.position[0], obj.position[2], obj.position[1]);
+                t.localRotation = new Quaternion(-obj.rotation[1], -obj.rotation[3], -obj.rotation[2], obj.rotation[0]);
+            }
+        }
+
         // metadata.json "transforms" 섹션 → {파트명: float[16]}
         static Dictionary<string, float[]> ParseTransforms(string json)
         {
