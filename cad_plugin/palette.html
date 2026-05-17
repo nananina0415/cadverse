@@ -537,7 +537,7 @@
         } else if (_simStopping) {
           btn.textContent = "중단 중…";
         } else {
-          btn.textContent = _simRunning ? "⏸ 일시정지" : "▶ 시뮬 시작";
+          btn.textContent = _simRunning ? "정지" : "시뮬 시작";
         }
 
         document.getElementById("btn-qr").disabled = !s.sim_running;
@@ -550,16 +550,16 @@
           const row = document.createElement("div");
           row.className = "member-row";
           row.innerHTML = `
-          <span>
+          <span style="display:flex;align-items:center;gap:6px">
             <span class="member-name${m.is_me ? " me" : ""}">${m.name}${m.is_me ? " (나)" : ""}</span>
             <div class="indicators">
               <div class="ind ${m.sim ? "green" : ""}" title="시뮬레이션"></div>
               <div class="ind ${m.client ? "blue" : ""}" title="클라이언트"></div>
             </div>
           </span>
-          <div>
-            <button>보기</button>
-            <button>가져오기</button>
+          <div style="display:flex;gap:4px">
+            <button class="btn btn-outline" style="padding:3px 8px;font-size:11px">보기</button>
+            <button class="btn btn-outline" style="padding:3px 8px;font-size:11px">가져오기</button>
           </div>`;
           list.appendChild(row);
         });

@@ -390,6 +390,23 @@ fn axis_to_quat(axis: [f64; 3]) -> [f64; 4] {
     [q.w, q.i, q.j, q.k]
 }
 
+fn arr3(v: Option<&serde_json::Value>, default: [f64; 3]) -> [f64; 3] {
+    v.and_then(|v| v.as_array()).map(|a| [
+        a.get(0).and_then(|v| v.as_f64()).unwrap_or(default[0]),
+        a.get(1).and_then(|v| v.as_f64()).unwrap_or(default[1]),
+        a.get(2).and_then(|v| v.as_f64()).unwrap_or(default[2]),
+    ]).unwrap_or(default)
+}
+
+fn arr4(v: Option<&serde_json::Value>, default: [f64; 4]) -> [f64; 4] {
+    v.and_then(|v| v.as_array()).map(|a| [
+        a.get(0).and_then(|v| v.as_f64()).unwrap_or(default[0]),
+        a.get(1).and_then(|v| v.as_f64()).unwrap_or(default[1]),
+        a.get(2).and_then(|v| v.as_f64()).unwrap_or(default[2]),
+        a.get(3).and_then(|v| v.as_f64()).unwrap_or(default[3]),
+    ]).unwrap_or(default)
+}
+
 fn load_model_from_folder(folder: &PathBuf) -> Result<(SimModel, SimOut), String> {
     let metadata_path = folder.join("metadata.json");
     let text = std::fs::read_to_string(&metadata_path)
@@ -398,38 +415,51 @@ fn load_model_from_folder(folder: &PathBuf) -> Result<(SimModel, SimOut), String
         .map_err(|e| format!("metadata.json 파싱 실패: {e}"))?;
 
     // bodies
-    let transforms = meta.get("transforms")
-        .and_then(|v| v.as_object())
-        .ok_or("metadata.json에 transforms 없음")?;
+    let bodies_raw = meta.get("bodies")
+        .and_then(|v| v.as_array())
+        .ok_or("metadata.json에 bodies 없음")?;
 
     let mut bodies = Vec::new();
-    for (name, val) in transforms {
-        let flat16: Vec<f64> = val.as_array()
-            .ok_or_else(|| format!("transforms.{name}: 배열이 아님"))?
-            .iter()
-            .map(|v| v.as_f64().unwrap_or(0.0))
-            .collect();
-        if flat16.len() != 16 {
-            return Err(format!("transforms.{name}: 16개 값 필요, {}개 있음", flat16.len()));
-        }
-        let arr: [f64; 16] = flat16.try_into().unwrap();
-        let (pos, rot) = decompose_mat4(&arr);
+    for b in bodies_raw {
+        let name = b.get("name").and_then(|v| v.as_str())
+            .ok_or("bodies[]: name 없음")?.to_string();
+
+        let pose  = b.get("pose");
+        let pos   = arr3(pose.and_then(|p| p.get("pos")), [0.0; 3]);
+        let rot   = arr4(pose.and_then(|p| p.get("rot")), [1.0, 0.0, 0.0, 0.0]);
+
+        let vis   = b.get("geometry").and_then(|g| g.get("visual"));
+        let kind  = vis.and_then(|v| v.get("kind")).and_then(|v| v.as_str()).unwrap_or("mesh").to_string();
+        let file_rel = vis.and_then(|v| v.get("file")).and_then(|v| v.as_str()).unwrap_or("");
+        let file  = if std::path::Path::new(file_rel).is_absolute() {
+            file_rel.to_string()
+        } else {
+            folder.join(file_rel).to_string_lossy().into_owned()
+        };
+        let scale  = arr3(vis.and_then(|v| v.get("scale")), [1.0; 3]);
+        let off    = vis.and_then(|v| v.get("offset"));
+        let off_pos = arr3(off.and_then(|o| o.get("pos")), [0.0; 3]);
+        let off_rot = arr4(off.and_then(|o| o.get("rot")), [1.0, 0.0, 0.0, 0.0]);
+        let collision = b.get("geometry").and_then(|g| g.get("collision"))
+            .and_then(|v| v.as_str()).unwrap_or("auto").to_string();
+
+        let mech  = b.get("mechanical");
+        let mass  = mech.and_then(|m| m.get("mass")).and_then(|v| v.as_f64()).unwrap_or(1.0);
+        let iner  = mech.and_then(|m| m.get("inertia"));
+        let ixx   = iner.and_then(|i| i.get("Ixx")).and_then(|v| v.as_f64()).unwrap_or(0.01);
+        let iyy   = iner.and_then(|i| i.get("Iyy")).and_then(|v| v.as_f64()).unwrap_or(0.01);
+        let izz   = iner.and_then(|i| i.get("Izz")).and_then(|v| v.as_f64()).unwrap_or(0.01);
 
         bodies.push(BodyDef {
-            name: name.clone(),
+            name,
             pose: BodyPose { pos, rot },
             geometry: BodyGeometry {
-                visual: BodyVisual {
-                    kind: "mesh".into(),
-                    file: folder.join("meshes").join(format!("{name}.obj")).to_string_lossy().into_owned(),
-                    scale: [1.0, 1.0, 1.0],
-                    offset: BodyPose { pos: [0.0; 3], rot: [1.0, 0.0, 0.0, 0.0] },
-                },
-                collision: "auto".into(),
+                visual: BodyVisual { kind, file, scale, offset: BodyPose { pos: off_pos, rot: off_rot } },
+                collision,
             },
             mechanical: BodyMechanical {
-                mass: 1.0,
-                inertia: BodyInertia { mode: "explicit".into(), ixx: 0.01, iyy: 0.01, izz: 0.01 },
+                mass,
+                inertia: BodyInertia { mode: "explicit".into(), ixx, iyy, izz },
             },
         });
     }
@@ -442,26 +472,14 @@ fn load_model_from_folder(folder: &PathBuf) -> Result<(SimModel, SimOut), String
 
     let mut joints = Vec::new();
     for j in &joints_raw {
-        let name = j.get("name").and_then(|v| v.as_str()).unwrap_or("joint").to_string();
+        let name  = j.get("name").and_then(|v| v.as_str()).unwrap_or("joint").to_string();
         let jtype = j.get("type").and_then(|v| v.as_str()).unwrap_or("revolute").to_lowercase();
-        let cp = j.get("connected_parts");
-        let body1 = cp.and_then(|v| v.get("parent")).and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let body2 = cp.and_then(|v| v.get("child")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let body1 = j.get("body1").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let body2 = j.get("body2").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
-        let axis: [f64; 3] = j.get("axis").and_then(|v| v.as_array()).map(|a| {
-            [a.get(0).and_then(|v| v.as_f64()).unwrap_or(0.0),
-             a.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0),
-             a.get(2).and_then(|v| v.as_f64()).unwrap_or(1.0)]
-        }).unwrap_or([0.0, 0.0, 1.0]);
-
-        let origin_cm: [f64; 3] = j.get("origin").and_then(|v| v.as_array()).map(|a| {
-            [a.get(0).and_then(|v| v.as_f64()).unwrap_or(0.0),
-             a.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0),
-             a.get(2).and_then(|v| v.as_f64()).unwrap_or(0.0)]
-        }).unwrap_or([0.0; 3]);
-
-        let pos = [origin_cm[0] * POSITION_SCALE, origin_cm[1] * POSITION_SCALE, origin_cm[2] * POSITION_SCALE];
-        let rot = axis_to_quat(axis);
+        let frame = j.get("frame");
+        let pos   = arr3(frame.and_then(|f| f.get("pos")), [0.0; 3]);
+        let rot   = arr4(frame.and_then(|f| f.get("rot")), [1.0, 0.0, 0.0, 0.0]);
 
         let limits = j.get("limits").and_then(|v| v.as_object()).map(|lim| {
             let lower = lim.get("min").and_then(|v| v.as_f64()).unwrap_or(0.0);

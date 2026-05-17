@@ -1,5 +1,5 @@
 import adsk.core, adsk.fusion, traceback
-import os, json, subprocess, threading
+import os, json, subprocess, threading, importlib
 import tkinter as tk
 
 from . import extract as _extract
@@ -68,8 +68,25 @@ def _load_config() -> dict:
         return {}
 
 def _save_config(cfg: dict):
-    with open(_config_path(), 'w') as f:
-        json.dump(cfg, f, indent=2)
+    with open(_config_path(), 'w', encoding='utf-8') as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+
+def _sanitize_username(username: str) -> str:
+    import re
+    s = str(username or 'default_user')
+    s = s.replace(' ', '_').replace(':', '_')
+    s = re.sub(r'[^A-Za-z0-9가-힣_\-]', '_', s)
+    s = re.sub(r'_+', '_', s).strip('_')
+    return s or 'default_user'
+
+def _get_username_from_data_or_config(data: dict) -> str:
+    candidates = [data.get('username'), data.get('user'), data.get('name')]
+    cfg = _load_config()
+    candidates.extend([cfg.get('username'), cfg.get('user'), cfg.get('name')])
+    for c in candidates:
+        if c is not None and str(c).strip():
+            return _sanitize_username(str(c))
+    return 'default_user'
 
 class _DocumentSavedHandler(adsk.core.DocumentEventHandler):
     def __init__(self):
@@ -396,9 +413,16 @@ class _HTMLEventHandler(adsk.core.HTMLEventHandler):
                     try:
                         product = adsk.core.Application.get().activeProduct
                         if product and product.objectType == adsk.fusion.Design.classType():
+                            _plog('[resume] extract 시작')
                             _extract.run(None, _model_dir)
+                            _plog('[resume] extract 완료')
+                        else:
+                            _plog(f'[resume] design 없음 또는 타입 불일치: {product}')
                     except Exception as e:
-                        _plog(f'[HTML] resume extract 실패: {e}')
+                        _plog(f'[HTML] resume extract 실패: {traceback.format_exc()}')
+                else:
+                    _plog('[resume] _model_dir 없음')
+                _plog('[resume] server.resume 호출')
                 _server.resume(_model_dir or '')
 
             elif action == 'pause':
@@ -407,7 +431,51 @@ class _HTMLEventHandler(adsk.core.HTMLEventHandler):
             elif action == 'qr_show':
                 threading.Thread(target=_show_qr_window, daemon=True).start()
 
+            elif action == 'export_model':
+                self._handle_export_model(data)
+
         except Exception as e:
             tb = traceback.format_exc()
             _plog(f'[HTML] 예외: {e}\n{tb}')
             _send_to_palette('server_error', {'message': f'[plugin 오류] {e}'})
+
+    def _handle_export_model(self, data: dict):
+        app = adsk.core.Application.get()
+        if app is None:
+            raise RuntimeError('Fusion Application을 가져오지 못했습니다.')
+
+        design = app.activeProduct
+        if design is None:
+            raise RuntimeError('활성 Fusion design이 없습니다.')
+        if not isinstance(design, adsk.fusion.Design):
+            raise RuntimeError('activeProduct가 Fusion Design이 아닙니다.')
+
+        username = _get_username_from_data_or_config(data)
+        _set_model_dir(username)
+
+        importlib.reload(_extract)
+        metadata = _extract.run(None, _model_dir)
+
+        body_count    = len(metadata.get('bodies', []))    if isinstance(metadata, dict) else 0
+        joint_count   = len(metadata.get('joints', []))    if isinstance(metadata, dict) else 0
+        warning_count = len(metadata.get('exportWarnings', [])) if isinstance(metadata, dict) else 0
+        metadata_path = os.path.join(_model_dir, 'metadata.json')
+
+        _send_to_palette('export_done', {
+            'ok':           True,
+            'username':     username,
+            'output_path':  _model_dir,
+            'metadata_path': metadata_path,
+            'sceneName':    metadata.get('sceneName', 'cad_export_scene') if isinstance(metadata, dict) else 'cad_export_scene',
+            'body_count':   body_count,
+            'joint_count':  joint_count,
+            'warning_count': warning_count,
+        })
+
+        app.userInterface.messageBox(
+            'CADverse 모델 추출 완료\n\n'
+            f'bodies: {body_count}\n'
+            f'joints: {joint_count}\n'
+            f'warnings: {warning_count}\n\n'
+            f'metadata:\n{metadata_path}'
+        )
