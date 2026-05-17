@@ -23,7 +23,6 @@ public class UIManager : MonoBehaviour
 
     [Header("반응형 UI 패널")]
     public GameObject portraitBottomBar;
-    public GameObject landscapeRightBar;
 
     void Start()
     {
@@ -43,18 +42,4 @@ public class UIManager : MonoBehaviour
             refreshMenuButton.onClick.AddListener(uiHandler.onRefreshMenuButtonClick);
     }
 
-    void Update()
-    {
-        // 실시간 화면 방향 감지 및 패널 전환 (반응형 레이아웃)
-        if (Screen.orientation == ScreenOrientation.Portrait || Screen.orientation == ScreenOrientation.PortraitUpsideDown)
-        {
-            portraitBottomBar.SetActive(true);
-            landscapeRightBar.SetActive(false);
-        }
-        else if (Screen.orientation == ScreenOrientation.LandscapeLeft || Screen.orientation == ScreenOrientation.LandscapeRight)
-        {
-            portraitBottomBar.SetActive(false);
-            landscapeRightBar.SetActive(true);
-        }
-    }
 }
