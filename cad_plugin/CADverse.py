@@ -106,43 +106,54 @@ class _DocumentSavedHandler(adsk.core.DocumentEventHandler):
             _plog(f'[DocSaved] extract 실패: {e}')
 
 
-def _show_qr_window():
-    path = os.path.join(os.path.dirname(_sim_server_exe()), 'local_sim_qr.txt')
-    try:
-        rows = [r for r in open(path, encoding='utf-8').read().splitlines() if r]
-    except Exception:
-        return
-    if not rows:
-        return
+def _show_qr_window(rows=None, title='CADverse QR', label=''):
+    if rows is None:
+        path = os.path.join(os.path.dirname(_sim_server_exe()), 'local_sim_qr.txt')
+        try:
+            rows = [r for r in open(path, encoding='utf-8').read().splitlines() if r]
+        except Exception:
+            return
+        if not rows:
+            return
+        label = _load_config().get('username', '')
 
-    username = _load_config().get('username', '')
+    n_cols    = max(len(r) for r in rows)
+    n_rows_qr = len(rows)
 
     root = tk.Tk()
-    root.title('CADverse QR')
-    root.resizable(False, False)
+    root.title(title)
+    root.resizable(True, True)
     root.attributes('-topmost', True)
+    root.configure(bg='white')
 
     dpi      = root.winfo_fpixels('1i')
-    target_px = int((5.0 / 2.54) * dpi)   # 5cm → pixels
-    n_cols   = max(len(r) for r in rows)
-    cell     = max(1, target_px // n_cols)
-    margin   = cell * 4
+    init_px  = int((5.0 / 2.54) * dpi)
+    root.geometry(f'{init_px}x{init_px}')
 
-    w = n_cols * cell + margin * 2
-    h = len(rows) * cell + margin * 2
+    canvas = tk.Canvas(root, bg='white', highlightthickness=0)
+    canvas.pack(fill=tk.BOTH, expand=True)
+    if label:
+        tk.Label(root, text=label, font=('Segoe UI', 11), bg='white').pack(pady=(0, 6))
 
-    canvas = tk.Canvas(root, width=w, height=h, bg='white', highlightthickness=0)
-    canvas.pack()
+    def redraw(event=None):
+        w = canvas.winfo_width()
+        h = canvas.winfo_height()
+        if w < 2 or h < 2:
+            return
+        size = min(w, h)
+        cell  = max(1, size // (n_cols + 8))
+        x_off = (w - n_cols * cell) // 2
+        y_off = (h - n_rows_qr * cell) // 2
+        canvas.delete('all')
+        canvas.create_rectangle(0, 0, w, h, fill='white', outline='')
+        for y, row in enumerate(rows):
+            for x, ch in enumerate(row):
+                if ch == '1':
+                    x0 = x_off + x * cell
+                    y0 = y_off + y * cell
+                    canvas.create_rectangle(x0, y0, x0 + cell, y0 + cell, fill='black', outline='')
 
-    for y, row in enumerate(rows):
-        for x, ch in enumerate(row):
-            if ch == '1':
-                x0, y0 = margin + x * cell, margin + y * cell
-                canvas.create_rectangle(x0, y0, x0 + cell, y0 + cell, fill='black', outline='')
-
-    if username:
-        tk.Label(root, text=username, font=('Segoe UI', 11), bg='white').pack(pady=(0, margin // 2))
-
+    canvas.bind('<Configure>', redraw)
     root.bind('<Escape>', lambda _: root.destroy())
     root.mainloop()
 
@@ -430,6 +441,21 @@ class _HTMLEventHandler(adsk.core.HTMLEventHandler):
 
             elif action == 'qr_show':
                 threading.Thread(target=_show_qr_window, daemon=True).start()
+
+            elif action == 'qr_show_member':
+                qr_str = data.get('qr', '')
+                name   = data.get('name', '')
+                if qr_str:
+                    rows = [r for r in qr_str.splitlines() if r]
+                    threading.Thread(target=_show_qr_window,
+                                     kwargs={'rows': rows, 'title': name, 'label': name},
+                                     daemon=True).start()
+
+            elif action == 'import_model':
+                name = data.get('name', '')
+                if name and _model_dir and _server:
+                    import_root = os.path.dirname(_model_dir)
+                    _server.import_model(name, import_root)
 
             elif action == 'export_model':
                 self._handle_export_model(data)

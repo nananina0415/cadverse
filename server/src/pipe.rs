@@ -12,6 +12,7 @@ pub enum PipeCmd {
     Pause,
     QrShow,
     QrHide,
+    Import { username: String, import_root: String },
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -21,6 +22,8 @@ pub struct MemberStatus {
     pub server: bool,
     pub client: bool,
     pub sim: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qr: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq, Default)]
@@ -29,10 +32,13 @@ pub struct StatusMsg {
     pub paused: bool,
     pub reloading: bool,
     pub extracting: bool,
+    pub importing: bool,
     pub password: String,
     pub members: Vec<MemberStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sim_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub import_error: Option<String>,
 }
 
 pub fn start(cmd_tx: mpsc::Sender<PipeCmd>, status_rx: watch::Receiver<StatusMsg>) {

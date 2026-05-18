@@ -479,11 +479,16 @@
       let _simStarting = false;
       let _simStopping = false;
       let _paused = false;
+      let _importing = false;
 
       // ── 안내 문구 업데이트 ─────────────────────────────────────────────────────
-      function updateHint(reloading, extracting) {
+      function updateHint(reloading, extracting, importing) {
         const el = document.getElementById("hint-idle");
-        if (extracting) {
+        if (importing) {
+          el.className = "hint loading";
+          el.textContent = "모델 가져오는 중…";
+          el.style.display = "block";
+        } else if (extracting) {
           el.className = "hint loading";
           el.textContent = "Python 환경 압축 해제 중…";
           el.style.display = "block";
@@ -542,13 +547,19 @@
 
         document.getElementById("btn-qr").disabled = !s.sim_running;
 
-        updateHint(s.reloading, s.extracting);
+        if (s.import_error) {
+          onServerError({ message: s.import_error });
+        }
+        _importing = s.importing || false;
+
+        updateHint(s.reloading, s.extracting, _importing);
 
         const list = document.getElementById("member-list");
         list.innerHTML = "";
         (s.members || []).forEach((m) => {
           const row = document.createElement("div");
           row.className = "member-row";
+          const canImport = !m.is_me && m.sim && !_importing;
           row.innerHTML = `
           <span style="display:flex;align-items:center;gap:6px">
             <span class="member-name${m.is_me ? " me" : ""}">${m.name}${m.is_me ? " (나)" : ""}</span>
@@ -558,8 +569,8 @@
             </div>
           </span>
           <div style="display:flex;gap:4px">
-            <button class="btn btn-outline" style="padding:3px 8px;font-size:11px">보기</button>
-            <button class="btn btn-outline" style="padding:3px 8px;font-size:11px">가져오기</button>
+            <button class="btn btn-outline" style="padding:3px 8px;font-size:11px" ${m.qr ? '' : 'disabled'} onclick="sendToFusion('qr_show_member', {name:'${m.name}',qr:${JSON.stringify(m.qr||'')}})">보기</button>
+            <button class="btn btn-outline" style="padding:3px 8px;font-size:11px" ${canImport ? '' : 'disabled'} onclick="sendToFusion('import_model', {name:'${m.name}'})">${_importing ? '가져오는 중…' : '가져오기'}</button>
           </div>`;
           list.appendChild(row);
         });
@@ -577,7 +588,7 @@
           _simStarting = true;
           btn.textContent = "시작 중…";
           btn.disabled = true;
-          updateHint(false);
+          updateHint(false, false, false);
           console.log("[js*->py] resume");
           sendToFusion("resume", {});
         }

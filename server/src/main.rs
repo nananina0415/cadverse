@@ -13,11 +13,13 @@ use sim::{UserIn, SimFrame, SimManager, SimIoBuf};
 use pipe::{PipeCmd, StatusMsg, MemberStatus};
 
 struct AppState {
-    username:    String,
-    password:    String,
-    net:         Option<NetThread>,
-    sim_manager: Option<SimManager>,
-    extracting:  bool,
+    username:     String,
+    password:     String,
+    net:          Option<NetThread>,
+    sim_manager:  Option<SimManager>,
+    extracting:   bool,
+    importing:    bool,
+    import_error: Option<String>,
 }
 
 fn exe_dir() -> std::path::PathBuf {
@@ -51,11 +53,13 @@ fn main() {
     let sim_io_buf = SimIoBuf { userin_r, userin_swap, simout_w, simout_swap };
 
     let mut state = AppState {
-        username:    String::new(),
-        password:    String::new(),
-        net:         None,
-        sim_manager: Some(SimManager::new(sim_io_buf)),
-        extracting:  false,
+        username:     String::new(),
+        password:     String::new(),
+        net:          None,
+        sim_manager:  Some(SimManager::new(sim_io_buf)),
+        extracting:   false,
+        importing:    false,
+        import_error: None,
     };
 
     let shared_status: Arc<Mutex<StatusMsg>> = Arc::new(Mutex::new(StatusMsg::default()));
@@ -183,6 +187,31 @@ fn main() {
 
             Ok(PipeCmd::QrHide) => {}
 
+            Ok(PipeCmd::Import { username, import_root }) => {
+                eprintln!("[import] username={username} import_root={import_root}");
+                if state.net.is_none() {
+                    eprintln!("[import] net 없음, 무시");
+                    push_status(&state, &mut last_status, &status_tx);
+                    continue;
+                }
+                state.importing    = true;
+                state.import_error = None;
+                push_status(&state, &mut last_status, &status_tx);
+
+                let result = state.net.as_ref().unwrap()
+                    .import_remote_model(&username, std::path::PathBuf::from(&import_root));
+
+                state.importing = false;
+                match result {
+                    Ok(path) => eprintln!("[import] 완료: {}", path.display()),
+                    Err(e)   => {
+                        eprintln!("[import] 실패: {e}");
+                        state.import_error = Some(e.to_string());
+                    }
+                }
+                push_status(&state, &mut last_status, &status_tx);
+            }
+
             _ => {}
         }
     }
@@ -200,17 +229,20 @@ fn build_status(state: &AppState) -> StatusMsg {
         server: state.net.is_some(),
         client: false,
         sim:    sim_running,
+        qr:     None,
     }];
 
     if let Some(net) = state.net.as_ref() {
         for peer in net.peer_list() {
             let is_ar = matches!(peer.peer_type, p2p_core::PeerType::ArClient { .. });
+            let is_sim = !is_ar && matches!(peer.peer_type, p2p_core::PeerType::SimServer);
             if let Some(existing) = members.iter_mut().find(|m| m.name == peer.name) {
                 if is_ar { existing.client = true; }
                 else {
                     existing.server = true;
-                    if matches!(peer.peer_type, p2p_core::PeerType::SimServer) {
+                    if is_sim {
                         existing.sim = true;
+                        existing.qr = addr_to_qr_rows(&peer.addr);
                     }
                 }
                 continue;
@@ -220,7 +252,8 @@ fn build_status(state: &AppState) -> StatusMsg {
                 is_me:  false,
                 server: !is_ar,
                 client: is_ar,
-                sim:    !is_ar && matches!(peer.peer_type, p2p_core::PeerType::SimServer),
+                sim:    is_sim,
+                qr:     if is_sim { addr_to_qr_rows(&peer.addr) } else { None },
             });
         }
     }
@@ -229,10 +262,12 @@ fn build_status(state: &AppState) -> StatusMsg {
         sim_running,
         paused: false,
         reloading,
-        extracting: state.extracting,
-        password: state.password.clone(),
+        extracting:   state.extracting,
+        importing:    state.importing,
+        password:     state.password.clone(),
         members,
         sim_error,
+        import_error: state.import_error.clone(),
     }
 }
 
@@ -314,17 +349,21 @@ pub(crate) fn qr_path() -> std::path::PathBuf {
     exe_dir().join("local_sim_qr.txt")
 }
 
-pub(crate) fn save_local_sim_qr_txt(addr: &p2p_core::NodeAddr) {
-    let code = match qrcode::QrCode::with_error_correction_level(addr.id.as_bytes(), qrcode::EcLevel::M) {
-        Ok(c) => c,
-        Err(e) => { eprintln!("[save_local_sim_qr_txt] QR 생성 실패: {e}"); return; }
-    };
+fn addr_to_qr_rows(addr: &p2p_core::NodeAddr) -> Option<String> {
+    let code = qrcode::QrCode::with_error_correction_level(addr.id.as_bytes(), qrcode::EcLevel::M).ok()?;
     let width = code.width();
-    let content = code.to_colors()
+    Some(code.to_colors()
         .chunks(width)
         .map(|row| row.iter().map(|c| if *c == qrcode::Color::Dark { '1' } else { '0' }).collect::<String>())
         .collect::<Vec<_>>()
-        .join("\n");
+        .join("\n"))
+}
+
+pub(crate) fn save_local_sim_qr_txt(addr: &p2p_core::NodeAddr) {
+    let Some(content) = addr_to_qr_rows(addr) else {
+        eprintln!("[save_local_sim_qr_txt] QR 생성 실패");
+        return;
+    };
     let _ = std::fs::write(qr_path(), content);
 }
 

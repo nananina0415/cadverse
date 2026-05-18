@@ -28,3 +28,6 @@ class RustServer:
 
     def pause(self):
         self._send({'cmd': 'pause'})
+
+    def import_model(self, username: str, import_root: str):
+        self._send({'cmd': 'import', 'username': username, 'import_root': import_root})
