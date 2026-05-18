@@ -38,8 +38,9 @@ namespace Cadverse
             canvas.sortingOrder = 100;
 
             var scaler = canvasGO.AddComponent<CanvasScaler>();
-            scaler.uiScaleMode = CanvasScaler.ScaleMode.ConstantPixelSize;
-            scaler.scaleFactor = 1f;
+            scaler.uiScaleMode         = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            scaler.referenceResolution = new Vector2(1080, 1920);
+            scaler.matchWidthOrHeight  = 0.5f;
 
             canvasGO.AddComponent<GraphicRaycaster>();
 
@@ -59,18 +60,18 @@ namespace Cadverse
 
             var card = MakeRect("Card", backdrop);
             card.anchorMin = card.anchorMax = card.pivot = new Vector2(0.5f, 0.5f);
-            card.sizeDelta = new Vector2(640f, 800f);
+            card.sizeDelta = new Vector2(900f, 1100f);
             card.gameObject.AddComponent<Image>().color = Hex(0x1E2D3E);
 
             var layout = card.gameObject.AddComponent<VerticalLayoutGroup>();
-            layout.padding               = new RectOffset(40, 40, 48, 48);
-            layout.spacing               = 20f;
+            layout.padding               = new RectOffset(56, 56, 64, 64);
+            layout.spacing               = 28f;
             layout.childForceExpandWidth  = true;
             layout.childForceExpandHeight = false;
             layout.childControlWidth      = true;
             layout.childControlHeight     = true;
 
-            AddLabel(card, "CADverse", 36f, FontStyles.Bold, Color.white, 56f);
+            AddLabel(card, "CADverse", 52f, FontStyles.Bold, Color.white, 80f);
 
             _groupInput = AddInput(card, "그룹 이름");
             _pwInput    = AddInput(card, "비밀번호", password: true);
@@ -78,7 +79,7 @@ namespace Cadverse
 
             var btnGO = new GameObject("ConnectBtn");
             btnGO.transform.SetParent(card, false);
-            btnGO.AddComponent<LayoutElement>().preferredHeight = 56f;
+            btnGO.AddComponent<LayoutElement>().preferredHeight = 88f;
             var btnImg  = btnGO.AddComponent<Image>();
             btnImg.color = Hex(0x26786D);
             _connectBtn  = btnGO.AddComponent<Button>();
@@ -94,15 +95,15 @@ namespace Cadverse
             _btnLabel           = btnLabelRT.gameObject.AddComponent<TextMeshProUGUI>();
             _btnLabel.font      = Font;
             _btnLabel.text      = "연결";
-            _btnLabel.fontSize  = 22f;
+            _btnLabel.fontSize  = 32f;
             _btnLabel.fontStyle = FontStyles.Bold;
             _btnLabel.alignment = TextAlignmentOptions.Center;
             _btnLabel.color     = Color.white;
 
-            _errorText = AddLabel(card, "", 15f, FontStyles.Normal, Hex(0xEF4444), 28f);
+            _errorText = AddLabel(card, "", 22f, FontStyles.Normal, Hex(0xEF4444), 44f);
             _errorText.gameObject.SetActive(false);
 
-            _loadingText = AddLabel(card, "연결 중…", 15f, FontStyles.Normal, Hex(0x99CEC9), 28f);
+            _loadingText = AddLabel(card, "연결 중…", 22f, FontStyles.Normal, Hex(0x99CEC9), 44f);
             _loadingText.gameObject.SetActive(false);
         }
 
@@ -163,7 +164,7 @@ namespace Cadverse
         {
             var containerGO = new GameObject(placeholder);
             containerGO.transform.SetParent(parent, false);
-            containerGO.AddComponent<LayoutElement>().preferredHeight = 56f;
+            containerGO.AddComponent<LayoutElement>().preferredHeight = 88f;
             containerGO.AddComponent<Image>().color = Hex(0x111B27);
 
             var field = containerGO.AddComponent<TMP_InputField>();
@@ -171,8 +172,8 @@ namespace Cadverse
             var areaRT = MakeRect("Text Area", containerGO.transform);
             areaRT.anchorMin = Vector2.zero;
             areaRT.anchorMax = Vector2.one;
-            areaRT.offsetMin = new Vector2(16f,  6f);
-            areaRT.offsetMax = new Vector2(-16f, -6f);
+            areaRT.offsetMin = new Vector2(24f,  8f);
+            areaRT.offsetMax = new Vector2(-24f, -8f);
             areaRT.gameObject.AddComponent<RectMask2D>();
 
             var phRT = MakeRect("Placeholder", areaRT);
@@ -180,7 +181,7 @@ namespace Cadverse
             var ph       = phRT.gameObject.AddComponent<TextMeshProUGUI>();
             ph.font      = Font;
             ph.text      = placeholder;
-            ph.fontSize  = 18f;
+            ph.fontSize  = 28f;
             ph.color     = new Color(1f, 1f, 1f, 0.35f);
             ph.alignment = TextAlignmentOptions.MidlineLeft;
 
@@ -188,7 +189,7 @@ namespace Cadverse
             Stretch(txtRT);
             var txt       = txtRT.gameObject.AddComponent<TextMeshProUGUI>();
             txt.font      = Font;
-            txt.fontSize  = 18f;
+            txt.fontSize  = 28f;
             txt.color     = Color.white;
             txt.alignment = TextAlignmentOptions.MidlineLeft;
 
