@@ -122,7 +122,10 @@ impl NetThread {
             let ar_clients = ar_clients.clone();
             rt.spawn(async move {
                 loop {
-                    let Some(conn) = net.accept_data().await else { break };
+                    let Some(conn) = net.accept_data().await else {
+                        eprintln!("[net] accept_data 종료");
+                        break;
+                    };
                     ar_clients.lock().expect("ar_clients mutex poisoned").push(conn.clone());
                     let userin_tx = userin_tx.clone();
                     tokio::spawn(async move {
@@ -144,6 +147,7 @@ impl NetThread {
                 while let Some(msg) = userin_rx.recv().await {
                     userin_w.write().push(msg);
                 }
+                eprintln!("[net] userin 채널 종료");
             });
         }
 
@@ -189,6 +193,7 @@ impl NetThread {
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(16)).await;
                 }
+                eprintln!("[net] broadcast 루프 종료");
             });
         }
 
@@ -215,9 +220,16 @@ impl NetThread {
 
         self.async_rt.spawn(async move {
             loop {
-                let Some(conn) = net.accept_file_conn().await else { break };
+                let Some(conn) = net.accept_file_conn().await else {
+                    eprintln!("[net] accept_file_conn 종료");
+                    break;
+                };
                 let folder = folder.clone();
-                tokio::spawn(async move { let _ = serve_file(conn, &folder).await; });
+                tokio::spawn(async move {
+                    if let Err(e) = serve_file(conn, &folder).await {
+                        eprintln!("[net] serve_file 오류: {e}");
+                    }
+                });
             }
         });
 

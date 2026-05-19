@@ -94,7 +94,10 @@ fn main() {
 
     loop {
         let cmd = cmd_rx.recv_timeout(Duration::from_millis(500));
-        if let Err(mpsc::RecvTimeoutError::Disconnected) = cmd { break; }
+        if let Err(mpsc::RecvTimeoutError::Disconnected) = cmd {
+            eprintln!("[main] 커맨드 채널 끊김 → 종료");
+            break;
+        }
         if let Err(mpsc::RecvTimeoutError::Timeout) = cmd {
             push_status(&state, &mut last_status, &status_tx);
             continue;
@@ -318,7 +321,25 @@ fn show_qr(data: Vec<u8>) {
         ((cm / 2.54) * dpi) as u32
     }
 
+    #[cfg(windows)]
+    fn com_init() {
+        #[link(name = "ole32")]
+        unsafe extern "system" { fn CoInitializeEx(p: *mut std::ffi::c_void, dw: u32) -> i32; }
+        unsafe { let _ = CoInitializeEx(std::ptr::null_mut(), 0x2); }
+    }
+
+    #[cfg(windows)]
+    fn set_topmost(hwnd: *mut std::ffi::c_void) {
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn SetWindowPos(hwnd: *mut std::ffi::c_void, insert: *mut std::ffi::c_void,
+                            x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> i32;
+        }
+        unsafe { let _ = SetWindowPos(hwnd, -1isize as *mut _, 0, 0, 0, 0, 0x0003); }
+    }
+
     std::thread::spawn(move || {
+        #[cfg(windows)] com_init();
         let dpi = get_system_dpi();
         let target_size_px = cm_to_pixels(QR_SIZE_CM, dpi);
 
@@ -356,6 +377,7 @@ fn show_qr(data: Vec<u8>) {
             &title, window_size, window_size,
             minifb::WindowOptions { scale: minifb::Scale::X1, resize: false, ..Default::default() },
         ) else { return };
+        #[cfg(windows)] set_topmost(window.get_window_handle());
         window.set_target_fps(30);
         while window.is_open() && !window.is_key_down(minifb::Key::Escape) {
             window.update_with_buffer(&buffer, window_size, window_size).unwrap_or(());

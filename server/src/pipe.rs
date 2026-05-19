@@ -52,14 +52,18 @@ pub fn start(
     std::thread::spawn(move || {
         let reader = std::io::BufReader::new(std::io::stdin());
         for line in reader.lines() {
-            let Ok(l) = line else { break };
+            let Ok(l) = line else {
+                eprintln!("[pipe] stdin 끊김");
+                break;
+            };
             let trimmed = l.trim().to_string();
             if trimmed.is_empty() { continue; }
             match serde_json::from_str::<PipeCmd>(&trimmed) {
                 Ok(cmd) => { let _ = cmd_tx.send(cmd); }
-                Err(_) => {}
+                Err(e) => eprintln!("[pipe] 파싱 오류: {e} | {trimmed}"),
             }
         }
+        eprintln!("[pipe] stdin 스레드 종료");
     });
 
     // 서버→플러그인: 로그 이벤트 + 상태 변화를 stdout에 JSON 줄 쓰기
@@ -70,7 +74,10 @@ pub fn start(
             // 로그 메시지 즉시 flush
             while let Ok(msg) = log_rx.try_recv() {
                 let json = serde_json::json!({"log": msg}).to_string() + "\n";
-                if stdout.write_all(json.as_bytes()).is_err() { return; }
+                if stdout.write_all(json.as_bytes()).is_err() {
+                    eprintln!("[pipe] stdout 끊김 (log)");
+                    return;
+                }
                 let _ = stdout.flush();
             }
 
@@ -82,8 +89,12 @@ pub fn start(
                 Ok(j) => j + "\n",
                 Err(_) => continue,
             };
-            if stdout.write_all(json.as_bytes()).is_err() { break; }
+            if stdout.write_all(json.as_bytes()).is_err() {
+                eprintln!("[pipe] stdout 끊김 (status)");
+                break;
+            }
             let _ = stdout.flush();
         }
+        eprintln!("[pipe] stdout 스레드 종료");
     });
 }

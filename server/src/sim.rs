@@ -94,78 +94,11 @@ impl crate::utils::Clearable for SimFrame {
     fn clear(&mut self) { *self = SimFrame::default(); }
 }
 
-// ── SimModel (metadata_types.py::SceneMeta 미러) ──────────────────────────────
-
-#[derive(Debug, Clone, Serialize)]
-pub struct BodyPose {
-    pub pos: [f64; 3],
-    pub rot: [f64; 4],  // w, x, y, z
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct BodyVisual {
-    pub kind: String,
-    pub file: String,
-    pub scale: [f64; 3],
-    pub offset: BodyPose,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct BodyGeometry {
-    pub visual: BodyVisual,
-    pub collision: String,  // "auto"
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct BodyInertia {
-    pub mode: String,  // "explicit"
-    #[serde(rename = "Ixx")] pub ixx: f64,
-    #[serde(rename = "Iyy")] pub iyy: f64,
-    #[serde(rename = "Izz")] pub izz: f64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct BodyMechanical {
-    pub mass: f64,
-    pub inertia: BodyInertia,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct BodyDef {
-    pub name: String,
-    pub pose: BodyPose,
-    pub geometry: BodyGeometry,
-    pub mechanical: BodyMechanical,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct JointLimits {
-    pub lower: f64,
-    pub upper: f64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct JointDef {
-    pub name: String,
-    #[serde(rename = "type")] pub joint_type: String,
-    pub body1: String,
-    pub body2: String,
-    pub frame: BodyPose,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub limits: Option<JointLimits>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct SimModel {
-    pub bodies: Vec<BodyDef>,
-    pub joints: Vec<JointDef>,
-}
-
 pub struct Simulator {
     py_obj: Py<PyAny>,
 }
 
-fn build_py_sim(py: Python, model: &SimModel, dt: f64) -> PyResult<Py<PyAny>> {
+fn build_py_sim(py: Python, meta: &serde_json::Value, dt: f64) -> PyResult<Py<PyAny>> {
     // stdout을 stderr로 리다이렉트해 stdout 파이프 프로토콜 오염 방지
     eprintln!("[build_py_sim] 1: stdout redirect");
     py.run_bound("import sys; sys.stdout = sys.stderr", None, None)?;
@@ -181,7 +114,7 @@ fn build_py_sim(py: Python, model: &SimModel, dt: f64) -> PyResult<Py<PyAny>> {
     )?;
 
     eprintln!("[build_py_sim] 3: json serialize");
-    let mut value = serde_json::to_value(model).expect("SimModel 직렬화 실패");
+    let mut value = meta.clone();
 
     if let Some(obj) = value.as_object_mut() {
         obj.entry("sceneName".to_string())
@@ -220,7 +153,7 @@ fn build_py_sim(py: Python, model: &SimModel, dt: f64) -> PyResult<Py<PyAny>> {
         }
     }
 
-    let json = serde_json::to_string(&value).expect("SimModel 직렬화 실패");
+    let json = serde_json::to_string(&value).expect("메타데이터 직렬화 실패");
 
     eprintln!("[build_py_sim] 4: import simulator.SimInfo");
     let siminfo_mod = py.import("simulator.SimInfo")?;
@@ -260,17 +193,17 @@ fn build_py_sim(py: Python, model: &SimModel, dt: f64) -> PyResult<Py<PyAny>> {
 }
 
 impl Simulator {
-    pub fn new(model: &SimModel) -> Result<Self, String> {
-        let py_obj = Python::with_gil(|py| build_py_sim(py, model, 1.0 / 60.0))
+    pub fn new(meta: &serde_json::Value) -> Result<Self, String> {
+        let py_obj = Python::with_gil(|py| build_py_sim(py, meta, 1.0 / 60.0))
             .map_err(|e| format!("Python 시뮬레이터 생성 실패: {e}"))?;
         Ok(Self { py_obj })
     }
 
-    pub fn reload(&mut self, model: &SimModel) -> Result<(), String> {
+    pub fn reload(&mut self, meta: &serde_json::Value) -> Result<(), String> {
         Python::with_gil(|py| {
             let _ = self.py_obj.bind(py).call_method0("close");
         });
-        let py_obj = Python::with_gil(|py| build_py_sim(py, model, 1.0 / 60.0))
+        let py_obj = Python::with_gil(|py| build_py_sim(py, meta, 1.0 / 60.0))
             .map_err(|e| format!("Python 시뮬레이터 재생성 실패: {e}"))?;
         self.py_obj = py_obj;
         Ok(())
@@ -357,140 +290,39 @@ fn py_state_to_transforms(state: &Bound<'_, PyAny>) -> PyResult<Vec<ObjectTransf
     Ok(out)
 }
 
-const POSITION_SCALE: f64 = 0.01; // cm → m
-
-/// row-major 4×4 행렬 → (pos_m, quat_wxyz)
-fn decompose_mat4(flat: &[f64; 16]) -> ([f64; 3], [f64; 4]) {
-    use nalgebra::{Matrix3, Rotation3, UnitQuaternion};
-
-    let pos = [flat[3] * POSITION_SCALE, flat[7] * POSITION_SCALE, flat[11] * POSITION_SCALE];
-
-    let rot_m = Matrix3::from_row_slice(&[
-        flat[0], flat[1], flat[2],
-        flat[4], flat[5], flat[6],
-        flat[8], flat[9], flat[10],
-    ]);
-    let rot = Rotation3::from_matrix_eps(&rot_m, 1e-6, 100, Rotation3::identity());
-    let q = UnitQuaternion::from_rotation_matrix(&rot);
-    let q = q.quaternion();
-    ([pos[0], pos[1], pos[2]], [q.w, q.i, q.j, q.k])
-}
-
-/// Z축을 axis 방향으로 정렬하는 quaternion (w,x,y,z)
-fn axis_to_quat(axis: [f64; 3]) -> [f64; 4] {
-    use nalgebra::{UnitQuaternion, Unit, Vector3};
-
-    let z = match Unit::try_new(Vector3::new(axis[0], axis[1], axis[2]), 1e-12) {
-        Some(v) => v,
-        None => return [1.0, 0.0, 0.0, 0.0],
-    };
-    let rot = UnitQuaternion::rotation_between_axis(&Vector3::z_axis(), &z)
-        .unwrap_or(UnitQuaternion::identity());
-    let q = rot.quaternion();
-    [q.w, q.i, q.j, q.k]
-}
-
-fn arr3(v: Option<&serde_json::Value>, default: [f64; 3]) -> [f64; 3] {
-    v.and_then(|v| v.as_array()).map(|a| [
-        a.get(0).and_then(|v| v.as_f64()).unwrap_or(default[0]),
-        a.get(1).and_then(|v| v.as_f64()).unwrap_or(default[1]),
-        a.get(2).and_then(|v| v.as_f64()).unwrap_or(default[2]),
-    ]).unwrap_or(default)
-}
-
-fn arr4(v: Option<&serde_json::Value>, default: [f64; 4]) -> [f64; 4] {
-    v.and_then(|v| v.as_array()).map(|a| [
-        a.get(0).and_then(|v| v.as_f64()).unwrap_or(default[0]),
-        a.get(1).and_then(|v| v.as_f64()).unwrap_or(default[1]),
-        a.get(2).and_then(|v| v.as_f64()).unwrap_or(default[2]),
-        a.get(3).and_then(|v| v.as_f64()).unwrap_or(default[3]),
-    ]).unwrap_or(default)
-}
-
-fn load_model_from_folder(folder: &PathBuf) -> Result<(SimModel, SimOut), String> {
+fn load_model_from_folder(folder: &PathBuf) -> Result<(serde_json::Value, SimOut), String> {
     let metadata_path = folder.join("metadata.json");
     let text = std::fs::read_to_string(&metadata_path)
         .map_err(|e| format!("metadata.json 읽기 실패: {e}"))?;
-    let meta: serde_json::Value = serde_json::from_str(&text)
+    let mut meta: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| format!("metadata.json 파싱 실패: {e}"))?;
 
-    // bodies
-    let bodies_raw = meta.get("bodies")
-        .and_then(|v| v.as_array())
-        .ok_or("metadata.json에 bodies 없음")?;
+    // visual mesh 경로를 절대 경로로 변환
+    if let Some(bodies) = meta.get_mut("bodies").and_then(|v| v.as_array_mut()) {
+        for body in bodies.iter_mut() {
+            let file_rel = body
+                .get("geometry")
+                .and_then(|g| g.get("visual"))
+                .and_then(|v| v.get("file"))
+                .and_then(|f| f.as_str())
+                .map(|s| s.to_string());
 
-    let mut bodies = Vec::new();
-    for b in bodies_raw {
-        let name = b.get("name").and_then(|v| v.as_str())
-            .ok_or("bodies[]: name 없음")?.to_string();
-
-        let pose  = b.get("pose");
-        let pos   = arr3(pose.and_then(|p| p.get("pos")), [0.0; 3]);
-        let rot   = arr4(pose.and_then(|p| p.get("rot")), [1.0, 0.0, 0.0, 0.0]);
-
-        let vis   = b.get("geometry").and_then(|g| g.get("visual"));
-        let kind  = vis.and_then(|v| v.get("kind")).and_then(|v| v.as_str()).unwrap_or("mesh").to_string();
-        let file_rel = vis.and_then(|v| v.get("file")).and_then(|v| v.as_str()).unwrap_or("");
-        let file  = if std::path::Path::new(file_rel).is_absolute() {
-            file_rel.to_string()
-        } else {
-            folder.join(file_rel).to_string_lossy().into_owned()
-        };
-        let scale  = arr3(vis.and_then(|v| v.get("scale")), [1.0; 3]);
-        let off    = vis.and_then(|v| v.get("offset"));
-        let off_pos = arr3(off.and_then(|o| o.get("pos")), [0.0; 3]);
-        let off_rot = arr4(off.and_then(|o| o.get("rot")), [1.0, 0.0, 0.0, 0.0]);
-        let collision = b.get("geometry").and_then(|g| g.get("collision"))
-            .and_then(|v| v.as_str()).unwrap_or("auto").to_string();
-
-        let mech  = b.get("mechanical");
-        let mass  = mech.and_then(|m| m.get("mass")).and_then(|v| v.as_f64()).unwrap_or(1.0);
-        let iner  = mech.and_then(|m| m.get("inertia"));
-        let ixx   = iner.and_then(|i| i.get("Ixx")).and_then(|v| v.as_f64()).unwrap_or(0.01);
-        let iyy   = iner.and_then(|i| i.get("Iyy")).and_then(|v| v.as_f64()).unwrap_or(0.01);
-        let izz   = iner.and_then(|i| i.get("Izz")).and_then(|v| v.as_f64()).unwrap_or(0.01);
-
-        bodies.push(BodyDef {
-            name,
-            pose: BodyPose { pos, rot },
-            geometry: BodyGeometry {
-                visual: BodyVisual { kind, file, scale, offset: BodyPose { pos: off_pos, rot: off_rot } },
-                collision,
-            },
-            mechanical: BodyMechanical {
-                mass,
-                inertia: BodyInertia { mode: "explicit".into(), ixx, iyy, izz },
-            },
-        });
+            if let Some(rel) = file_rel {
+                if !std::path::Path::new(&rel).is_absolute() {
+                    let abs = folder.join(&rel).to_string_lossy().into_owned();
+                    if let Some(vis) = body
+                        .get_mut("geometry")
+                        .and_then(|g| g.get_mut("visual"))
+                        .and_then(|v| v.as_object_mut())
+                    {
+                        vis.insert("file".to_string(), serde_json::Value::String(abs));
+                    }
+                }
+            }
+        }
     }
 
-    // joints
-    let joints_raw = meta.get("joints")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    let mut joints = Vec::new();
-    for j in &joints_raw {
-        let name  = j.get("name").and_then(|v| v.as_str()).unwrap_or("joint").to_string();
-        let jtype = j.get("type").and_then(|v| v.as_str()).unwrap_or("revolute").to_lowercase();
-        let body1 = j.get("body1").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let body2 = j.get("body2").and_then(|v| v.as_str()).unwrap_or("").to_string();
-
-        let frame = j.get("frame");
-        let pos   = arr3(frame.and_then(|f| f.get("pos")), [0.0; 3]);
-        let rot   = arr4(frame.and_then(|f| f.get("rot")), [1.0, 0.0, 0.0, 0.0]);
-
-        let limits = j.get("limits").and_then(|v| v.as_object()).map(|lim| {
-            let lower = lim.get("min").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let upper = lim.get("max").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            JointLimits { lower: lower.to_radians(), upper: upper.to_radians() }
-        });
-
-        joints.push(JointDef { name, joint_type: jtype, body1, body2, frame: BodyPose { pos, rot }, limits });
-    }
-
-    Ok((SimModel { bodies, joints }, SimOut::default()))
+    Ok((meta, SimOut::default()))
 }
 
 // ── SimLoop ───────────────────────────────────────────────────────────────────
@@ -517,6 +349,7 @@ impl SimLoop {
             let sim_running = sim_running.clone();
             move || {
                 eprintln!("[sim_loop] 스레드 시작");
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 loop {
                     // IDLE: run_flag=true 가 될 때까지 대기
                     {
@@ -551,13 +384,24 @@ impl SimLoop {
 
                         sim_io_buf.userin_swap.swap_and_clear();
                         let inputs = sim_io_buf.userin_r.read();
-                        match sim.step(inputs) {
-                            Ok(objects) => {
+                        let step_result = std::panic::catch_unwind(
+                            std::panic::AssertUnwindSafe(|| sim.step(inputs))
+                        );
+                        match step_result {
+                            Ok(Ok(objects)) => {
                                 *sim_io_buf.simout_w.write() = SimFrame::State(SimOut { timestamp: 0.0, objects });
                                 sim_io_buf.simout_swap.swap_and_clear();
                             }
-                            Err(e) => {
+                            Ok(Err(e)) => {
                                 eprintln!("[sim_loop] step 오류 → 정지: {e}");
+                                run_flag.store(false, Ordering::Relaxed);
+                                break;
+                            }
+                            Err(e) => {
+                                let msg = e.downcast_ref::<String>().cloned()
+                                    .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                                    .unwrap_or_else(|| "알 수 없는 패닉".to_string());
+                                eprintln!("[sim_loop] step 패닉 → 정지: {msg}");
                                 run_flag.store(false, Ordering::Relaxed);
                                 break;
                             }
@@ -567,6 +411,16 @@ impl SimLoop {
                     sim_running.store(false, Ordering::Relaxed);
                     eprintln!("[sim_loop] 루프 정지");
                     // sim 여기서 drop (Python 객체 해제)
+                }
+                }));
+                match result {
+                    Ok(_) => eprintln!("[sim_loop] 스레드 정상 종료"),
+                    Err(e) => {
+                        let msg = e.downcast_ref::<String>().cloned()
+                            .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                            .unwrap_or_else(|| "알 수 없는 패닉".to_string());
+                        eprintln!("[sim_loop] 스레드 패닉: {msg}");
+                    }
                 }
             }
         });
@@ -612,9 +466,9 @@ impl SimManager {
     // 시뮬 시작 (블로킹: Simulator::new 포함)
     pub fn start(&self, model_path: &std::path::Path) -> Result<(), String> {
         eprintln!("[sim_mgr] 모델 로드: {}", model_path.display());
-        let (model, init) = load_model_from_folder(&model_path.to_path_buf())?;
+        let (meta, init) = load_model_from_folder(&model_path.to_path_buf())?;
         eprintln!("[sim_mgr] Simulator::new 호출 중...");
-        match Simulator::new(&model) {
+        match Simulator::new(&meta) {
             Ok(sim) => {
                 eprintln!("[sim_mgr] Simulator 생성 완료 → SimLoop 실행");
                 self.sim_loop.set_sim(sim, init);
