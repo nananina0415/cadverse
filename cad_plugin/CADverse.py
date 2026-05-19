@@ -52,7 +52,10 @@ def _debug_config() -> dict:
         return {}
 
 def _sim_server_exe() -> str:
-    override = _debug_config().get('server_exe')
+    dbg = _debug_config()
+    if not dbg:
+        return os.path.normpath(os.path.join(_plugin_dir(), '..', 'server', 'CADverse.exe'))
+    override = dbg.get('server_exe')
     if override:
         return os.path.normpath(os.path.join(_plugin_dir(), override))
     return os.path.normpath(os.path.join(_plugin_dir(), '..', 'server', 'CADverse.exe'))
@@ -180,11 +183,26 @@ def _pipe_reader_thread():
     if not _stopping:
         _send_to_palette('server_status', {'running': False, 'error': '서버 연결이 끊어졌습니다.'})
 
+def _ensure_firewall_rule(exe: str):
+    import ctypes
+    rule_name = 'CADverse'
+    result = subprocess.run(
+        ['netsh', 'advfirewall', 'firewall', 'show', 'rule',
+         f'name={rule_name}', 'dir=in', 'verbose'],
+        capture_output=True, text=True,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    if exe.lower() not in (result.stdout or '').lower():
+        cmd = (f'netsh advfirewall firewall add rule name="{rule_name}" '
+               f'dir=in action=allow program="{exe}" enable=yes profile=any')
+        ctypes.windll.shell32.ShellExecuteW(None, 'runas', 'cmd.exe', f'/c {cmd}', None, 0)
+
 def _start_server():
     global _server_proc, _server
     exe = _sim_server_exe()
     if not os.path.exists(exe):
         raise FileNotFoundError(f'sim_server.exe 없음: {exe}')
+    _ensure_firewall_rule(exe)
     try:
         subprocess.run(
             ['taskkill', '/F', '/IM', os.path.basename(exe)],

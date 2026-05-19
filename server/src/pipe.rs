@@ -39,9 +39,15 @@ pub struct StatusMsg {
     pub sim_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub import_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub net_error: Option<String>,
 }
 
-pub fn start(cmd_tx: mpsc::Sender<PipeCmd>, status_rx: watch::Receiver<StatusMsg>) {
+pub fn start(
+    cmd_tx: mpsc::Sender<PipeCmd>,
+    status_rx: watch::Receiver<StatusMsg>,
+    log_rx: mpsc::Receiver<String>,
+) {
     // 플러그인→서버: stdin에서 JSON 줄 읽기 (blocking)
     std::thread::spawn(move || {
         let reader = std::io::BufReader::new(std::io::stdin());
@@ -56,11 +62,18 @@ pub fn start(cmd_tx: mpsc::Sender<PipeCmd>, status_rx: watch::Receiver<StatusMsg
         }
     });
 
-    // 서버→플러그인: 상태 변화 감지 후 stdout에 JSON 줄 쓰기
+    // 서버→플러그인: 로그 이벤트 + 상태 변화를 stdout에 JSON 줄 쓰기
     std::thread::spawn(move || {
         let mut stdout = std::io::stdout();
         let mut last = StatusMsg::default();
         loop {
+            // 로그 메시지 즉시 flush
+            while let Ok(msg) = log_rx.try_recv() {
+                let json = serde_json::json!({"log": msg}).to_string() + "\n";
+                if stdout.write_all(json.as_bytes()).is_err() { return; }
+                let _ = stdout.flush();
+            }
+
             std::thread::sleep(std::time::Duration::from_millis(50));
             let current = status_rx.borrow().clone();
             if current == last { continue; }

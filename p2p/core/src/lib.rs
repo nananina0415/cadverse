@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use anyhow::Result;
@@ -42,7 +42,7 @@ impl Connection {
 
     pub async fn recv(&self) -> Result<Vec<u8>> {
         let mut recv = self.0.accept_uni().await?;
-        let data = recv.read_to_end(usize::MAX).await?;
+        let data = recv.read_to_end(64 * 1024).await?;
         Ok(data)
     }
 
@@ -158,12 +158,19 @@ impl P2PNet {
     }
 }
 
-pub async fn join_p2p_net(form: JoinForm) -> Result<P2PNet> {
+pub async fn join_p2p_net(form: JoinForm, log: &std::sync::mpsc::Sender<String>) -> Result<P2PNet> {
+    let _ = log.send("iroh 엔드포인트 생성 중...".into());
     let endpoint = create_endpoint().await?;
-    endpoint.online().await;
+
+    let _ = log.send("relay 서버 연결 중...".into());
+    tokio::time::timeout(Duration::from_secs(15), endpoint.online())
+        .await
+        .map_err(|_| anyhow::anyhow!("relay 연결 타임아웃 (15s) — 방화벽 또는 인터넷 연결을 확인하세요"))?;
+    let _ = log.send("relay 서버 연결 완료".into());
 
     let keypair = derive_network_keypair(&form.net_id.0, &form.pw.0);
 
+    let _ = log.send("코디네이터 조회 중 (dns.iroh.link)...".into());
     let coord_id = read_coordinator_id(&keypair).await;
 
     let (data_tx, data_rx) = mpsc::channel(32);
@@ -171,7 +178,9 @@ pub async fn join_p2p_net(form: JoinForm) -> Result<P2PNet> {
 
     match coord_id {
         None => {
+            let _ = log.send("코디네이터 없음 → 새 그룹 생성 중...".into());
             publish_coordinator_id(&keypair, endpoint.id()).await?;
+            let _ = log.send("그룹 등록 완료".into());
 
             let my_info = PeerInfo {
                 addr: endpoint.addr(),
@@ -201,8 +210,16 @@ pub async fn join_p2p_net(form: JoinForm) -> Result<P2PNet> {
             })
         }
         Some(coord_id) => {
+            let _ = log.send("코디네이터 발견 → 연결 중...".into());
             let coord_addr: NodeAddr = coord_id.into();
-            let conn = endpoint.connect(coord_addr, COORD_ALPN).await?;
+            let conn = tokio::time::timeout(
+                Duration::from_secs(15),
+                endpoint.connect(coord_addr, COORD_ALPN),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("코디네이터 연결 타임아웃 (15s)"))?
+            .map_err(|e| anyhow::anyhow!("코디네이터 연결 실패: {e}"))?;
+            let _ = log.send("코디네이터 연결 완료".into());
 
             let my_info = PeerInfo {
                 addr: endpoint.addr(),
@@ -235,7 +252,9 @@ pub async fn join_p2p_net(form: JoinForm) -> Result<P2PNet> {
 /// 코디네이터가 되는 경우는 없다.
 pub async fn join_as_client(form: JoinForm) -> Result<P2PNet> {
     let endpoint = create_endpoint().await?;
-    endpoint.online().await;
+    tokio::time::timeout(Duration::from_secs(15), endpoint.online())
+        .await
+        .map_err(|_| anyhow::anyhow!("relay 연결 타임아웃 (15s)"))?;
 
     let keypair = derive_network_keypair(&form.net_id.0, &form.pw.0);
 
@@ -243,7 +262,13 @@ pub async fn join_as_client(form: JoinForm) -> Result<P2PNet> {
         .ok_or_else(|| anyhow::anyhow!("네트워크를 찾을 수 없습니다. 그룹명/비밀번호를 확인해주세요."))?;
 
     let coord_addr: NodeAddr = coord_id.into();
-    let conn = endpoint.connect(coord_addr, COORD_ALPN).await?;
+    let conn = tokio::time::timeout(
+        Duration::from_secs(15),
+        endpoint.connect(coord_addr, COORD_ALPN),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("코디네이터 연결 타임아웃 (15s)"))?
+    .map_err(|e| anyhow::anyhow!("코디네이터 연결 실패: {e}"))?;
 
     let my_info = PeerInfo {
         addr: endpoint.addr(),
@@ -327,7 +352,9 @@ fn derive_network_keypair(net_id: &str, pw: &str) -> pkarr::Keypair {
 }
 
 async fn read_coordinator_id(keypair: &pkarr::Keypair) -> Option<EndpointId> {
-    let client = reqwest::Client::builder().build().ok()?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build().ok()?;
     let z32 = keypair.public_key().to_z32();
     let url = format!("{PKARR_RELAY}/{z32}");
 
@@ -350,7 +377,9 @@ async fn read_coordinator_id(keypair: &pkarr::Keypair) -> Option<EndpointId> {
 }
 
 async fn publish_coordinator_id(keypair: &pkarr::Keypair, my_id: EndpointId) -> Result<()> {
-    let client = reqwest::Client::builder().build()?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()?;
     let z32 = keypair.public_key().to_z32();
     let url = format!("{PKARR_RELAY}/{z32}");
     let id_str = my_id.to_string();

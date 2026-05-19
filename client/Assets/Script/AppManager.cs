@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -22,6 +23,7 @@ namespace Cadverse
         Addr                               _currentAddr;
         CancellationTokenSource            _recvCts;
         readonly ConcurrentQueue<System.Action> _mainQueue = new();
+        readonly List<RectTransform> _activeToasts = new();
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         static void Bootstrap()
@@ -116,8 +118,16 @@ namespace Cadverse
         static TMP_FontAsset _font;
         static TMP_FontAsset Font => _font ??= Resources.Load<TMP_FontAsset>("Font/Pretendard-Regular SDF");
 
+        const float ToastShift = 0.14f; // 토스트 높이(0.13) + 간격(0.01)
+
         void ShowToast(string msg)
         {
+            foreach (var existing in _activeToasts)
+            {
+                existing.anchorMin += new Vector2(0, ToastShift);
+                existing.anchorMax += new Vector2(0, ToastShift);
+            }
+
             var canvasGO = new GameObject("Toast");
             var canvas   = canvasGO.AddComponent<Canvas>();
             canvas.renderMode   = RenderMode.ScreenSpaceOverlay;
@@ -126,10 +136,10 @@ namespace Cadverse
 
             var textGO = new GameObject("Text");
             textGO.transform.SetParent(canvasGO.transform, false);
-            var rt        = textGO.AddComponent<RectTransform>();
-            rt.anchorMin  = new Vector2(0.1f, 0.08f);
-            rt.anchorMax  = new Vector2(0.9f, 0.22f);
-            rt.offsetMin  = rt.offsetMax = Vector2.zero;
+            var rt       = textGO.AddComponent<RectTransform>();
+            rt.anchorMin = new Vector2(0.1f, 0.06f);
+            rt.anchorMax = new Vector2(0.9f, 0.19f);
+            rt.offsetMin = rt.offsetMax = Vector2.zero;
             var tmp       = textGO.AddComponent<TextMeshProUGUI>();
             tmp.font      = Font;
             tmp.text      = msg;
@@ -137,10 +147,11 @@ namespace Cadverse
             tmp.fontSize  = 28f;
             tmp.color     = Color.white;
 
-            StartCoroutine(ToastRoutine(canvasGO, tmp));
+            _activeToasts.Add(rt);
+            StartCoroutine(ToastRoutine(canvasGO, tmp, rt));
         }
 
-        IEnumerator ToastRoutine(GameObject go, TextMeshProUGUI tmp)
+        IEnumerator ToastRoutine(GameObject go, TextMeshProUGUI tmp, RectTransform rt)
         {
             yield return new WaitForSeconds(1.4f);
             float elapsed = 0f;
@@ -152,6 +163,7 @@ namespace Cadverse
                 tmp.color = c;
                 yield return null;
             }
+            _activeToasts.Remove(rt);
             Destroy(go);
         }
 

@@ -70,7 +70,6 @@ namespace Cadverse
             mat = new Material(mat);
 
             // (4) 파트별 OBJ 다운로드 → 메시 생성
-            bool firstMesh = true;
             foreach (var kvp in transforms)
             {
                 string name   = kvp.Key;
@@ -92,12 +91,6 @@ namespace Cadverse
                     new Vector3(m.m01, m.m11, m.m21).magnitude,
                     new Vector3(m.m02, m.m12, m.m22).magnitude
                 );
-
-                if (firstMesh)
-                {
-                    AppManager.Toast($"{name} pos={go.transform.localPosition} scale={go.transform.localScale}");
-                    firstMesh = false;
-                }
             }
 
             // (5) ARScene 생성(리스너 등록) → referenceLibrary 설정 (순서 중요)
@@ -110,12 +103,9 @@ namespace Cadverse
 
         void OnTrackedImagesChanged(ARTrackablesChangedEventArgs<ARTrackedImage> e)
         {
-            AppManager.Toast($"trackables: +{e.added.Count} ~{e.updated.Count}");
-
             foreach (var img in e.added)
                 if (img.referenceImage.name == "sim_marker")
                 {
-                    AppManager.Toast($"마커 added: {img.trackingState}");
                     if (img.trackingState == TrackingState.Tracking)
                         AttachToMarker(img.transform);
                 }
@@ -124,10 +114,8 @@ namespace Cadverse
                 if (img.referenceImage.name == "sim_marker")
                 {
                     if (img.trackingState != _lastTrackingState)
-                    {
                         _lastTrackingState = img.trackingState;
-                        AppManager.Toast($"마커 updated: {img.trackingState}");
-                    }
+
                     if (img.trackingState == TrackingState.Tracking)
                         AttachToMarker(img.transform);
                     else

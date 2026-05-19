@@ -94,7 +94,12 @@ impl Drop for NetThread {
 }
 
 impl NetThread {
-    pub fn new(setting: &NetSetting, userin_w: TripleBufWriter<Vec<UserIn>>, simout_r: TripleBufReader<SimFrame>) -> NetThread {
+    pub fn new(
+        setting: &NetSetting,
+        userin_w: TripleBufWriter<Vec<UserIn>>,
+        simout_r: TripleBufReader<SimFrame>,
+        log: std::sync::mpsc::Sender<String>,
+    ) -> anyhow::Result<NetThread> {
         let rt = tokio::runtime::Runtime::new()
             .expect("tokio 런타임 생성 실패");
 
@@ -104,8 +109,8 @@ impl NetThread {
                 pw:         Password(setting.password.clone()),
                 my_name:    setting.name.clone(),
                 peer_type:  setting.peer_type.clone(),
-            }
-        )).expect("p2p 네트워크 참가 실패"));
+            }, &log)
+        )?);
 
         let my_peer_type = Arc::new(Mutex::new(setting.peer_type.clone()));
         let ar_clients: Arc<Mutex<Vec<p2p_core::Connection>>> = Arc::new(Mutex::new(Vec::new()));
@@ -151,7 +156,14 @@ impl NetThread {
                     let data = match simout_r.read() {
                         SimFrame::State(out) => {
                             reload_sent = false;
-                            serde_json::to_vec(out).expect("SimOut 직렬화 실패")
+                            match serde_json::to_vec(out) {
+                                Ok(d) => d,
+                                Err(e) => {
+                                    eprintln!("[broadcast] 직렬화 실패: {e}");
+                                    tokio::time::sleep(std::time::Duration::from_millis(16)).await;
+                                    continue;
+                                }
+                            }
                         }
                         SimFrame::Reload => {
                             if reload_sent {
@@ -184,7 +196,7 @@ impl NetThread {
             crate::save_local_sim_qr_txt(&my_info.addr);
         }
 
-        NetThread { async_rt: rt, net, my_peer_type, ar_clients }
+        Ok(NetThread { async_rt: rt, net, my_peer_type, ar_clients })
     }
 
     pub fn peer_list(&self) -> Vec<PeerInfo> {

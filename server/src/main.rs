@@ -20,6 +20,7 @@ struct AppState {
     extracting:   bool,
     importing:    bool,
     import_error: Option<String>,
+    net_error:    Option<String>,
 }
 
 fn exe_dir() -> std::path::PathBuf {
@@ -31,13 +32,20 @@ fn exe_dir() -> std::path::PathBuf {
 }
 
 fn main() {
+    std::panic::set_hook(Box::new(|info| {
+        let msg = format!("{info}\n");
+        let _ = std::fs::write(exe_dir().join("panic.log"), &msg);
+        eprint!("{msg}");
+    }));
+
     setup_python();
     pyo3::prepare_freethreaded_python();
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<PipeCmd>();
     let (status_tx, status_rx) = tokio::sync::watch::channel(StatusMsg::default());
+    let (log_tx, log_rx) = mpsc::channel::<String>();
 
-    pipe::start(cmd_tx, status_rx);
+    pipe::start(cmd_tx, status_rx, log_rx);
 
     let (userin_r, userin_w, userin_swap) = TripleBuffer::new([
         Vec::<UserIn>::with_capacity(32),
@@ -60,6 +68,7 @@ fn main() {
         extracting:   false,
         importing:    false,
         import_error: None,
+        net_error:    None,
     };
 
     let shared_status: Arc<Mutex<StatusMsg>> = Arc::new(Mutex::new(StatusMsg::default()));
@@ -112,16 +121,24 @@ fn main() {
                 };
                 eprintln!("[init] user={username} group={group} mode={mode}");
 
-                let net = NetThread::new(
+                match NetThread::new(
                     &net_setting,
                     net_userin_w_opt.take().expect("userin_w 이미 소비됨"),
                     net_simout_r_opt.take().expect("simout_r 이미 소비됨"),
-                );
-                eprintln!("[init] NetThread 생성 완료");
-
-                state.username   = username;
-                state.password   = pw;
-                state.net        = Some(net);
+                    log_tx.clone(),
+                ) {
+                    Ok(net) => {
+                        eprintln!("[init] NetThread 생성 완료");
+                        state.username = username;
+                        state.password = pw;
+                        state.net      = Some(net);
+                        state.net_error = None;
+                    }
+                    Err(e) => {
+                        eprintln!("[init] NetThread 생성 실패: {e}");
+                        state.net_error = Some(e.to_string());
+                    }
+                }
                 push_status(&state, &mut last_status, &status_tx);
             }
 
@@ -268,6 +285,7 @@ fn build_status(state: &AppState) -> StatusMsg {
         members,
         sim_error,
         import_error: state.import_error.clone(),
+        net_error:    state.net_error.clone(),
     }
 }
 
@@ -395,6 +413,11 @@ pub fn setup_python() {
                 .expect("tar failed");
             assert!(status.success(), "Failed to unpack python_env.tar.gz");
         }
-        unsafe { std::env::set_var("PYTHONHOME", &python_env) };
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        unsafe {
+            std::env::set_var("PYTHONHOME", &python_env);
+            std::env::set_var("CONDA_PREFIX", &python_env);
+            std::env::set_var("PATH", format!("{};{}", python_env.join("Library").join("bin").display(), current_path));
+        }
     }
 }
