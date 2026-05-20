@@ -1,0 +1,4 @@
+{
+  "server_exe": "../server/target/debug/server.exe",
+  "models_dir": "../models"
+}

@@ -29,3 +29,12 @@ server/.cargo/
 
 # Deploy artifacts
 deploy/
+
+# Plugin 로컬 설정
+cad_plugin/config.json
+cad_plugin/*.log
+
+model/
+models/
+
+docs/

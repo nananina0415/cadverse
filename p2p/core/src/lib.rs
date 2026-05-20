@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use anyhow::Result;
@@ -42,7 +42,7 @@ impl Connection {
 
     pub async fn recv(&self) -> Result<Vec<u8>> {
         let mut recv = self.0.accept_uni().await?;
-        let data = recv.read_to_end(usize::MAX).await?;
+        let data = recv.read_to_end(64 * 1024).await?;
         Ok(data)
     }
 
@@ -158,12 +158,19 @@ impl P2PNet {
     }
 }
 
-pub async fn join_p2p_net(form: JoinForm) -> Result<P2PNet> {
+pub async fn join_p2p_net(form: JoinForm, log: &std::sync::mpsc::Sender<String>) -> Result<P2PNet> {
+    let _ = log.send("iroh 엔드포인트 생성 중...".into());
     let endpoint = create_endpoint().await?;
-    endpoint.online().await;
+
+    let _ = log.send("relay 서버 연결 중...".into());
+    tokio::time::timeout(Duration::from_secs(15), endpoint.online())
+        .await
+        .map_err(|_| anyhow::anyhow!("relay 연결 타임아웃 (15s) — 방화벽 또는 인터넷 연결을 확인하세요"))?;
+    let _ = log.send("relay 서버 연결 완료".into());
 
     let keypair = derive_network_keypair(&form.net_id.0, &form.pw.0);
 
+    let _ = log.send("코디네이터 조회 중 (dns.iroh.link)...".into());
     let coord_id = read_coordinator_id(&keypair).await;
 
     let (data_tx, data_rx) = mpsc::channel(32);
@@ -171,8 +178,9 @@ pub async fn join_p2p_net(form: JoinForm) -> Result<P2PNet> {
 
     match coord_id {
         None => {
-            println!("[join] becoming coordinator");
+            let _ = log.send("코디네이터 없음 → 새 그룹 생성 중...".into());
             publish_coordinator_id(&keypair, endpoint.id()).await?;
+            let _ = log.send("그룹 등록 완료".into());
 
             let my_info = PeerInfo {
                 addr: endpoint.addr(),
@@ -202,9 +210,16 @@ pub async fn join_p2p_net(form: JoinForm) -> Result<P2PNet> {
             })
         }
         Some(coord_id) => {
-            println!("[join] coordinator found: {coord_id}");
+            let _ = log.send("코디네이터 발견 → 연결 중...".into());
             let coord_addr: NodeAddr = coord_id.into();
-            let conn = endpoint.connect(coord_addr, COORD_ALPN).await?;
+            let conn = tokio::time::timeout(
+                Duration::from_secs(15),
+                endpoint.connect(coord_addr, COORD_ALPN),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("코디네이터 연결 타임아웃 (15s)"))?
+            .map_err(|e| anyhow::anyhow!("코디네이터 연결 실패: {e}"))?;
+            let _ = log.send("코디네이터 연결 완료".into());
 
             let my_info = PeerInfo {
                 addr: endpoint.addr(),
@@ -237,16 +252,23 @@ pub async fn join_p2p_net(form: JoinForm) -> Result<P2PNet> {
 /// 코디네이터가 되는 경우는 없다.
 pub async fn join_as_client(form: JoinForm) -> Result<P2PNet> {
     let endpoint = create_endpoint().await?;
-    endpoint.online().await;
+    tokio::time::timeout(Duration::from_secs(15), endpoint.online())
+        .await
+        .map_err(|_| anyhow::anyhow!("relay 연결 타임아웃 (15s)"))?;
 
     let keypair = derive_network_keypair(&form.net_id.0, &form.pw.0);
 
     let coord_id = read_coordinator_id(&keypair).await
         .ok_or_else(|| anyhow::anyhow!("네트워크를 찾을 수 없습니다. 그룹명/비밀번호를 확인해주세요."))?;
 
-    println!("[join_as_client] coordinator found: {coord_id}");
     let coord_addr: NodeAddr = coord_id.into();
-    let conn = endpoint.connect(coord_addr, COORD_ALPN).await?;
+    let conn = tokio::time::timeout(
+        Duration::from_secs(15),
+        endpoint.connect(coord_addr, COORD_ALPN),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("코디네이터 연결 타임아웃 (15s)"))?
+    .map_err(|e| anyhow::anyhow!("코디네이터 연결 실패: {e}"))?;
 
     let my_info = PeerInfo {
         addr: endpoint.addr(),
@@ -330,7 +352,9 @@ fn derive_network_keypair(net_id: &str, pw: &str) -> pkarr::Keypair {
 }
 
 async fn read_coordinator_id(keypair: &pkarr::Keypair) -> Option<EndpointId> {
-    let client = reqwest::Client::builder().build().ok()?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build().ok()?;
     let z32 = keypair.public_key().to_z32();
     let url = format!("{PKARR_RELAY}/{z32}");
 
@@ -353,7 +377,9 @@ async fn read_coordinator_id(keypair: &pkarr::Keypair) -> Option<EndpointId> {
 }
 
 async fn publish_coordinator_id(keypair: &pkarr::Keypair, my_id: EndpointId) -> Result<()> {
-    let client = reqwest::Client::builder().build()?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()?;
     let z32 = keypair.public_key().to_z32();
     let url = format!("{PKARR_RELAY}/{z32}");
     let id_str = my_id.to_string();
@@ -408,9 +434,7 @@ async fn broadcast_to_all_except(peers: &PeerMap, list: &[PeerInfo], except_id: 
             .collect()
     };
     for conn in conns {
-        if let Err(e) = send_to_peer(&conn, &ToPeer::Broadcast(list.to_vec())).await {
-            eprintln!("[coord] broadcast error: {e}");
-        }
+        let _ = send_to_peer(&conn, &ToPeer::Broadcast(list.to_vec())).await;
     }
 }
 
@@ -436,9 +460,7 @@ async fn register_peer_and_ack(
     };
 
     if conflict {
-        if let Err(e) = send_to_peer(conn, &ToPeer::NameConflict).await {
-            eprintln!("[coord] name conflict 전송 실패: {e}");
-        }
+        let _ = send_to_peer(conn, &ToPeer::NameConflict).await;
         return;
     }
 
@@ -451,9 +473,7 @@ async fn register_peer_and_ack(
         });
         map.values().map(|s| s.info.clone()).collect::<Vec<_>>()
     };
-    if let Err(e) = send_to_peer(conn, &ToPeer::Ack(list.clone())).await {
-        eprintln!("[coord] ack error: {e}");
-    }
+    let _ = send_to_peer(conn, &ToPeer::Ack(list.clone())).await;
     broadcast_to_all_except(peers, &list, Some(peer_id)).await;
 }
 
@@ -482,7 +502,7 @@ async fn handle_coord_conn(conn: iroh::endpoint::Connection, peers: PeerMap) {
         };
         let msg: ToCoord = match serde_json::from_slice(&data) {
             Ok(m) => m,
-            Err(e) => { eprintln!("[coord] parse error: {e}"); continue; }
+            Err(_) => continue,
         };
 
         match msg {
@@ -524,15 +544,15 @@ async fn accept_loop(
         tokio::spawn(async move {
             let mut accepting = match incoming.accept() {
                 Ok(a) => a,
-                Err(e) => { eprintln!("[accept] error: {e}"); return; }
+                Err(_) => return,
             };
             let alpn = match accepting.alpn().await {
                 Ok(a) => a,
-                Err(e) => { eprintln!("[accept] alpn error: {e}"); return; }
+                Err(_) => return,
             };
             let conn = match accepting.await {
                 Ok(c) => c,
-                Err(e) => { eprintln!("[accept] conn error: {e}"); return; }
+                Err(_) => return,
             };
 
             if alpn == COORD_ALPN {
@@ -588,7 +608,7 @@ async fn peer_recv_loop(conn: iroh::endpoint::Connection, peers: Arc<Mutex<Vec<P
         };
         let msg: ToPeer = match serde_json::from_slice(&data) {
             Ok(m) => m,
-            Err(e) => { eprintln!("[peer] parse error: {e}"); continue; }
+            Err(_) => continue,
         };
         let list = match msg {
             ToPeer::Ack(list) | ToPeer::Broadcast(list) => list,
@@ -601,10 +621,7 @@ async fn peer_recv_loop(conn: iroh::endpoint::Connection, peers: Arc<Mutex<Vec<P
 async fn peer_heartbeat_loop(conn: iroh::endpoint::Connection) {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(4)).await;
-        if let Err(e) = send_to_coord(&conn, &ToCoord::Heartbeat).await {
-            eprintln!("[peer] heartbeat error: {e}");
-            break;
-        }
+        if send_to_coord(&conn, &ToCoord::Heartbeat).await.is_err() { break; }
     }
 }
 

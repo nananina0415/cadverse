@@ -1,0 +1,606 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CADverse</title>
+    <style>
+      :root {
+        --bg-primary: #1e1e1e;
+        --bg-secondary: #2a2a2a;
+        --bg-input: #2d2d2d;
+        --border: #333;
+        --border-focus: #e07b39;
+        --text-primary: #d4d4d4;
+        --text-secondary: #888;
+        --text-bright: #ffffff;
+        --accent: #e07b39;
+      }
+
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg-primary: #f3f3f3;
+          --bg-secondary: #e8e8e8;
+          --bg-input: #ffffff;
+          --border: #cccccc;
+          --border-focus: #e07b39;
+          --text-primary: #1e1e1e;
+          --text-secondary: #666666;
+          --text-bright: #000000;
+          --accent: #e07b39;
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        font-family: -apple-system, "Segoe UI", sans-serif;
+        font-size: 13px;
+        background: var(--bg-primary);
+        color: var(--text-primary);
+        padding: 12px;
+      }
+
+      /* ── 헤더 ── */
+      .header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 14px;
+      }
+      .header h1 {
+        font-size: 15px;
+        font-weight: 600;
+        color: var(--text-bright);
+      }
+      .dot-server-status {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--border);
+      }
+      .dot-server-status.connected {
+        background: #e07b39;
+      }
+
+      /* ── 구분선 ── */
+      hr {
+        border: none;
+        border-top: 1px solid var(--border);
+        margin: 10px 0;
+      }
+
+      /* ── 섹션 레이블 ── */
+      .section-label {
+        font-size: 11px;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 6px;
+      }
+
+      /* ── 설정 폼 (미설정 시 표시) ── */
+      #setup-section {
+        display: block;
+      }
+      #main-section {
+        display: none;
+      }
+
+      .field {
+        margin-bottom: 8px;
+      }
+      .field label {
+        display: block;
+        font-size: 11px;
+        color: var(--text-secondary);
+        margin-bottom: 3px;
+      }
+      .field input {
+        width: 100%;
+        padding: 5px 8px;
+        background: var(--bg-input);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        color: var(--text-primary);
+        font-size: 13px;
+        outline: none;
+      }
+      .field input:focus {
+        border-color: var(--border-focus);
+      }
+
+      /* ── 버튼 ── */
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+        padding: 6px 12px;
+        border: none;
+        border-radius: 4px;
+        font-size: 12px;
+        cursor: pointer;
+        transition: opacity 0.15s;
+      }
+      .btn:hover {
+        opacity: 0.85;
+      }
+      .btn:disabled {
+        opacity: 0.35;
+        cursor: default;
+      }
+
+      .btn-primary {
+        background: var(--accent);
+        color: #fff;
+        width: 100%;
+      }
+      .btn-outline {
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--text-primary);
+      }
+      .btn-pause {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border);
+        color: var(--text-primary);
+        flex: 1;
+      }
+
+      .controls-row {
+        display: flex;
+        gap: 8px;
+        margin-top: 2px;
+      }
+
+      /* ── 그룹 정보 ── */
+      .info-grid {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 4px 10px;
+        margin-bottom: 2px;
+      }
+      .info-grid .key {
+        color: var(--text-secondary);
+      }
+      .info-grid .value {
+        color: var(--text-primary);
+        word-break: break-all;
+      }
+
+      /* ── 그룹원 리스트 ── */
+      .member-list {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .member-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 5px 8px;
+        background: var(--bg-secondary);
+        border-radius: 4px;
+      }
+      .member-name {
+        font-size: 13px;
+        color: var(--text-primary);
+      }
+      .member-name.me {
+        color: var(--text-bright);
+        font-weight: 600;
+      }
+
+      .indicators {
+        display: flex;
+        gap: 5px;
+        align-items: center;
+      }
+      .ind {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--border);
+      }
+      .ind.orange {
+        background: #e07b39;
+      }
+      .ind.blue {
+        background: #4a9edd;
+      }
+      .ind.green {
+        background: #4ec94e;
+      }
+
+      /* ── 모드 토글 ── */
+      .mode-toggle {
+        display: flex;
+        background: var(--bg-secondary);
+        border-radius: 4px;
+        padding: 2px;
+        margin-bottom: 12px;
+      }
+      .mode-btn {
+        flex: 1;
+        padding: 5px;
+        border: none;
+        background: transparent;
+        color: var(--text-secondary);
+        font-size: 12px;
+        cursor: pointer;
+        border-radius: 3px;
+        transition: all 0.15s;
+      }
+      .mode-btn.active {
+        background: var(--accent);
+        color: #fff;
+      }
+
+      /* ── 에러 배너 ── */
+      .error-banner {
+        display: none;
+        padding: 8px 10px;
+        background: #5a1f1f;
+        border: 1px solid #8b3030;
+        border-radius: 4px;
+        color: #f88;
+        font-size: 12px;
+        margin-bottom: 10px;
+        word-break: break-all;
+      }
+      @media (prefers-color-scheme: light) {
+        .error-banner {
+          background: #fde8e8;
+          border-color: #f5a0a0;
+          color: #c00;
+        }
+      }
+
+      /* ── 안내 문구 ── */
+      .hint {
+        font-size: 11px;
+        color: var(--text-secondary);
+        text-align: center;
+        margin-top: 10px;
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.4;
+        }
+      }
+      #hint-connecting,
+      .hint.loading {
+        animation: pulse 1.4s ease-in-out infinite;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- 헤더 -->
+    <div class="header">
+      <div class="dot-server-status" id="server-dot"></div>
+      <h1>CADverse</h1>
+    </div>
+
+    <!-- 에러 배너 -->
+    <div class="error-banner" id="error-banner"></div>
+
+    <!-- ══ 초기 설정 섹션 (config 없을 때) ══ -->
+    <div id="setup-section">
+      <div class="section-label">초기 설정</div>
+
+      <div class="mode-toggle">
+        <button
+          class="mode-btn active"
+          id="mode-create"
+          onclick="setMode('create')"
+        >
+          새 그룹 만들기
+        </button>
+        <button class="mode-btn" id="mode-join" onclick="setMode('join')">
+          그룹 참여
+        </button>
+      </div>
+
+      <div class="field">
+        <label>사용자 이름</label>
+        <input type="text" id="input-username" placeholder="예: kim" />
+      </div>
+      <div class="field">
+        <label>그룹 이름</label>
+        <input type="text" id="input-group" placeholder="예: lab01" />
+      </div>
+      <div class="field" id="field-password" style="display: none">
+        <label>그룹 비밀번호</label>
+        <input type="password" id="input-password" placeholder="비밀번호" />
+      </div>
+      <button class="btn btn-primary" onclick="saveConfig()">시작</button>
+    </div>
+
+    <!-- ══ 메인 섹션 (설정 완료 후) ══ -->
+    <div id="main-section">
+      <!-- 그룹 정보 -->
+      <div class="section-label">그룹 정보</div>
+      <div class="info-grid">
+        <span class="key">그룹</span>
+        <span class="value" id="disp-group">—</span>
+        <span class="key">비밀번호</span
+        ><span class="value" id="disp-pw">—</span> <span class="key">나</span>
+        <span class="value" id="disp-me">—</span>
+      </div>
+      <p class="hint" id="hint-connecting" style="display: none">
+        서버 초기화 중…
+      </p>
+
+      <hr />
+
+      <!-- 컨트롤 버튼 -->
+      <div class="controls-row">
+        <button
+          class="btn btn-pause"
+          id="btn-pause"
+          disabled
+          onclick="togglePause()"
+        >
+          정지
+        </button>
+        <button class="btn btn-outline" id="btn-qr" disabled onclick="showQr()">
+          QR 표시
+        </button>
+      </div>
+
+      <hr />
+
+      <!-- 그룹원 리스트 -->
+      <div class="section-label">그룹원</div>
+      <div class="member-list" id="member-list">
+        <!-- JS로 동적 생성 -->
+      </div>
+
+      <p class="hint" id="hint-idle">
+        CAD 파일을 저장하면 시뮬레이션이 시작됩니다.
+      </p>
+    </div>
+
+    <script>
+      // ── Fusion 360 → JS 메시지 수신 ────────────────────────────────────────────
+      window.fusionJavaScriptHandler = {
+        handle: function (action, data) {
+          let d;
+          try {
+            d = data ? JSON.parse(data) : {};
+          } catch (e) {
+            d = data && typeof data === "object" ? data : {};
+          }
+          console.log("[py->js*] action=" + action);
+          if (action === "config_loaded") onConfigLoaded(d);
+          if (action === "config_saved") onConfigSaved(d);
+          if (action === "status") onStatus(d);
+          if (action === "server_error") onServerError(d);
+          if (action === "server_status" && d.error)
+            onServerError({ message: d.error });
+          return "success";
+        },
+      };
+
+      // ── JS → Fusion 360 메시지 송신 ────────────────────────────────────────────
+      function sendToFusion(action, data) {
+        if (window.adsk && window.adsk.fusionSendData) {
+          window.adsk.fusionSendData(action, JSON.stringify(data));
+        }
+      }
+
+      // adsk 브릿지 준비될 때까지 폴링 후 초기화
+      function waitForBridge(callback, interval) {
+        if (window.adsk && window.adsk.fusionSendData) {
+          callback();
+        } else {
+          setTimeout(() => waitForBridge(callback, interval), interval || 100);
+        }
+      }
+
+      // ── 서버 에러 표시 ─────────────────────────────────────────────────────────
+      function onServerError(d) {
+        _serverError = true;
+        const el = document.getElementById("error-banner");
+        el.textContent = "⚠ " + d.message;
+        el.style.display = "block";
+        document.getElementById("server-dot").classList.remove("connected");
+      }
+
+      // ── 모드 전환 ───────────────────────────────────────────────────────────────
+      let _mode = "create";
+      function setMode(mode) {
+        _mode = mode;
+        document
+          .getElementById("mode-create")
+          .classList.toggle("active", mode === "create");
+        document
+          .getElementById("mode-join")
+          .classList.toggle("active", mode === "join");
+        document.getElementById("field-password").style.display =
+          mode === "join" ? "block" : "none";
+      }
+
+      // ── 초기 설정 저장 ──────────────────────────────────────────────────────────
+      function saveConfig() {
+        const username = document.getElementById("input-username").value.trim();
+        const group = document.getElementById("input-group").value.trim();
+        const password =
+          _mode === "join"
+            ? document.getElementById("input-password").value.trim()
+            : "";
+        if (!username || !group) return;
+        if (_mode === "join" && !password) return;
+
+        const btn = document.querySelector("#setup-section .btn-primary");
+        btn.textContent = "저장 중…";
+        btn.disabled = true;
+
+        sendToFusion("save_config", {
+          username,
+          group_name: group,
+          group_password: password,
+          mode: _mode,
+        });
+      }
+
+      function onConfigLoaded(cfg) {
+        document.getElementById("input-username").value = cfg.username || "";
+        document.getElementById("input-group").value = cfg.group_name || "";
+        if (cfg.mode) setMode(cfg.mode);
+      }
+
+      function onConfigSaved(cfg) {
+        document.getElementById("setup-section").style.display = "none";
+        document.getElementById("main-section").style.display = "block";
+        document.getElementById("disp-group").textContent = cfg.group_name;
+        document.getElementById("disp-pw").textContent =
+          cfg.group_password || "(생성 중…)";
+        document.getElementById("disp-me").textContent = cfg.username;
+        document.getElementById("error-banner").style.display = "none";
+        document.getElementById("hint-connecting").style.display = "block";
+      }
+
+      let _serverError = false;
+      let _serverConnected = false;
+      let _hasPassword = false;
+      let _simRunning = false;
+      let _simStarting = false;
+      let _simStopping = false;
+      let _paused = false;
+      let _importing = false;
+
+      // ── 안내 문구 업데이트 ─────────────────────────────────────────────────────
+      function updateHint(reloading, extracting, importing) {
+        const el = document.getElementById("hint-idle");
+        if (importing) {
+          el.className = "hint loading";
+          el.textContent = "모델 가져오는 중…";
+          el.style.display = "block";
+        } else if (extracting) {
+          el.className = "hint loading";
+          el.textContent = "Python 환경 압축 해제 중…";
+          el.style.display = "block";
+        } else if (_simStarting) {
+          el.className = "hint loading";
+          el.textContent = "시뮬레이션 시작 중…";
+          el.style.display = "block";
+        } else if (reloading) {
+          el.className = "hint loading";
+          el.textContent = "모델 재로딩 중…";
+          el.style.display = "block";
+        } else if (!_simRunning) {
+          el.className = "hint";
+          el.textContent = "CAD 파일을 저장하면 시뮬레이션이 시작됩니다.";
+          el.style.display = "block";
+        } else {
+          el.className = "hint";
+          el.style.display = "none";
+        }
+      }
+
+      // ── 서버 상태 수신 ──────────────────────────────────────────────────────────
+      function onStatus(s) {
+        _serverConnected = true;
+        document.getElementById("hint-connecting").style.display = "none";
+        document.getElementById("server-dot").classList.add("connected");
+
+        if (s.password) {
+          _hasPassword = true;
+          document.getElementById("disp-pw").textContent = s.password;
+        }
+
+        if (s.sim_error) {
+          _simStarting = false;
+          onServerError({ message: s.sim_error });
+        }
+        if (_simStarting && s.sim_running) {
+          _simStarting = false;
+        }
+        if (_simStopping && !s.sim_running) {
+          _simStopping = false;
+        }
+        _simRunning = s.sim_running;
+        _paused = s.paused;
+
+        const btn = document.getElementById("btn-pause");
+        btn.disabled =
+          !_serverConnected || !_hasPassword || _simStarting || _simStopping;
+        if (_simStarting) {
+          btn.textContent = "시작 중…";
+        } else if (_simStopping) {
+          btn.textContent = "중단 중…";
+        } else {
+          btn.textContent = _simRunning ? "정지" : "시뮬 시작";
+        }
+
+        document.getElementById("btn-qr").disabled = !s.sim_running;
+
+        if (s.import_error) {
+          onServerError({ message: s.import_error });
+        }
+        _importing = s.importing || false;
+
+        updateHint(s.reloading, s.extracting, _importing);
+
+        const list = document.getElementById("member-list");
+        list.innerHTML = "";
+        (s.members || []).forEach((m) => {
+          const row = document.createElement("div");
+          row.className = "member-row";
+          const canImport = !m.is_me && m.sim && !_importing;
+          row.innerHTML = `
+          <span style="display:flex;align-items:center;gap:6px">
+            <span class="member-name${m.is_me ? " me" : ""}">${m.name}${m.is_me ? " (나)" : ""}</span>
+            <div class="indicators">
+              <div class="ind ${m.sim ? "green" : ""}" title="시뮬레이션"></div>
+              <div class="ind ${m.client ? "blue" : ""}" title="클라이언트"></div>
+            </div>
+          </span>
+          <div style="display:flex;gap:4px">
+            <button class="btn btn-outline" style="padding:3px 8px;font-size:11px" ${m.qr ? '' : 'disabled'} onclick="sendToFusion('qr_show_member', {name:'${m.name}',qr:${JSON.stringify(m.qr||'')}})">보기</button>
+            <button class="btn btn-outline" style="padding:3px 8px;font-size:11px" ${canImport ? '' : 'disabled'} onclick="sendToFusion('import_model', {name:'${m.name}'})">${_importing ? '가져오는 중…' : '가져오기'}</button>
+          </div>`;
+          list.appendChild(row);
+        });
+      }
+
+      // ── 버튼 핸들러 ────────────────────────────────────────────────────────────
+      function togglePause() {
+        const btn = document.getElementById("btn-pause");
+        if (_simRunning) {
+          _simStopping = true;
+          btn.textContent = "중단 중…";
+          btn.disabled = true;
+          sendToFusion("pause", {});
+        } else {
+          _simStarting = true;
+          btn.textContent = "시작 중…";
+          btn.disabled = true;
+          updateHint(false, false, false);
+          console.log("[js*->py] resume");
+          sendToFusion("resume", {});
+        }
+      }
+      function showQr() {
+        sendToFusion("qr_show", {});
+      }
+
+      // ── 시작 시 adsk 준비 후 config 요청 ──────────────────────────────────────
+      window.addEventListener("load", () =>
+        waitForBridge(() => sendToFusion("get_config", {})),
+      );
+    </script>
+  </body>
+</html>

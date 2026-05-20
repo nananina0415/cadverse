@@ -25,6 +25,15 @@ namespace Cadverse
 
         public async void ConnectAsync(string groupName, string pw, string name)
         {
+#if UNITY_EDITOR
+            if (groupName == "1" && pw == "1" && name == "1")
+            {
+                Destroy(_loginPanel.gameObject);
+                Destroy(gameObject);
+                _app.OnLoginComplete(null);
+                return;
+            }
+#endif
             var connectTask = Task.Run(() => new P2PNet(groupName, pw, name, AR_CLIENT_PORT));
             var timeoutTask = Task.Delay(CONNECT_TIMEOUT_MS);
 
