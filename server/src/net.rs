@@ -346,6 +346,7 @@ async fn serve_file(conn: p2p_core::RawConn, folder: &std::path::Path) -> anyhow
     let mut recv = conn.accept_uni().await?;
     let path_bytes = recv.read_to_end(1024).await?;
     let path = String::from_utf8(path_bytes)?;
+    eprintln!("[serve_file] 요청: {path}");
     let file_path = if path == "/local_sim_qr.txt" {
         crate::qr_path()
     } else {
@@ -353,9 +354,12 @@ async fn serve_file(conn: p2p_core::RawConn, folder: &std::path::Path) -> anyhow
     };
     let data = if path == "/__cadverse_manifest.json" {
         let manifest = build_model_manifest(folder);
+        eprintln!("[serve_file] manifest: {} 파일", manifest.files.len());
         serde_json::to_vec(&manifest).unwrap_or_default()
     } else {
-        std::fs::read(&file_path).unwrap_or_default()
+        let d = std::fs::read(&file_path).unwrap_or_default();
+        eprintln!("[serve_file] 응답: {} ({} bytes)", file_path.display(), d.len());
+        d
     };
     let mut send = conn.open_uni().await?;
     send.write_all(&data).await?;

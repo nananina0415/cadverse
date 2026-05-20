@@ -13,12 +13,12 @@ import math
 # Unit / OBJ bake policy
 # ---------------------------------------------------------------------
 
-# Fusion 설계 단위는 현재 mm 기준으로 본다.
+# Fusion 360 API 내부 단위는 항상 cm (display 설정 무관).
 # Simulator metadata / Chrono 쪽은 m 기준으로 사용한다.
-FUSION_MM_TO_M = 0.001
+FUSION_CM_TO_M = 0.01
 
 # OBJ vertex도 최종적으로 m 단위로 bake한다.
-OBJ_VERTEX_MM_TO_M = 0.001
+OBJ_VERTEX_CM_TO_M = 0.01
 
 # 중요:
 # Fusion OBJ export가 occurrence/world 좌표를 포함한다고 보고,
@@ -95,7 +95,7 @@ def _safe_transform_array_from_occ(occ):
         return IDENTITY_TRANSFORM[:]
 
 
-def _decompose_fusion_transform(arr, unit_scale=FUSION_MM_TO_M):
+def _decompose_fusion_transform(arr, unit_scale=FUSION_CM_TO_M):
     """
     Fusion Matrix3D.asArray()를 다음 형태로 분해한다.
 
@@ -239,7 +239,7 @@ def _bake_obj_vertices_to_m_and_local(obj_path: str, transform_array: list, mode
             "obj_path": obj_path,
         }
 
-    transform_info = _decompose_fusion_transform(transform_array, unit_scale=FUSION_MM_TO_M)
+    transform_info = _decompose_fusion_transform(transform_array, unit_scale=FUSION_CM_TO_M)
 
     original_points_m = []
     baked_points = []
@@ -260,9 +260,9 @@ def _bake_obj_vertices_to_m_and_local(obj_path: str, transform_array: list, mode
                 try:
                     # Fusion OBJ vertex를 mm 값으로 보고 m로 변환
                     p_m = [
-                        float(parts[1]) * OBJ_VERTEX_MM_TO_M,
-                        float(parts[2]) * OBJ_VERTEX_MM_TO_M,
-                        float(parts[3]) * OBJ_VERTEX_MM_TO_M,
+                        float(parts[1]) * OBJ_VERTEX_CM_TO_M,
+                        float(parts[2]) * OBJ_VERTEX_CM_TO_M,
+                        float(parts[3]) * OBJ_VERTEX_CM_TO_M,
                     ]
 
                     original_points_m.append(p_m)
@@ -424,7 +424,7 @@ def run(context, save_folder):
                 "mesh_file": mesh_rel_path,
                 "mesh_abs_path": mesh_abs_path,
                 "transform": transform_array,
-                "unit_scale": FUSION_MM_TO_M,
+                "unit_scale": FUSION_CM_TO_M,
                 "occurrence_name": occ_name,
                 "component_name": comp_name,
                 "obj_bake": bake_debug,

@@ -8,9 +8,9 @@ import re
 import os
 
 
-# Fusion internal length unit is generally mm.
-# Simulator metadata should use meters.
-FUSION_MM_TO_M = 0.001
+# Fusion 360 API internal length unit is always cm (regardless of display unit).
+# Simulator metadata uses meters.
+FUSION_CM_TO_M = 0.01
 
 # Integrated export policy:
 # Joint origins must come from Fusion/CAD data.
@@ -169,7 +169,7 @@ def _safe_transform_array_from_occ(occ):
         return IDENTITY_TRANSFORM[:]
 
 
-def _pose_from_transform_array(arr, unit_scale=FUSION_MM_TO_M):
+def _pose_from_transform_array(arr, unit_scale=FUSION_CM_TO_M):
     """
     Fusion Matrix3D.asArray()를 simulator pose로 변환한다.
 
@@ -228,7 +228,7 @@ def _pose_from_transform_array(arr, unit_scale=FUSION_MM_TO_M):
     }
 
 
-def _point3d_to_m_list(pt, unit_scale=FUSION_MM_TO_M):
+def _point3d_to_m_list(pt, unit_scale=FUSION_CM_TO_M):
     if pt is None:
         return [0.0, 0.0, 0.0]
     return [
@@ -509,7 +509,7 @@ def _infer_collision(category: str, fixed: bool, has_joints: bool):
 
 def _build_body_from_mesh_entry(body_name: str, entry: dict, has_joints: bool, warnings: list):
     transform = entry.get("transform", IDENTITY_TRANSFORM[:])
-    unit_scale = safe_float(entry.get("unit_scale", FUSION_MM_TO_M), FUSION_MM_TO_M)
+    unit_scale = safe_float(entry.get("unit_scale", FUSION_CM_TO_M), FUSION_CM_TO_M)
 
     pose = _pose_from_transform_array(transform, unit_scale=unit_scale)
 
@@ -1093,9 +1093,9 @@ def _limits_for_slider(motion):
 
         # Fusion length value는 mm 기준으로 보고 m로 변환.
         if lim.isMinimumValueEnabled:
-            lower = float(lim.minimumValue) * FUSION_MM_TO_M
+            lower = float(lim.minimumValue) * FUSION_CM_TO_M
         if lim.isMaximumValueEnabled:
-            upper = float(lim.maximumValue) * FUSION_MM_TO_M
+            upper = float(lim.maximumValue) * FUSION_CM_TO_M
 
         if lower is None and upper is None:
             return None
