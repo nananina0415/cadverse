@@ -217,12 +217,35 @@ def _start_server():
     log_file = open(log_path, 'w', encoding='utf-8')
     log_file.write(f'[plugin] 서버 시작: {exe}\n')
     log_file.flush()
+
+    env = os.environ.copy()
+
+    conda_base = env.get('CONDA_BASE')
+    if not conda_base:
+        conda_base = os.path.expanduser(r'~\anaconda3')
+
+    chrono_env = os.path.join(conda_base, 'envs', 'chrono_310')
+
+    env['CONDA_BASE'] = conda_base
+    env['PATH'] = (
+        chrono_env + os.pathsep +
+        os.path.join(chrono_env, 'Library', 'bin') + os.pathsep +
+        os.path.join(chrono_env, 'DLLs') + os.pathsep +
+        env.get('PATH', '')
+    )
+
+    log_file.write(f'[plugin] CONDA_BASE: {env.get("CONDA_BASE")}\n')
+    log_file.write(f'[plugin] chrono_env: {chrono_env}\n')
+    log_file.flush()
+
     _server_proc = subprocess.Popen(
         [exe],
+        cwd=os.path.dirname(exe),
         creationflags=subprocess.CREATE_NO_WINDOW,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=log_file,
+        env=env,
     )
     _server = RustServer(_server_proc)
     threading.Thread(target=_pipe_reader_thread, daemon=True).start()

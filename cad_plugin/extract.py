@@ -56,6 +56,7 @@ def _build_metadata(scene_name: str, meta_data: dict, warnings: list):
     joints = meta_data.get("joints", []) if isinstance(meta_data, dict) else []
     gear_pairs = meta_data.get("gearPairs", []) if isinstance(meta_data, dict) else []
     actuators = meta_data.get("actuators", []) if isinstance(meta_data, dict) else []
+    transforms = meta_data.get("transforms", {}) if isinstance(meta_data, dict) else {}
 
     metadata = {
         "sceneName": scene_name,
@@ -63,6 +64,8 @@ def _build_metadata(scene_name: str, meta_data: dict, warnings: list):
         # 기구학 교육용/AR interaction 테스트에서는 중력 간섭을 피하기 위해 기본 0으로 둔다.
         # 실제 중력 테스트가 필요하면 [0.0, -9.81, 0.0]로 바꾸면 됨.
         "gravity": [0.0, 0.0, 0.0],
+
+        "transforms": transforms,
 
         "bodies": bodies,
         "joints": joints,

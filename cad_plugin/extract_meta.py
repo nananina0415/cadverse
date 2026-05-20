@@ -228,6 +228,117 @@ def _pose_from_transform_array(arr, unit_scale=FUSION_MM_TO_M):
     }
 
 
+# ---------------------------------------------------------------------
+# Legacy AR metadata compatibility helpers
+# ---------------------------------------------------------------------
+
+LEGACY_AR_VISUAL_SCALE = 500.0
+
+
+def _quat_wxyz_to_rot3(q):
+    """
+    quaternion [w, x, y, z] -> row-major 3x3 rotation matrix.
+
+    This is used only for legacy Unity APK compatibility.
+    It does not change the simulator metadata flow.
+    """
+    if not q or len(q) < 4:
+        return [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+
+    w, x, y, z = [safe_float(v, 0.0) for v in q[:4]]
+
+    n = math.sqrt(w * w + x * x + y * y + z * z)
+    if n < 1e-12:
+        return [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+
+    w, x, y, z = w / n, x / n, y / n, z / n
+
+    return [
+        [
+            1.0 - 2.0 * (y * y + z * z),
+            2.0 * (x * y - z * w),
+            2.0 * (x * z + y * w),
+        ],
+        [
+            2.0 * (x * y + z * w),
+            1.0 - 2.0 * (x * x + z * z),
+            2.0 * (y * z - x * w),
+        ],
+        [
+            2.0 * (x * z - y * w),
+            2.0 * (y * z + x * w),
+            1.0 - 2.0 * (x * x + y * y),
+        ],
+    ]
+
+
+def _build_legacy_ar_transforms(bodies):
+    """
+    Build legacy metadata["transforms"] for the already-built Unity APK.
+
+    Existing phone APK behavior:
+    - reads metadata.json["transforms"]
+    - requests /meshes/{bodyName}.obj
+    - treats transform translation as Fusion cm
+    - ObjParser also converts OBJ vertices as cm -> m using *0.01
+
+    Current CADverse simulator metadata:
+    - body.pose.pos is already meters
+    - mesh OBJ is expected to be simulation-scale
+
+    Therefore:
+    - translation uses meters -> cm by multiplying pose by 100
+    - basis vectors are scaled by LEGACY_AR_VISUAL_SCALE to compensate
+      for the legacy Unity OBJ parser shrinking vertices by 0.01
+    """
+    transforms = {}
+
+    for body in bodies:
+        name = body.get("name")
+        if not name:
+            continue
+
+        visual = body.get("geometry", {}).get("visual", {})
+        mesh_file = visual.get("file", "")
+
+        # Legacy ARScene requests /meshes/{name}.obj.
+        # Only include bodies whose visual mesh follows that convention.
+        expected_file = f"meshes/{name}.obj"
+        if mesh_file.replace("\\", "/") != expected_file:
+            continue
+
+        pose = body.get("pose", {})
+        pos = pose.get("pos", [0.0, 0.0, 0.0])
+        rot = pose.get("rot", IDENTITY_QUAT[:])
+
+        if not pos or len(pos) < 3:
+            pos = [0.0, 0.0, 0.0]
+
+        r = _quat_wxyz_to_rot3(rot)
+        s = LEGACY_AR_VISUAL_SCALE
+
+        tx = safe_float(pos[0], 0.0) * s
+        ty = safe_float(pos[1], 0.0) * s
+        tz = safe_float(pos[2], 0.0) * s
+
+        transforms[name] = [
+            r[0][0] * s, r[0][1] * s, r[0][2] * s, tx,
+            r[1][0] * s, r[1][1] * s, r[1][2] * s, ty,
+            r[2][0] * s, r[2][1] * s, r[2][2] * s, tz,
+            0.0, 0.0, 0.0, 1.0,
+        ]
+
+    return transforms
+
+
 def _point3d_to_m_list(pt, unit_scale=FUSION_MM_TO_M):
     if pt is None:
         return [0.0, 0.0, 0.0]
@@ -1416,6 +1527,7 @@ def run(context, mesh_data=None):
     actuators = []
 
     return {
+        "transforms": _build_legacy_ar_transforms(bodies),
         "bodies": bodies,
         "joints": filtered_joints,
         "gearPairs": gear_pairs,
