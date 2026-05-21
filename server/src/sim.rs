@@ -491,9 +491,22 @@ fn load_model_from_folder(folder: &PathBuf) -> Result<(SimModel, SimOut), String
     for j in &joints_raw {
         let name = j.get("name").and_then(|v| v.as_str()).unwrap_or("joint").to_string();
         let jtype = j.get("type").and_then(|v| v.as_str()).unwrap_or("revolute").to_lowercase();
+
+        // 현재 metadata 형식: body1 / body2
+        // legacy 형식: connected_parts.parent / connected_parts.child
         let cp = j.get("connected_parts");
-        let body1 = cp.and_then(|v| v.get("parent")).and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let body2 = cp.and_then(|v| v.get("child")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+        let body1 = j.get("body1")
+            .and_then(|v| v.as_str())
+            .or_else(|| cp.and_then(|v| v.get("parent")).and_then(|v| v.as_str()))
+            .unwrap_or("")
+            .to_string();
+
+        let body2 = j.get("body2")
+            .and_then(|v| v.as_str())
+            .or_else(|| cp.and_then(|v| v.get("child")).and_then(|v| v.as_str()))
+            .unwrap_or("")
+            .to_string();
 
         let axis: [f64; 3] = j.get("axis").and_then(|v| v.as_array()).map(|a| {
             [a.get(0).and_then(|v| v.as_f64()).unwrap_or(0.0),
