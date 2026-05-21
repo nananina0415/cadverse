@@ -52,6 +52,11 @@
 #   per-step에서 효율 손실 / backlash deadband를 "근사 토크"로 반영
 # - 폭주 방지를 위해 phase/speed 기반 PD + max_torque clamp + loss torque 분산 적용
 # - SimState.gearTelemetry 에 gear별 applied_efficiency / loss_torque / backlash_deadband 기록
+#
+# ✅ Event Feedback
+# - telemetry / diagnostics를 사용자용 eventFeedback으로 변환하는 _build_event_feedback() 추가
+# - 실제 소리 재생은 Python 엔진이 하지 않고, soundId / soundType / volume / pitch만 출력한다.
+# - STEP 3에서는 함수만 추가하고, SimState 연결은 STEP 4에서 수행한다.
 
 from __future__ import annotations
 
@@ -2069,6 +2074,11 @@ class Simulator:
         # ✅ (3-3.4) diagnostics persistence / dedupe state
         self._diag_seen_counts: Dict[str, int] = {}
 
+        # ✅ Event feedback cooldown / dedupe state
+        # key: "{eventType}:{target}"
+        # value: last emitted sim_time
+        self._event_feedback_last_emit_time: Dict[str, float] = {}
+
     @classmethod
     def create(cls, info: SimInfo) -> "Simulator":
         return cls(info)
@@ -3617,6 +3627,19 @@ class Simulator:
         diagnostics = self._dedupe_and_suppress_diagnostics(diagnostics)
         diagnostics = self._finalize_diagnostics(diagnostics)
 
+        # ----------------------------------------------------
+        # 4) event feedback 생성
+        # ----------------------------------------------------
+        event_feedback = self._build_event_feedback(
+            telemetry=telemetry,
+            interaction_telemetry=interaction_telemetry,
+            gear_telemetry=gear_telemetry,
+            assembly_telemetry=assembly_telemetry,
+            joint_telemetry=joint_telemetry,
+            actuator_telemetry=actuator_telemetry,
+            diagnostics=diagnostics,
+        )
+
         parts: List[PartState] = []
         for name in self._body_order:
             b = self.bodies[name].body
@@ -3638,7 +3661,382 @@ class Simulator:
             jointTelemetry=joint_telemetry,
             actuatorTelemetry=actuator_telemetry,
             diagnostics=diagnostics,
+            eventFeedback=event_feedback,
         )
+
+    def _build_event_feedback(
+        self,
+        *,
+        telemetry: Optional[rt.ContactTelemetry],
+        interaction_telemetry: Optional[InteractionTelemetry],
+        gear_telemetry: Optional[Dict[str, rt.GearTelemetry]],
+        assembly_telemetry: Optional[Dict[str, rt.AssemblyGuideTelemetry]],
+        joint_telemetry: Optional[Dict[str, rt.JointTelemetry]],
+        actuator_telemetry: Optional[Dict[str, rt.ActuatorTelemetry]],
+        diagnostics: Optional[List[rt.DiagnosticItem]],
+    ) -> Optional[List[rt.EventFeedback]]:
+        """
+        telemetry / diagnostics를 사용자용 이벤트 피드백으로 변환한다.
+
+        주의:
+        - STEP 3에서는 이 함수만 추가한다.
+        - 실제 SimState.eventFeedback 연결은 STEP 4에서 수행한다.
+        - cooldown / 반복 억제는 STEP 5에서 추가한다.
+        """
+        try:
+            opt = getattr(self.info, "options", None)
+            if opt is not None and not bool(getattr(opt, "enable_event_feedback", True)):
+                return None
+        except Exception:
+            pass
+
+        try:
+            max_items = int(getattr(self.info.options, "event_feedback_max_items", 16))
+        except Exception:
+            max_items = 16
+        max_items = max(1, max_items)
+
+        try:
+            enable_sound = bool(getattr(self.info.options, "event_feedback_enable_sound", True))
+        except Exception:
+            enable_sound = True
+
+        events: List[rt.EventFeedback] = []
+        seen: set[tuple[str, Optional[str]]] = set()
+
+        def _clamp_float(x: float, lo: float, hi: float) -> float:
+            return max(float(lo), min(float(hi), float(x)))
+
+        def _volume_from_value(value: Optional[float], threshold: Optional[float], default: float) -> float:
+            if value is None or threshold is None:
+                return float(default)
+            try:
+                if float(threshold) <= 1e-12:
+                    return float(default)
+                ratio = abs(float(value)) / float(threshold)
+                return _clamp_float(0.35 + 0.45 * ratio, 0.35, 1.0)
+            except Exception:
+                return float(default)
+
+        def _sound_meta(
+            event_type: str,
+            *,
+            value: Optional[float] = None,
+            threshold: Optional[float] = None,
+        ) -> tuple[Optional[str], Optional[str], Optional[float], Optional[float]]:
+            """
+            eventType별 sound metadata 매핑.
+
+            반환:
+            - soundId: 클라이언트가 재생할 효과음 ID
+            - soundType: warning / impact / mechanical / notification 등
+            - volume: 0.0 ~ 1.0
+            - pitch: 0.1 ~ 4.0
+
+            실제 오디오 재생은 Python 엔진이 하지 않고,
+            AR/클라이언트가 soundId를 보고 처리한다.
+            """
+            if not enable_sound:
+                return None, None, None, None
+
+            event_type_s = str(event_type)
+
+            # ----------------------------------------------------
+            # 사용자 입력/상호작용 관련
+            # ----------------------------------------------------
+            if event_type_s == "AR_INPUT_NO_MOTION":
+                return (
+                    "no_motion_warn",
+                    "warning",
+                    0.60,
+                    1.00,
+                )
+
+            # ----------------------------------------------------
+            # 충돌/접촉 관련
+            # ----------------------------------------------------
+            if event_type_s == "EXCESSIVE_CONTACT_FORCE":
+                return (
+                    "impact_warn",
+                    "impact",
+                    _volume_from_value(value, threshold, 0.75),
+                    1.00,
+                )
+
+            # ----------------------------------------------------
+            # 속도/불안정성 관련
+            # ----------------------------------------------------
+            if event_type_s == "HIGH_SPEED_WARNING":
+                return (
+                    "speed_warn",
+                    "warning",
+                    _volume_from_value(value, threshold, 0.70),
+                    1.00,
+                )
+
+            # ----------------------------------------------------
+            # 조인트/기구학 구속 관련
+            # ----------------------------------------------------
+            if event_type_s == "JOINT_LIMIT_REACHED":
+                return (
+                    "joint_limit_click",
+                    "mechanical",
+                    0.70,
+                    1.00,
+                )
+
+            # ----------------------------------------------------
+            # 조립/스냅 보조 관련
+            # ----------------------------------------------------
+            if event_type_s == "SNAP_READY":
+                return (
+                    "snap_ready",
+                    "notification",
+                    0.50,
+                    1.20,
+                )
+
+            # ----------------------------------------------------
+            # 기어 관련
+            # ----------------------------------------------------
+            if event_type_s == "GEAR_BACKLASH_ACTIVE":
+                return (
+                    "gear_tick",
+                    "mechanical",
+                    0.50,
+                    0.90,
+                )
+
+            if event_type_s == "GEAR_EFFICIENCY_LOW":
+                return (
+                    "gear_loss_warn",
+                    "warning",
+                    0.55,
+                    0.95,
+                )
+
+            # ----------------------------------------------------
+            # fallback
+            # ----------------------------------------------------
+            return (
+                "event_notice",
+                "notification",
+                0.45,
+                1.00,
+            )
+
+        def _append_event(
+            *,
+            event_type: str,
+            severity: str,
+            message: str,
+            target: Optional[str] = None,
+            value: Optional[float] = None,
+            threshold: Optional[float] = None,
+        ) -> None:
+            if len(events) >= max_items:
+                return
+
+            event_type_s = str(event_type)
+            target_s = str(target) if target is not None else None
+
+            # 1) 같은 step 내부 중복 방지
+            key = (event_type_s, target_s)
+            if key in seen:
+                return
+            seen.add(key)
+
+            # 2) step 간 cooldown 방지
+            try:
+                cooldown_sec = float(getattr(self.info.options, "event_feedback_cooldown_sec", 0.5))
+            except Exception:
+                cooldown_sec = 0.5
+            cooldown_sec = max(0.0, float(cooldown_sec))
+
+            cooldown_key = f"{event_type_s}:{target_s or ''}"
+            now_t = float(getattr(self, "sim_time", 0.0))
+
+            try:
+                last_t = float(self._event_feedback_last_emit_time.get(cooldown_key, -1.0e30))
+            except Exception:
+                last_t = -1.0e30
+
+            if cooldown_sec > 0.0 and (now_t - last_t) < cooldown_sec:
+                return
+
+            try:
+                self._event_feedback_last_emit_time[cooldown_key] = now_t
+            except Exception:
+                pass
+
+            sound_id, sound_type, volume, pitch = _sound_meta(
+                event_type_s,
+                value=value,
+                threshold=threshold,
+            )
+
+            events.append(
+                rt.EventFeedback(
+                    eventType=event_type_s,
+                    severity=str(severity or "info"),
+                    message=str(message or ""),
+                    target=target_s,
+                    soundId=sound_id,
+                    soundType=sound_type,
+                    volume=volume,
+                    pitch=pitch,
+                    value=float(value) if value is not None else None,
+                    threshold=float(threshold) if threshold is not None else None,
+                )
+            )
+
+        # ----------------------------------------------------
+        # 1) diagnostics 기반 이벤트 변환
+        # ----------------------------------------------------
+        for item in list(diagnostics or []):
+            try:
+                code = str(getattr(item, "code", "") or "")
+                severity = str(getattr(item, "severity", "info") or "info")
+                message = str(getattr(item, "message", "") or "")
+                target = getattr(item, "target", None)
+
+                if code == "AR_INPUT_NO_MOTION":
+                    _append_event(
+                        event_type="AR_INPUT_NO_MOTION",
+                        severity=severity,
+                        message=message,
+                        target=target,
+                    )
+
+                elif code == "EXCESSIVE_CONTACT_FORCE":
+                    max_force = None
+                    try:
+                        if telemetry is not None:
+                            max_force = float(getattr(telemetry, "max_contact_force", 0.0))
+                    except Exception:
+                        max_force = None
+
+                    _append_event(
+                        event_type="EXCESSIVE_CONTACT_FORCE",
+                        severity=severity,
+                        message=message,
+                        target=target,
+                        value=max_force,
+                        threshold=100.0,
+                    )
+
+                elif code in ("ABNORMAL_LINEAR_SPEED", "ABNORMAL_ANGULAR_SPEED"):
+                    _append_event(
+                        event_type="HIGH_SPEED_WARNING",
+                        severity=severity,
+                        message=message,
+                        target=target,
+                    )
+
+                elif code == "AT_JOINT_LIMIT":
+                    value = None
+                    threshold = None
+
+                    try:
+                        if target is not None and joint_telemetry is not None and str(target) in joint_telemetry:
+                            jt = joint_telemetry[str(target)]
+
+                            if jt.angle is not None:
+                                value = float(jt.angle)
+                            elif jt.position is not None:
+                                value = float(jt.position)
+
+                        if target is not None and str(target) in self.joints:
+                            jm = self.joints[str(target)].meta
+                            limits = getattr(jm, "limits", None)
+                            lower = getattr(limits, "lower", None) if limits is not None else None
+                            upper = getattr(limits, "upper", None) if limits is not None else None
+
+                            if value is not None:
+                                candidates = []
+                                if lower is not None:
+                                    candidates.append(float(lower))
+                                if upper is not None:
+                                    candidates.append(float(upper))
+                                if candidates:
+                                    threshold = min(candidates, key=lambda x: abs(float(value) - x))
+                    except Exception:
+                        value = None
+                        threshold = None
+
+                    _append_event(
+                        event_type="JOINT_LIMIT_REACHED",
+                        severity=severity,
+                        message=message or "조인트가 동작 한계에 도달했습니다.",
+                        target=target,
+                        value=value,
+                        threshold=threshold,
+                    )
+
+                elif code == "HIGH_GEAR_LOSS":
+                    _append_event(
+                        event_type="GEAR_EFFICIENCY_LOW",
+                        severity=severity,
+                        message=message,
+                        target=target,
+                    )
+
+                elif code == "ALIGNMENT_IN_PROGRESS":
+                    _append_event(
+                        event_type="SNAP_READY",
+                        severity="info",
+                        message=message or "조립 기준 위치에 근접했습니다.",
+                        target=target,
+                    )
+
+            except Exception:
+                continue
+
+        # ----------------------------------------------------
+        # 2) assembly telemetry 기반 SNAP_READY 보강
+        # ----------------------------------------------------
+        if assembly_telemetry:
+            for gname, ag in assembly_telemetry.items():
+                try:
+                    if not bool(getattr(ag, "activeSnap", False)):
+                        continue
+
+                    err_pos = float(getattr(ag, "snapErrorPos", 0.0))
+                    err_ang = float(getattr(ag, "snapErrorAngle", 0.0))
+
+                    # 스냅 후보가 활성화되었고 오차가 충분히 작으면 사용자 피드백으로 변환
+                    if err_pos <= 1e-3 and err_ang <= 1e-2:
+                        _append_event(
+                            event_type="SNAP_READY",
+                            severity="info",
+                            message=f"Assembly guide '{gname}' is close enough to snap.",
+                            target=str(gname),
+                            value=max(err_pos, err_ang),
+                            threshold=1e-2,
+                        )
+                except Exception:
+                    continue
+
+        # ----------------------------------------------------
+        # 3) gear telemetry 기반 backlash 이벤트 보강
+        # ----------------------------------------------------
+        if gear_telemetry:
+            for gname, gt in gear_telemetry.items():
+                try:
+                    backlash = float(getattr(gt, "backlash_deadband", 0.0) or 0.0)
+                    if backlash > 0.0:
+                        _append_event(
+                            event_type="GEAR_BACKLASH_ACTIVE",
+                            severity="info",
+                            message=f"Gear pair '{gname}' has backlash deadband.",
+                            target=str(gname),
+                            value=backlash,
+                            threshold=0.0,
+                        )
+                except Exception:
+                    continue
+
+        return events or None
 
     def _build_runtime_diagnostics(
         self,
@@ -3660,6 +4058,13 @@ class Simulator:
         # 1) AR 입력이 있는데 움직임이 거의 없음
         # ----------------------------------------------------
         try:
+            ar_active = bool(getattr(self._ar.ctx, "active", False))
+
+            # AR 입력이 끝났으면 no-motion 감지 기준 시간 초기화
+            if not ar_active:
+                self._ar_no_motion_active_key = None
+                self._ar_no_motion_start_time = None
+
             if interaction_telemetry is not None:
                 target_name = interaction_telemetry.driveBody or interaction_telemetry.targetBody
 
@@ -3672,9 +4077,42 @@ class Simulator:
                     lin_speed = _norm(v)
                     ang_speed = _norm(w)
 
-                    ar_active = bool(getattr(self._ar.ctx, "active", False))
+                    target_key = str(target_name)
 
-                    if ar_active and lin_speed < 1e-4 and ang_speed < 1e-4:
+                    # 새 AR 조작 대상이 시작되면 그 시점을 기록
+                    if ar_active:
+                        prev_key = getattr(self, "_ar_no_motion_active_key", None)
+
+                        if prev_key != target_key:
+                            self._ar_no_motion_active_key = target_key
+                            self._ar_no_motion_start_time = float(getattr(self, "sim_time", 0.0))
+
+                    # TouchStart 직후에는 아직 물체가 움직이기 전일 수 있으므로
+                    # 일정 시간 동안 no-motion 진단을 유예한다.
+                    try:
+                        no_motion_grace_sec = float(
+                            getattr(self.info.options, "event_feedback_no_motion_grace_sec", 2.0)
+                        )
+                    except Exception:
+                        no_motion_grace_sec = 2.0
+
+                    no_motion_grace_sec = max(0.0, float(no_motion_grace_sec))
+
+                    try:
+                        start_t = float(getattr(self, "_ar_no_motion_start_time", self.sim_time))
+                    except Exception:
+                        start_t = float(getattr(self, "sim_time", 0.0))
+
+                    elapsed_from_touch_start = float(getattr(self, "sim_time", 0.0)) - start_t
+
+                    no_motion_ready = elapsed_from_touch_start >= no_motion_grace_sec
+
+                    if (
+                        ar_active
+                        and no_motion_ready
+                        and lin_speed < 1e-4
+                        and ang_speed < 1e-4
+                    ):
                         diagnostics.append(
                             rt.DiagnosticItem(
                                 code="AR_INPUT_NO_MOTION",

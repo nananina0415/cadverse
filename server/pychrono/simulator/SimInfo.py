@@ -28,6 +28,12 @@
 #   -> main.py에서 "joint limit 적용 실패/미지원" 경고를 사용자 친화적으로 요약 출력할 때 사용
 # - (선택) joint_limits_soft_enable: 소프트 리미트(spring/damper) 적용을 운영 레벨에서 기본 OFF로 유지
 #   (구 문서/코드에서 enable_soft_joint_limits라는 이름을 썼다면 alias로 지원)
+#
+# [UPDATED: Event Feedback]
+# - SimOptions에 이벤트 기반 피드백 옵션 추가
+#   -> main.py에서 telemetry/diagnostics를 사용자용 eventFeedback으로 변환할 때 사용
+# - 실제 오디오 재생은 Python 엔진이 하지 않고,
+#   soundId / soundType / volume / pitch를 SimState로 내보내 클라이언트가 처리한다.
 
 from __future__ import annotations
 
@@ -114,6 +120,21 @@ class SimOptions:
     enable_contact_telemetry: bool = False
     max_contact_points_report: int = 256
 
+    # --- event feedback control ---
+    # telemetry / diagnostics를 사용자용 메시지·알림음 이벤트로 변환할지 여부
+    enable_event_feedback: bool = True
+
+    # 한 step에서 eventFeedback이 너무 많이 쌓이지 않도록 제한
+    event_feedback_max_items: int = 16
+
+    # 같은 이벤트가 매 step 반복 출력되지 않도록 하는 최소 간격(sec)
+    # 실제 cooldown 적용은 main.py에서 수행
+    event_feedback_cooldown_sec: float = 0.5
+
+    # True면 EventFeedback에 soundId / soundType / volume / pitch를 포함
+    # False면 메시지 이벤트만 내보내는 식으로 main.py에서 처리 가능
+    event_feedback_enable_sound: bool = True
+
     # --- preset selector / overrides ---
     physics_preset: Optional[Union[str, Dict[str, Any], PhysicsPreset]] = "DEFAULT"
 
@@ -164,6 +185,17 @@ class SimOptions:
                 f"SimOptions.max_contact_points_report must be > 0, got: {self.max_contact_points_report}"
             )
 
+        # event feedback knobs sanity
+        if int(self.event_feedback_max_items) <= 0:
+            raise ValueError(
+                f"SimOptions.event_feedback_max_items must be > 0, got: {self.event_feedback_max_items}"
+            )
+
+        if float(self.event_feedback_cooldown_sec) < 0.0:
+            raise ValueError(
+                f"SimOptions.event_feedback_cooldown_sec must be >= 0, got: {self.event_feedback_cooldown_sec}"
+            )
+
         # auto inertia knobs sanity
         if float(self.auto_inertia_min_inertia) < 0.0:
             raise ValueError(f"SimOptions.auto_inertia_min_inertia must be >= 0, got: {self.auto_inertia_min_inertia}")
@@ -177,6 +209,10 @@ class SimOptions:
         # 2-3.4 toggles sanity (bool coercion-like; no strict required)
         self.debug_joint_limits = bool(self.debug_joint_limits)
         self.debug_warnings = bool(self.debug_warnings)
+
+        # event feedback toggles sanity
+        self.enable_event_feedback = bool(self.enable_event_feedback)
+        self.event_feedback_enable_sound = bool(self.event_feedback_enable_sound)
 
         # alias -> canonical (if explicitly provided)
         if self.enable_soft_joint_limits is not None:
