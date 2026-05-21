@@ -22,4 +22,21 @@ public static class CoordConvert
         m.m30 = 0f;    m.m31 = 0f;    m.m32 = 0f;    m.m33 = 1f;
         return m;
     }
+
+    // Sim position [px,py,pz] m → Unity Vector3(px, pz, py) m (axis swap only)
+    public static Vector3 SimPosToUnity(float[] pos)
+        => new Vector3(pos[0], pos[2], pos[1]);
+
+    // Sim rotation [rw,rx,ry,rz] → Unity Quaternion(-rx, -rz, -ry, rw)
+    // Y↔Z swap changes handedness (RH→LH), reversing rotation direction → negate xyz
+    public static Quaternion SimRotToUnity(float[] rot)
+        => new Quaternion(-rot[1], -rot[3], -rot[2], rot[0]);
+
+    // Unity Vector3(ux, uy, uz) → Sim [ux, uz, uy] (axis swap only)
+    public static float[] UnityPosToSim(Vector3 p)
+        => new float[] { p.x, p.z, p.y };
+
+    // Unity direction (ux, uy, uz) → Sim [ux, uz, uy] (axis swap, no scale)
+    public static float[] UnityDirToSim(Vector3 d)
+        => new float[] { d.x, d.z, d.y };
 }

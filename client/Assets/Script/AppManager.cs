@@ -1,7 +1,6 @@
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using TMPro;
@@ -13,14 +12,14 @@ namespace Cadverse
 {
     public class AppManager : MonoBehaviour
     {
-        public static P2PNet      Net     { get; private set; }
-        public static QRScanner   Scanner { get; private set; }
+        public static P2PNet        Net     { get; private set; }
+        public static QRScanner     Scanner { get; private set; }
+        public static List<Server>  Servers { get; } = new();
 
         static AppManager _instance;
 
         ARTrackedImageManager              _imageManager;
         ARScene                            _scene;
-        Addr                               _currentAddr;
         CancellationTokenSource            _recvCts;
         readonly ConcurrentQueue<System.Action> _mainQueue = new();
         readonly List<RectTransform> _activeToasts = new();
@@ -60,15 +59,22 @@ namespace Cadverse
             ShowToast("QR 인식됨");
             _recvCts?.Cancel();
             _recvCts = new CancellationTokenSource();
-            _currentAddr = addr;
+
+            foreach (var s in Servers) s.Dispose();
+            Servers.Clear();
+
             _scene?.Dispose();
             _scene = null;
             try
             {
                 _scene = await ARScene.Create(addr, _imageManager);
                 ShowToast($"씬 생성 완료, {_scene.MeshCount}개 메시");
+
+                var server = await Task.Run(() => new Server(Net, addr));
+                Servers.Add(server);
+
                 var cts = _recvCts;
-                _ = Task.Run(() => ReceiveLoop(addr, cts.Token));
+                _ = Task.Run(() => ReceiveLoop(server, cts.Token));
             }
             catch (System.Exception e)
             {
@@ -93,25 +99,18 @@ namespace Cadverse
             }
         }
 
-        void ReceiveLoop(Addr addr, CancellationToken ct)
+        void ReceiveLoop(Server server, CancellationToken ct)
         {
-            P2PConn conn;
-            try { conn = Net.ConnectQuic(addr.RawJson); }
-            catch { return; }
-            using (conn)
+            while (!ct.IsCancellationRequested)
             {
-                while (!ct.IsCancellationRequested)
-                {
-                    byte[] data;
-                    try { data = conn.Recv(); }
-                    catch { break; }
+                Frame f;
+                try { f = server.SimFrame(); }
+                catch { break; }
 
-                    var json = Encoding.UTF8.GetString(data);
-                    if (json.Contains("\"type\":\"reload\""))
-                        _mainQueue.Enqueue(() => { _ = ReloadSceneAsync(addr); });
-                    else
-                        _mainQueue.Enqueue(() => _scene?.ApplySimOut(json));
-                }
+                if (f is ReloadFrame)
+                    _mainQueue.Enqueue(() => { _ = ReloadSceneAsync(server.Addr); });
+                else if (f is StateFrame s)
+                    _mainQueue.Enqueue(() => _scene?.ApplyState(s));
             }
         }
 
@@ -170,6 +169,8 @@ namespace Cadverse
         void OnDestroy()
         {
             _recvCts?.Cancel();
+            foreach (var s in Servers) s.Dispose();
+            Servers.Clear();
             _scene?.Dispose();
             Net?.Dispose();
             Net = null;
