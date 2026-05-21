@@ -1,7 +1,6 @@
 using UnityEngine;
 using UnityEngine.EventSystems; 
 using System;
-using System.Collections.Generic; 
 using System.Text; 
 using Cadverse; 
 
@@ -13,13 +12,8 @@ public class SimulationManager : MonoBehaviour
     // 서버 네트워크 연결 객체
     public P2PConn serverConn;
 
-    // 부품 이름과 서버용 ID 매핑 표
-    private Dictionary<string, float> partIdMap = new Dictionary<string, float>
-    {
-        { "EXPORT_shaft", 0.0f },
-        { "base", 1.0f },
-        { "5972K315_Ball_Bearing", 2.0f }
-    };
+    // 현재 드래그 중인 부품 이름
+    private string activePartName = null;
 
     void Update()
     {
@@ -79,33 +73,45 @@ public class SimulationManager : MonoBehaviour
 
         if (Physics.Raycast(ray, out hit))
         {
-            float partIndex = GetPartIndex(hit.collider.gameObject);
+            activePartName = hit.collider.gameObject.name;
+
+            Vector3 actionPointLocal = hit.collider.transform.InverseTransformPoint(hit.point);
 
             TouchStartWrapper data = new TouchStartWrapper
             {
                 payload = new TouchStartPayload
                 {
-                    targetPartIndex = partIndex,
-                    actionPoint = new Vec3(hit.point),
-                    fingerPoint = new Vec3(ray.origin),
-                    z_direction = new Vec3(ray.direction)
+                    target = new PartTarget
+                    {
+                        partName = activePartName
+                    },
+                    actionPointLocal = new Vec3(actionPointLocal),
+                    fingerPointWorld = new Vec3(ray.origin),
+                    cameraForwardWorld = new Vec3(ray.direction)
                 }
             };
 
+            Debug.Log($"TouchStart 대상 부품: {activePartName}, localPoint={actionPointLocal}");
             SendToServer(JsonUtility.ToJson(data));
         }
     }
 
     void HandleTouching(Vector2 touchPos)
     {
+        if (string.IsNullOrEmpty(activePartName)) return;
+
         Ray ray = Camera.main.ScreenPointToRay(touchPos);
 
         TouchingWrapper data = new TouchingWrapper
         {
             payload = new TouchingPayload
             {
-                fingerPoint = new Vec3(ray.origin),
-                z_direction = new Vec3(ray.direction)
+                target = new PartTarget
+                {
+                    partName = activePartName
+                },
+                fingerPointWorld = new Vec3(ray.origin),
+                cameraForwardWorld = new Vec3(ray.direction)
             }
         };
 
@@ -114,8 +120,21 @@ public class SimulationManager : MonoBehaviour
 
     void HandleTouchEnd()
     {
-        TouchEndWrapper data = new TouchEndWrapper();
+        if (string.IsNullOrEmpty(activePartName)) return;
+
+        TouchEndWrapper data = new TouchEndWrapper
+        {
+            payload = new TouchEndPayload
+            {
+                target = new PartTarget
+                {
+                    partName = activePartName
+                }
+            }
+        };
+
         SendToServer(JsonUtility.ToJson(data));
+        activePartName = null;
     }
 
     void SendToServer(string json)
@@ -134,20 +153,8 @@ public class SimulationManager : MonoBehaviour
             Debug.LogWarning("serverConn이 연결되지 않았습니다.");
         }
     }
-
-    float GetPartIndex(GameObject obj)
-    {
-        string hitName = obj.name;
-
-        if (partIdMap.ContainsKey(hitName))
-        {
-            return partIdMap[hitName];
-        }
-
-        Debug.LogWarning($"매핑 표에 없는 부품: {hitName}");
-        return -1.0f; 
-    }
 }
+
 
 // ── JSON 직렬화용 클래스 구조 ──────────────────
 
@@ -157,27 +164,43 @@ public struct Vec3
     public float x;
     public float y;
     public float z;
-    public Vec3(Vector3 v) { x = v.x; y = v.y; z = v.z; }
+
+    public Vec3(Vector3 v)
+    {
+        x = v.x;
+        y = v.y;
+        z = v.z;
+    }
+}
+
+[Serializable]
+public class PartTarget
+{
+    public string partName;
 }
 
 [Serializable]
 public class TouchStartPayload
 {
-    public float targetPartIndex;
-    public Vec3 actionPoint;
-    public Vec3 fingerPoint;
-    public Vec3 z_direction;
+    public PartTarget target;
+    public Vec3 actionPointLocal;
+    public Vec3 fingerPointWorld;
+    public Vec3 cameraForwardWorld;
 }
 
 [Serializable]
 public class TouchingPayload
 {
-    public Vec3 fingerPoint;
-    public Vec3 z_direction;
+    public PartTarget target;
+    public Vec3 fingerPointWorld;
+    public Vec3 cameraForwardWorld;
 }
 
 [Serializable]
-public class TouchEndPayload { }
+public class TouchEndPayload
+{
+    public PartTarget target;
+}
 
 [Serializable]
 public class TouchStartWrapper
@@ -197,5 +220,5 @@ public class TouchingWrapper
 public class TouchEndWrapper
 {
     public string type = "TouchEnd";
-    public TouchEndPayload payload = new TouchEndPayload();
+    public TouchEndPayload payload;
 }

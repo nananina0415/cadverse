@@ -79,8 +79,12 @@ namespace Cadverse
                 var mesh = ObjParser.Parse(objData);
 
                 var go = new GameObject(name);
-                go.AddComponent<MeshFilter>().mesh     = mesh;
+                go.AddComponent<MeshFilter>().mesh = mesh;
                 go.AddComponent<MeshRenderer>().material = mat;
+
+                var collider = go.AddComponent<MeshCollider>();
+                collider.sharedMesh = mesh;
+
                 go.transform.SetParent(root.transform, false);
 
                 var m = CoordConvert.FusionToUnity(matrix);

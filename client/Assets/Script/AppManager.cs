@@ -98,6 +98,21 @@ namespace Cadverse
             P2PConn conn;
             try { conn = Net.ConnectQuic(addr.RawJson); }
             catch { return; }
+
+            _mainQueue.Enqueue(() =>
+            {
+                var simManager = FindAnyObjectByType<global::SimulationManager>();
+                if (simManager != null)
+                {
+                    simManager.serverConn = conn;
+                    Debug.Log("[AppManager] SimulationManager.serverConn 연결 완료");
+                }
+                else
+                {
+                    Debug.LogWarning("[AppManager] SimulationManager를 찾지 못했습니다.");
+                }
+            });
+
             using (conn)
             {
                 while (!ct.IsCancellationRequested)
@@ -113,6 +128,16 @@ namespace Cadverse
                         _mainQueue.Enqueue(() => _scene?.ApplySimOut(json));
                 }
             }
+
+            _mainQueue.Enqueue(() =>
+            {
+                var simManager = FindAnyObjectByType<global::SimulationManager>();
+                if (simManager != null && simManager.serverConn == conn)
+                {
+                    simManager.serverConn = null;
+                    Debug.Log("[AppManager] SimulationManager.serverConn 연결 해제");
+                }
+            });
         }
 
         static TMP_FontAsset _font;
