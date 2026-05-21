@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex, atomic::{AtomicU8, Ordering}};
+use std::sync::{Arc, Condvar, Mutex, atomic::{AtomicBool, Ordering}};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use crate::utils::{TripleBufReader, TripleBufWriter, TripleBufSwapper};
@@ -10,14 +10,14 @@ use crate::utils::{TripleBufReader, TripleBufWriter, TripleBufSwapper};
 pub struct SimIoBuf {
     pub userin_r:    TripleBufReader<Vec<UserIn>>,
     pub userin_swap: TripleBufSwapper<Vec<UserIn>>,
-    pub simout_w:    TripleBufWriter<SimOut>,
-    pub simout_swap: TripleBufSwapper<SimOut>,
+    pub simout_w:    TripleBufWriter<SimFrame>,
+    pub simout_swap: TripleBufSwapper<SimFrame>,
 }
 
 impl SimIoBuf {
     pub fn clear_and_init(&mut self, init: SimOut) {
         self.userin_swap.swap_and_clear();
-        *self.simout_w.write() = init;
+        *self.simout_w.write() = SimFrame::State(init);
         self.simout_swap.swap_and_clear();
     }
 }
@@ -32,25 +32,72 @@ pub struct Vec3 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PartTarget {
+    #[serde(rename = "partIndex", skip_serializing_if = "Option::is_none")]
+    pub part_index: Option<f32>,
+
+    #[serde(rename = "partName", skip_serializing_if = "Option::is_none")]
+    pub part_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TouchStartPayload {
-    #[serde(rename = "targetPartIndex")]
-    pub target_part_index: f32,
-    #[serde(rename = "actionPoint")]
-    pub action_point: Vec3,
-    #[serde(rename = "fingerPoint")]
-    pub finger_point: Vec3,
-    pub z_direction: Vec3,
+    // docs/06 권장 구조
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<PartTarget>,
+
+    #[serde(rename = "actionPointLocal", skip_serializing_if = "Option::is_none")]
+    pub action_point_local: Option<Vec3>,
+
+    #[serde(rename = "fingerPointWorld", skip_serializing_if = "Option::is_none")]
+    pub finger_point_world: Option<Vec3>,
+
+    #[serde(rename = "cameraForwardWorld", skip_serializing_if = "Option::is_none")]
+    pub camera_forward_world: Option<Vec3>,
+
+    // legacy 호환 구조
+    #[serde(rename = "targetPartIndex", skip_serializing_if = "Option::is_none")]
+    pub target_part_index: Option<f32>,
+
+    #[serde(rename = "targetPartName", skip_serializing_if = "Option::is_none")]
+    pub target_part_name: Option<String>,
+
+    #[serde(rename = "actionPoint", skip_serializing_if = "Option::is_none")]
+    pub action_point: Option<Vec3>,
+
+    #[serde(rename = "fingerPoint", skip_serializing_if = "Option::is_none")]
+    pub finger_point: Option<Vec3>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub z_direction: Option<Vec3>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TouchingPayload {
-    #[serde(rename = "fingerPoint")]
-    pub finger_point: Vec3,
-    pub z_direction: Vec3,
+    // docs/06 권장 구조
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<PartTarget>,
+
+    #[serde(rename = "fingerPointWorld", skip_serializing_if = "Option::is_none")]
+    pub finger_point_world: Option<Vec3>,
+
+    #[serde(rename = "cameraForwardWorld", skip_serializing_if = "Option::is_none")]
+    pub camera_forward_world: Option<Vec3>,
+
+    // legacy 호환 구조
+    #[serde(rename = "fingerPoint", skip_serializing_if = "Option::is_none")]
+    pub finger_point: Option<Vec3>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub z_direction: Option<Vec3>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct TouchEndPayload {}
+pub struct TouchEndPayload {
+    // docs/06 권장 구조
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<PartTarget>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload")]
@@ -69,111 +116,29 @@ pub struct ObjectTransform {
     pub rotation: [f32; 4],
 }
 
-// Python runtime_types.ContactTelemetry 최소 미러
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ContactPairOut {
-    #[serde(rename = "bodyA")]
-    pub body_a: String,
-    #[serde(rename = "bodyB")]
-    pub body_b: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ContactTelemetryOut {
-    pub contact_count: i32,
-    pub max_contact_force: f64,
-    pub max_pair: Option<ContactPairOut>,
-}
-
-// Python runtime_types.InteractionTelemetry 최소 미러
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct InteractionTelemetryOut {
-    pub mode: Option<String>,
-    #[serde(rename = "targetBody")]
-    pub target_body: Option<String>,
-    #[serde(rename = "driveBody")]
-    pub drive_body: Option<String>,
-    #[serde(rename = "driveJoint")]
-    pub drive_joint: Option<String>,
-    #[serde(rename = "axisWorld")]
-    pub axis_world: Option<Vec3>,
-    #[serde(rename = "pivotWorld")]
-    pub pivot_world: Option<Vec3>,
-}
-
-// Python runtime_types.DiagnosticItem 미러
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct DiagnosticOut {
-    pub code: String,
-    pub severity: String,
-    pub message: String,
-    pub target: Option<String>,
-}
-
-// Python runtime_types.EventFeedback 미러
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct EventFeedbackOut {
-    #[serde(rename = "eventType")]
-    pub event_type: String,
-    pub severity: String,
-    pub message: String,
-    pub target: Option<String>,
-
-    #[serde(rename = "soundId")]
-    pub sound_id: Option<String>,
-    #[serde(rename = "soundType")]
-    pub sound_type: Option<String>,
-    pub volume: Option<f32>,
-    pub pitch: Option<f32>,
-
-    pub value: Option<f64>,
-    pub threshold: Option<f64>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SimOut {
     pub timestamp: f64,
-    pub seq: Option<i64>,
     pub objects: Vec<ObjectTransform>,
-
-    pub telemetry: Option<ContactTelemetryOut>,
-    #[serde(rename = "interactionTelemetry")]
-    pub interaction_telemetry: Option<InteractionTelemetryOut>,
-
-    pub diagnostics: Vec<DiagnosticOut>,
-    #[serde(rename = "eventFeedback")]
-    pub event_feedback: Vec<EventFeedbackOut>,
-    pub warnings: Vec<String>,
-
-    // 일단 JSON 그대로 보존하고 싶을 때를 위한 확장 필드
-    #[serde(rename = "jointTelemetry")]
-    pub joint_telemetry: Option<serde_json::Value>,
-    #[serde(rename = "actuatorTelemetry")]
-    pub actuator_telemetry: Option<serde_json::Value>,
-    #[serde(rename = "gearTelemetry")]
-    pub gear_telemetry: Option<serde_json::Value>,
-    #[serde(rename = "assemblyTelemetry")]
-    pub assembly_telemetry: Option<serde_json::Value>,
 }
 
 impl crate::utils::Clearable for SimOut {
-    fn clear(&mut self) {
-        self.timestamp = 0.0;
-        self.seq = None;
-        self.objects.clear();
+    fn clear(&mut self) { self.objects.clear(); }
+}
 
-        self.telemetry = None;
-        self.interaction_telemetry = None;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SimFrame {
+    State(SimOut),
+    Reload,
+}
 
-        self.diagnostics.clear();
-        self.event_feedback.clear();
-        self.warnings.clear();
+impl Default for SimFrame {
+    fn default() -> Self { SimFrame::State(SimOut::default()) }
+}
 
-        self.joint_telemetry = None;
-        self.actuator_telemetry = None;
-        self.gear_telemetry = None;
-        self.assembly_telemetry = None;
-    }
+impl crate::utils::Clearable for SimFrame {
+    fn clear(&mut self) { *self = SimFrame::default(); }
 }
 
 // ── SimModel (metadata_types.py::SceneMeta 미러) ──────────────────────────────
@@ -248,7 +213,11 @@ pub struct Simulator {
 }
 
 fn build_py_sim(py: Python, model: &SimModel, dt: f64) -> PyResult<Py<PyAny>> {
-    // Python 3.8+: PATH 대신 add_dll_directory로 conda 환경의 DLL 경로를 명시
+    // stdout을 stderr로 리다이렉트해 stdout 파이프 프로토콜 오염 방지
+    eprintln!("[build_py_sim] 1: stdout redirect");
+    py.run_bound("import sys; sys.stdout = sys.stderr", None, None)?;
+
+    eprintln!("[build_py_sim] 2: add_dll_directory");
     #[cfg(windows)]
     py.run_bound(
         "import os; [os.add_dll_directory(d) for d in [\
@@ -258,9 +227,9 @@ fn build_py_sim(py: Python, model: &SimModel, dt: f64) -> PyResult<Py<PyAny>> {
         None, None,
     )?;
 
+    eprintln!("[build_py_sim] 3: json serialize");
     let mut value = serde_json::to_value(model).expect("SimModel 직렬화 실패");
 
-    // Python SceneMeta가 기대하는 top-level / body 필드 보정
     if let Some(obj) = value.as_object_mut() {
         obj.entry("sceneName".to_string())
             .or_insert(serde_json::json!("rust_loaded_scene"));
@@ -300,26 +269,23 @@ fn build_py_sim(py: Python, model: &SimModel, dt: f64) -> PyResult<Py<PyAny>> {
 
     let json = serde_json::to_string(&value).expect("SimModel 직렬화 실패");
 
+    eprintln!("[build_py_sim] 4: import simulator.SimInfo");
     let siminfo_mod = py.import("simulator.SimInfo")?;
 
+    eprintln!("[build_py_sim] 5: SimOptions");
     let opt_kwargs = PyDict::new(py);
     opt_kwargs.set_item("dt", dt)?;
     opt_kwargs.set_item("allow_obj_auto_approx", true)?;
     opt_kwargs.set_item("strict_no_inference", false)?;
     opt_kwargs.set_item("emit_part_names", true)?;
-
-    // contact telemetry / diagnostics / eventFeedback 출력 활성화
-    opt_kwargs.set_item("enable_contact_telemetry", true)?;
-    opt_kwargs.set_item("max_contact_points_report", 256)?;
-    opt_kwargs.set_item("enable_event_feedback", true)?;
-    opt_kwargs.set_item("event_feedback_enable_sound", true)?;
-
+    opt_kwargs.set_item("enable_contact_telemetry", false)?;
     opt_kwargs.set_item("physics_preset", "DEFAULT")?;
 
     let options = siminfo_mod
         .getattr("SimOptions")?
         .call((), Some(&opt_kwargs))?;
 
+    eprintln!("[build_py_sim] 6: SimInfo.from_json_string");
     let kwargs = PyDict::new(py);
     kwargs.set_item("dt", dt)?;
     kwargs.set_item("options", options)?;
@@ -328,11 +294,15 @@ fn build_py_sim(py: Python, model: &SimModel, dt: f64) -> PyResult<Py<PyAny>> {
         .getattr("SimInfo")?
         .call_method("from_json_string", (json,), Some(&kwargs))?;
 
-    let sim = py
-        .import("simulator.main")?
+    eprintln!("[build_py_sim] 7: import simulator.main");
+    let sim_mod = py.import("simulator.main")?;
+
+    eprintln!("[build_py_sim] 8: Simulator.create");
+    let sim = sim_mod
         .getattr("Simulator")?
         .call_method1("create", (info,))?;
 
+    eprintln!("[build_py_sim] 9: 완료");
     Ok(sim.unbind())
 }
 
@@ -353,9 +323,9 @@ impl Simulator {
         Ok(())
     }
 
-    pub fn step(&mut self, inputs: &[UserIn]) -> Result<SimOut, String> {
+    pub fn step(&mut self, inputs: &[UserIn]) -> Result<Vec<ObjectTransform>, String> {
         let deduped = dedup_inputs(inputs);
-        Python::with_gil(|py| -> PyResult<SimOut> {
+        Python::with_gil(|py| -> PyResult<Vec<ObjectTransform>> {
             let sim = self.py_obj.bind(py);
 
             let mut state = sim.call_method1("step", (py.None(),))?;
@@ -370,7 +340,7 @@ impl Simulator {
                 }
             }
 
-            py_state_to_simout(py, &state)
+            py_state_to_transforms(&state)
         })
         .map_err(|e| format!("Python step 실패: {e}"))
     }
@@ -407,130 +377,31 @@ fn dedup_inputs(inputs: &[UserIn]) -> Vec<UserIn> {
 
 // ── Python SimState → Vec<ObjectTransform> ────────────────────────────────────
 
-// ── Python SimState → SimOut ──────────────────────────────────────────────────
+fn py_state_to_transforms(state: &Bound<'_, PyAny>) -> PyResult<Vec<ObjectTransform>> {
+    let parts = state.getattr("parts")?;
+    let mut out = Vec::new();
+    for p in parts.try_iter()? {
+        let p = p?;
+        let name: String = p.getattr("name")?.extract()?;
 
-fn py_state_to_simout(py: Python<'_>, state: &Bound<'_, PyAny>) -> PyResult<SimOut> {
-    let json_mod = py.import("json")?;
+        let pos = p.getattr("pos")?;
+        let position = [
+            pos.getattr("x")?.extract::<f32>()?,
+            pos.getattr("y")?.extract::<f32>()?,
+            pos.getattr("z")?.extract::<f32>()?,
+        ];
 
-    // Python SimState 객체를 dict로 변환한 뒤 JSON 문자열로 직렬화
-    let state_dict = state.call_method0("to_dict")?;
-    let json_str: String = json_mod.call_method1("dumps", (state_dict,))?.extract()?;
+        let rot = p.getattr("rot")?;
+        let rotation = [
+            rot.getattr("w")?.extract::<f32>()?,
+            rot.getattr("x")?.extract::<f32>()?,
+            rot.getattr("y")?.extract::<f32>()?,
+            rot.getattr("z")?.extract::<f32>()?,
+        ];
 
-    let value: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("SimState JSON parse 실패: {e}"))
-    })?;
-
-    let timestamp = value
-        .get("sim_time")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-
-    let seq = value
-        .get("seq")
-        .and_then(|v| v.as_i64());
-
-    // parts -> objects 변환
-    let mut objects = Vec::new();
-
-    if let Some(parts) = value.get("parts").and_then(|v| v.as_array()) {
-        for p in parts {
-            let name = p
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            let pos = p.get("pos").unwrap_or(&serde_json::Value::Null);
-            let rot = p.get("rot").unwrap_or(&serde_json::Value::Null);
-
-            let position = [
-                pos.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
-                pos.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
-                pos.get("z").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
-            ];
-
-            let rotation = [
-                rot.get("w").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32,
-                rot.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
-                rot.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
-                rot.get("z").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
-            ];
-
-            objects.push(ObjectTransform {
-                name,
-                position,
-                rotation,
-            });
-        }
+        out.push(ObjectTransform { name, position, rotation });
     }
-
-    let telemetry = value
-        .get("telemetry")
-        .cloned()
-        .filter(|v| !v.is_null())
-        .and_then(|v| serde_json::from_value::<ContactTelemetryOut>(v).ok());
-
-    let interaction_telemetry = value
-        .get("interactionTelemetry")
-        .cloned()
-        .filter(|v| !v.is_null())
-        .and_then(|v| serde_json::from_value::<InteractionTelemetryOut>(v).ok());
-
-    let diagnostics = value
-        .get("diagnostics")
-        .cloned()
-        .filter(|v| !v.is_null())
-        .and_then(|v| serde_json::from_value::<Vec<DiagnosticOut>>(v).ok())
-        .unwrap_or_default();
-
-    let event_feedback = value
-        .get("eventFeedback")
-        .cloned()
-        .filter(|v| !v.is_null())
-        .and_then(|v| serde_json::from_value::<Vec<EventFeedbackOut>>(v).ok())
-        .unwrap_or_default();
-
-    let warnings = value
-        .get("warnings")
-        .cloned()
-        .filter(|v| !v.is_null())
-        .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
-        .unwrap_or_default();
-
-    let joint_telemetry = value
-        .get("jointTelemetry")
-        .cloned()
-        .filter(|v| !v.is_null());
-
-    let actuator_telemetry = value
-        .get("actuatorTelemetry")
-        .cloned()
-        .filter(|v| !v.is_null());
-
-    let gear_telemetry = value
-        .get("gearTelemetry")
-        .cloned()
-        .filter(|v| !v.is_null());
-
-    let assembly_telemetry = value
-        .get("assemblyTelemetry")
-        .cloned()
-        .filter(|v| !v.is_null());
-
-    Ok(SimOut {
-        timestamp,
-        seq,
-        objects,
-        telemetry,
-        interaction_telemetry,
-        diagnostics,
-        event_feedback,
-        warnings,
-        joint_telemetry,
-        actuator_telemetry,
-        gear_telemetry,
-        assembly_telemetry,
-    })
+    Ok(out)
 }
 
 const POSITION_SCALE: f64 = 0.01; // cm → m
@@ -651,105 +522,151 @@ fn load_model_from_folder(folder: &PathBuf) -> Result<(SimModel, SimOut), String
     Ok((SimModel { bodies, joints }, SimOut::default()))
 }
 
-// ── SimThread ─────────────────────────────────────────────────────────────────
+// ── SimLoop ───────────────────────────────────────────────────────────────────
 
-const FLAG_RUN:   u8 = 0;
-const FLAG_PAUSE: u8 = 1;
-const FLAG_HALT:  u8 = 2;
-
-pub struct SimThread {
-    thread_handle: std::thread::JoinHandle<SimIoBuf>,
-    _watchdog: crate::watchdog::Watchdog<(SimModel, SimOut)>,
-    flag: Arc<AtomicU8>,
-    cond: Arc<(Mutex<()>, Condvar)>,
+pub struct SimLoop {
+    next_sim:    Arc<Mutex<Option<(Simulator, SimOut)>>>,
+    run_flag:    Arc<AtomicBool>,
+    cond:        Arc<(Mutex<()>, Condvar)>,
+    sim_running: Arc<AtomicBool>,
+    _thread:     std::thread::JoinHandle<()>,
 }
 
-impl SimThread {
-    pub fn new(folder: PathBuf, mut sim_io_buf: SimIoBuf) -> Result<SimThread, (String, SimIoBuf)> {
-        let (model, init) = match load_model_from_folder(&folder) {
-            Ok(v) => v,
-            Err(e) => return Err((e, sim_io_buf)),
-        };
-        sim_io_buf.clear_and_init(init);
+impl SimLoop {
+    pub fn new(mut sim_io_buf: SimIoBuf) -> Self {
+        let next_sim    = Arc::new(Mutex::new(None::<(Simulator, SimOut)>));
+        let run_flag    = Arc::new(AtomicBool::new(false));
+        let cond        = Arc::new((Mutex::new(()), Condvar::new()));
+        let sim_running = Arc::new(AtomicBool::new(false));
 
-        let flag = Arc::new(AtomicU8::new(FLAG_RUN));
-        let cond = Arc::new((Mutex::new(()), Condvar::new()));
-
-        let watchdog = {
-            let flag = flag.clone();
-            let cond = cond.clone();
-            crate::watchdog::Watchdog::new(folder.clone(), move |new_folder, data| {
-                if !new_folder.join("metadata.json").exists() { return; }
-                match load_model_from_folder(&new_folder) {
-                    Ok((m, init)) => {
-                        *data.lock().expect("watchdog data mutex poisoned") = Some((m, init));
-                        flag.store(FLAG_PAUSE, Ordering::Relaxed);
-                        cond.1.notify_one();
-                    }
-                    Err(e) => eprintln!("watchdog: 모델 로드 실패: {e}"),
-                }
-            }).expect("watchdog 생성 실패")
-        };
-
-        let thread_handle = std::thread::spawn({
-            let flag = flag.clone();
-            let cond = cond.clone();
-            let reload_data = watchdog.data.clone();
+        let thread = std::thread::spawn({
+            let next_sim    = next_sim.clone();
+            let run_flag    = run_flag.clone();
+            let cond        = cond.clone();
+            let sim_running = sim_running.clone();
             move || {
-                let mut simulator = match Simulator::new(&model) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        eprintln!("시뮬레이터 생성 실패: {e}");
-                        return sim_io_buf;
-                    }
-                };
+                eprintln!("[sim_loop] 스레드 시작");
                 loop {
-                    match flag.load(Ordering::Relaxed) {
-                        FLAG_RUN => {
-                            sim_io_buf.userin_swap.swap_and_clear();
-                            let inputs = sim_io_buf.userin_r.read();
-                            match simulator.step(inputs) {
-                                Ok(simout) => {
-                                    let out = sim_io_buf.simout_w.write();
-                                    *out = simout;
-                                    sim_io_buf.simout_swap.swap_and_clear();
-                                }
-                                Err(e) => {
-                                    eprintln!("시뮬 step 실패: {e}");
-                                    break;
-                                }
-                            }
+                    // IDLE: run_flag=true 가 될 때까지 대기
+                    {
+                        let (lock, cv) = &*cond;
+                        let mut guard = lock.lock().expect("cond mutex poisoned");
+                        while !run_flag.load(Ordering::Acquire) {
+                            guard = cv.wait(guard).expect("condvar wait 실패");
                         }
-                        FLAG_PAUSE => {
-                            let (lock, cv) = &*cond;
-                            let guard = lock.lock().expect("cond mutex poisoned");
-                            let _guard = cv.wait(guard).expect("condvar wait 실패");
-                            if let Some((m, init)) = reload_data.lock().expect("reload_data mutex poisoned").take() {
-                                if let Err(e) = simulator.reload(&m) {
-                                    eprintln!("시뮬레이터 재생성 실패: {e}");
-                                    break;
-                                }
-                                sim_io_buf.clear_and_init(init);
-                            }
-                        }
-                        _ => break,
                     }
+
+                    // run_flag 가 true 지만 next_sim 이 없으면 루프 다시
+                    let pair = next_sim.lock().expect("next_sim mutex poisoned").take();
+                    let (mut sim, init) = match pair {
+                        Some(v) => v,
+                        None    => { run_flag.store(false, Ordering::Relaxed); continue; }
+                    };
+
+                    sim_io_buf.clear_and_init(init);
+                    sim_running.store(true, Ordering::Relaxed);
+                    eprintln!("[sim_loop] 루프 시작");
+
+                    // RUNNING
+                    while run_flag.load(Ordering::Relaxed) {
+                        // 교체 요청 확인
+                        if let Some((new_sim, _)) = next_sim.lock().expect("next_sim mutex poisoned").take() {
+                            eprintln!("[sim_loop] 시뮬레이터 교체");
+                            sim_io_buf.userin_swap.swap_and_clear();
+                            *sim_io_buf.simout_w.write() = SimFrame::Reload;
+                            sim_io_buf.simout_swap.swap_and_clear();
+                            sim = new_sim;
+                        }
+
+                        sim_io_buf.userin_swap.swap_and_clear();
+                        let inputs = sim_io_buf.userin_r.read();
+                        match sim.step(inputs) {
+                            Ok(objects) => {
+                                *sim_io_buf.simout_w.write() = SimFrame::State(SimOut { timestamp: 0.0, objects });
+                                sim_io_buf.simout_swap.swap_and_clear();
+                            }
+                            Err(e) => {
+                                eprintln!("[sim_loop] step 오류 → 정지: {e}");
+                                run_flag.store(false, Ordering::Relaxed);
+                                break;
+                            }
+                        }
+                    }
+
+                    sim_running.store(false, Ordering::Relaxed);
+                    eprintln!("[sim_loop] 루프 정지");
+                    // sim 여기서 drop (Python 객체 해제)
                 }
-                sim_io_buf
             }
         });
 
-        Ok(SimThread {
-            thread_handle,
-            _watchdog: watchdog,
-            flag,
-            cond,
-        })
+        Self { next_sim, run_flag, cond, sim_running, _thread: thread }
     }
 
-    pub fn stop(self) -> SimIoBuf {
-        self.flag.store(FLAG_HALT, Ordering::Relaxed);
+    // 새 시뮬레이터 세팅 후 실행 (idle·running 모두 동작)
+    pub fn set_sim(&self, sim: Simulator, init: SimOut) {
+        *self.next_sim.lock().expect("next_sim mutex poisoned") = Some((sim, init));
+        self.run_flag.store(true, Ordering::Release);
+        let _g = self.cond.0.lock().expect("cond mutex poisoned");
         self.cond.1.notify_one();
-        self.thread_handle.join().expect("시뮬 스레드 join 실패")
+    }
+
+    pub fn stop(&self) {
+        self.run_flag.store(false, Ordering::Relaxed);
+        // running 루프는 다음 step 후 run_flag 확인 → 자동 종료
+        // idle 상태면 이미 멈춰있으므로 notify 불필요
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.sim_running.load(Ordering::Relaxed)
     }
 }
+
+// ── SimManager ────────────────────────────────────────────────────────────────
+
+pub struct SimManager {
+    pub sim_loop:  SimLoop,
+    pub reloading: Arc<AtomicBool>,
+    pub sim_error: Arc<Mutex<Option<String>>>,
+}
+
+impl SimManager {
+    pub fn new(sim_io_buf: SimIoBuf) -> Self {
+        let sim_loop  = SimLoop::new(sim_io_buf);
+        let reloading = Arc::new(AtomicBool::new(false));
+        let sim_error = Arc::new(Mutex::new(None::<String>));
+        Self { sim_loop, reloading, sim_error }
+    }
+
+    // 시뮬 시작 (블로킹: Simulator::new 포함)
+    pub fn start(&self, model_path: &std::path::Path) -> Result<(), String> {
+        eprintln!("[sim_mgr] 모델 로드: {}", model_path.display());
+        let (model, init) = load_model_from_folder(&model_path.to_path_buf())?;
+        eprintln!("[sim_mgr] Simulator::new 호출 중...");
+        match Simulator::new(&model) {
+            Ok(sim) => {
+                eprintln!("[sim_mgr] Simulator 생성 완료 → SimLoop 실행");
+                self.sim_loop.set_sim(sim, init);
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("[sim_mgr] Simulator 생성 실패: {e}");
+                *self.sim_error.lock().expect("sim_error mutex poisoned") = Some(e.clone());
+                Err(e)
+            }
+        }
+    }
+
+    // 시뮬 정지 (논블로킹: 플래그만 세움)
+    pub fn stop(&self) {
+        eprintln!("[sim_mgr] stop");
+        self.sim_loop.stop();
+    }
+
+    pub fn is_running(&self) -> bool { self.sim_loop.is_running() }
+    pub fn is_reloading(&self) -> bool { self.reloading.load(Ordering::Relaxed) }
+    pub fn take_error(&self) -> Option<String> {
+        self.sim_error.lock().expect("sim_error mutex poisoned").take()
+    }
+}
+
