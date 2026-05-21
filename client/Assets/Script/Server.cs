@@ -11,6 +11,11 @@ namespace Cadverse
     {
         public double      Timestamp;
         public SimObject[] Objects;
+
+        // py_sim 확장 출력 — 사용처가 있는 핵심 항목만 typed로 노출
+        public EventFeedback[] EventFeedback;
+        public DiagnosticItem[] Diagnostics;
+        public string[]         Warnings;
     }
 
     public class ReloadFrame : Frame {}
@@ -20,6 +25,29 @@ namespace Cadverse
         public string     Name;
         public Vector3    Position;   // Unity 좌표로 변환됨
         public Quaternion Rotation;   // Unity 회전으로 변환됨
+    }
+
+    // Python runtime_types.EventFeedback 미러 — soundId/soundType/volume/pitch
+    // 가 있으면 클라가 알림음을 재생하고, message는 사용자에게 표시한다.
+    public struct EventFeedback
+    {
+        public string EventType;
+        public string Severity;
+        public string Message;
+        public string Target;
+        public string SoundId;
+        public string SoundType;
+        public float  Volume;
+        public float  Pitch;
+    }
+
+    // Python runtime_types.DiagnosticItem 미러
+    public struct DiagnosticItem
+    {
+        public string Code;
+        public string Severity;
+        public string Message;
+        public string Target;
     }
 
     // ── 특정 서버 피어와의 연결 + 프로토콜 변환 ──────────────
@@ -85,20 +113,58 @@ namespace Cadverse
                 return new ReloadFrame();
 
             var raw = JsonUtility.FromJson<_RawState>(json);
-            if (raw == null || raw.objects == null)
-                return new StateFrame { Timestamp = raw?.timestamp ?? 0.0, Objects = Array.Empty<SimObject>() };
+            if (raw == null)
+                return new StateFrame { Objects = Array.Empty<SimObject>() };
 
-            var objs = new SimObject[raw.objects.Length];
-            for (int i = 0; i < raw.objects.Length; i++)
+            var rawObjs = raw.objects ?? Array.Empty<_RawObject>();
+            var objs = new SimObject[rawObjs.Length];
+            for (int i = 0; i < rawObjs.Length; i++)
             {
-                var o = raw.objects[i];
+                var o = rawObjs[i];
                 objs[i] = new SimObject {
                     Name     = o.name,
                     Position = CoordConvert.SimPosToUnity(o.position),
                     Rotation = CoordConvert.SimRotToUnity(o.rotation),
                 };
             }
-            return new StateFrame { Timestamp = raw.timestamp, Objects = objs };
+
+            var rawEvs = raw.eventFeedback ?? Array.Empty<_RawEventFeedback>();
+            var evs = new EventFeedback[rawEvs.Length];
+            for (int i = 0; i < rawEvs.Length; i++)
+            {
+                var e = rawEvs[i];
+                evs[i] = new EventFeedback {
+                    EventType = e.eventType,
+                    Severity  = e.severity,
+                    Message   = e.message,
+                    Target    = e.target,
+                    SoundId   = e.soundId,
+                    SoundType = e.soundType,
+                    Volume    = e.volume,
+                    Pitch     = e.pitch,
+                };
+            }
+
+            var rawDiags = raw.diagnostics ?? Array.Empty<_RawDiagnostic>();
+            var diags = new DiagnosticItem[rawDiags.Length];
+            for (int i = 0; i < rawDiags.Length; i++)
+            {
+                var d = rawDiags[i];
+                diags[i] = new DiagnosticItem {
+                    Code     = d.code,
+                    Severity = d.severity,
+                    Message  = d.message,
+                    Target   = d.target,
+                };
+            }
+
+            return new StateFrame {
+                Timestamp     = raw.timestamp,
+                Objects       = objs,
+                EventFeedback = evs,
+                Diagnostics   = diags,
+                Warnings      = raw.warnings ?? Array.Empty<string>(),
+            };
         }
 
         public void Dispose() => _conn?.Dispose();
@@ -130,7 +196,35 @@ namespace Cadverse
         [Serializable] class _TouchingMsg   { public string type = "Touching";   public _TouchingPayload   payload; }
         [Serializable] class _TouchEndMsg   { public string type = "TouchEnd";   public _TouchEndPayload   payload = new _TouchEndPayload(); }
 
-        [Serializable] class _RawState  { public double timestamp; public _RawObject[] objects; }
+        [Serializable] class _RawState
+        {
+            public double timestamp;
+            public _RawObject[] objects;
+            public _RawEventFeedback[] eventFeedback;
+            public _RawDiagnostic[] diagnostics;
+            public string[] warnings;
+        }
+
         [Serializable] class _RawObject { public string name; public float[] position; public float[] rotation; }
+
+        [Serializable] class _RawEventFeedback
+        {
+            public string eventType;
+            public string severity;
+            public string message;
+            public string target;
+            public string soundId;
+            public string soundType;
+            public float  volume;
+            public float  pitch;
+        }
+
+        [Serializable] class _RawDiagnostic
+        {
+            public string code;
+            public string severity;
+            public string message;
+            public string target;
+        }
     }
 }
