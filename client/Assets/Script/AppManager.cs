@@ -110,8 +110,31 @@ namespace Cadverse
                 if (f is ReloadFrame)
                     _mainQueue.Enqueue(() => { _ = ReloadSceneAsync(server.Addr); });
                 else if (f is StateFrame s)
-                    _mainQueue.Enqueue(() => _scene?.ApplyState(s));
+                    _mainQueue.Enqueue(() => HandleStateFrame(s));
             }
+        }
+
+        void HandleStateFrame(StateFrame s)
+        {
+            _scene?.ApplyState(s);
+
+            if (s.EventFeedback != null)
+            {
+                foreach (var ev in s.EventFeedback)
+                {
+                    if (!string.IsNullOrEmpty(ev.Message))
+                        ShowToast(ev.Message);
+                    // 사운드 재생은 D-3에서 별도 컴포넌트로 처리 — 일단 로그만 남긴다
+                    if (!string.IsNullOrEmpty(ev.SoundId))
+                        Debug.Log($"[EventFeedback] sound={ev.SoundId} type={ev.SoundType} vol={ev.Volume:F2} pitch={ev.Pitch:F2}");
+                }
+            }
+
+            if (s.Warnings != null)
+                foreach (var w in s.Warnings) Debug.LogWarning($"[sim] {w}");
+
+            if (s.Diagnostics != null)
+                foreach (var d in s.Diagnostics) Debug.Log($"[sim/{d.Severity}] {d.Code}: {d.Message}");
         }
 
         static TMP_FontAsset _font;

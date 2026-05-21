@@ -129,7 +129,7 @@
 - [x] **2. sim.rs 확장 (B-1)** — 새 타입 + SimOut 새 필드 + build_py_sim 옵션 + py_state_to_simout 재작성. SimFrame/AtomicBool 구조는 그대로
 - [ ] **3. 서버 빌드 + 동작 확인** — 시뮬이 SimOut을 새 형식으로 잘 내보내는지 확인 (cargo check ✅ / 실제 런타임 확인 대기)
 - [x] **4. Server.cs 확장 (B-2)** — 새 필드 받기 + EventFeedback 타입 (핵심 3종: EventFeedback/Diagnostics/Warnings)
-- [ ] **5. AppManager EventFeedback 처리 (B-3)** — 메시지 toast
+- [x] **5. AppManager EventFeedback 처리 (B-3)** — Message → Toast, Warnings/Diagnostics → Debug 로그, SoundId는 D-3에서 처리
 - [ ] **6. D-3 사운드 재생** — Unity AudioSource 컴포넌트
 - [ ] **7. D-1 D-2 플러그인 측 소통/UI** — 마지막 단계
 
