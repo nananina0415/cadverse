@@ -459,6 +459,7 @@
         document.getElementById("input-username").value = cfg.username || "";
         document.getElementById("input-group").value = cfg.group_name || "";
         if (cfg.mode) setMode(cfg.mode);
+        _myUsername = cfg.username || "";
       }
 
       function onConfigSaved(cfg) {
@@ -470,6 +471,7 @@
         document.getElementById("disp-me").textContent = cfg.username;
         document.getElementById("error-banner").style.display = "none";
         document.getElementById("hint-connecting").style.display = "block";
+        _myUsername = cfg.username || "";
       }
 
       let _serverError = false;
@@ -480,6 +482,7 @@
       let _simStopping = false;
       let _paused = false;
       let _importing = false;
+      let _myUsername = "";
 
       // ── 안내 문구 업데이트 ─────────────────────────────────────────────────────
       function updateHint(reloading, extracting, importing) {
@@ -556,7 +559,12 @@
 
         const list = document.getElementById("member-list");
         list.innerHTML = "";
-        (s.members || []).forEach((m) => {
+        let members = s.members || [];
+        // 자신이 목록에 없으면 맨 위에 고정
+        if (_myUsername && !members.some((m) => m.is_me)) {
+          members = [{ name: _myUsername, is_me: true, sim: false, client: false, qr: null }, ...members];
+        }
+        members.forEach((m) => {
           const row = document.createElement("div");
           row.className = "member-row";
           const canImport = !m.is_me && m.sim && !_importing;
@@ -569,9 +577,12 @@
             </div>
           </span>
           <div style="display:flex;gap:4px">
-            <button class="btn btn-outline" style="padding:3px 8px;font-size:11px" ${m.qr ? '' : 'disabled'} onclick="sendToFusion('qr_show_member', {name:'${m.name}',qr:${JSON.stringify(m.qr||'')}})">보기</button>
-            <button class="btn btn-outline" style="padding:3px 8px;font-size:11px" ${canImport ? '' : 'disabled'} onclick="sendToFusion('import_model', {name:'${m.name}'})">${_importing ? '가져오는 중…' : '가져오기'}</button>
+            <button class="btn btn-outline" style="padding:3px 8px;font-size:11px" ${m.qr ? "" : "disabled"}>보기</button>
+            <button class="btn btn-outline" style="padding:3px 8px;font-size:11px" ${canImport ? "" : "disabled"}>${_importing ? "가져오는 중…" : "가져오기"}</button>
           </div>`;
+          const [btnQr, btnImport] = row.querySelectorAll("button");
+          if (m.qr) btnQr.addEventListener("click", () => sendToFusion("qr_show_member", { name: m.name, qr: m.qr }));
+          if (canImport) btnImport.addEventListener("click", () => sendToFusion("import_model", { name: m.name }));
           list.appendChild(row);
         });
       }

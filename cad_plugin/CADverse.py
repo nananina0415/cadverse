@@ -344,20 +344,37 @@ def run(context):
 
 
 def stop(context):
-    global _stopping, _server_proc
+    global _stopping, _server_proc, _server
+    _plog('[stop] 진입')
     _stopping = True
-    ui = None
+    _server = None
+
+    # 서버 프로세스 강제 종료 — 블로킹 없이 즉시 kill
+    proc, _server_proc = _server_proc, None
+    _plog(f'[stop] proc={proc}, poll={proc.poll() if proc else "none"}')
+    if proc:
+        if proc.poll() is None:
+            proc.kill()   # kill 먼저 → 파이프 write 쪽 닫힘 → readline() EOF 반환
+        _plog('[stop] proc.kill 완료')
+
+    # 혹시 남아있는 프로세스 exe 이름으로 강제 종료 (별도 스레드 — 블로킹 방지)
+    def _taskkill():
+        try:
+            subprocess.run(
+                ['taskkill', '/F', '/IM', os.path.basename(_sim_server_exe())],
+                timeout=3,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except Exception:
+            pass
+    threading.Thread(target=_taskkill, daemon=True).start()
+
+    # UI / 이벤트 정리
+    _plog('[stop] UI 정리 시작')
     try:
         app = adsk.core.Application.get()
         ui  = app.userInterface
-
-        proc, _server_proc = _server_proc, None
-        if proc and proc.poll() is None:
-            try:
-                proc.stdin.close()
-            except Exception:
-                pass
-            proc.terminate()
 
         global _doc_saved_handler
         if _doc_saved_handler:
@@ -371,15 +388,16 @@ def stop(context):
         if palette:
             palette.deleteMe()
 
-        app.unregisterCustomEvent(PALETTE_SEND_EVENT)
-        app.unregisterCustomEvent(SERVER_DIED_EVENT)
+        try: app.unregisterCustomEvent(PALETTE_SEND_EVENT)
+        except Exception: pass
+        try: app.unregisterCustomEvent(SERVER_DIED_EVENT)
+        except Exception: pass
         _handlers.clear()
 
     except Exception:
-        tb = traceback.format_exc()
-        _plog(f'[stop] 예외:\n{tb}')
-        if ui:
-            ui.messageBox('CADverse 종료 오류:\n{}'.format(tb))
+        _plog(f'[stop] UI 정리 예외:\n{traceback.format_exc()}')
+
+    _plog('[stop] 완료')
 
 
 class _PaletteClosedHandler(adsk.core.UserInterfaceGeneralEventHandler):
