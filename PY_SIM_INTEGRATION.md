@@ -125,9 +125,9 @@
 
 ## 진행 순서 및 체크리스트
 
-- [ ] **1. Python 시뮬레이터 복사 (A)** — `server/pychrono/simulator/` 4개 파일을 origin/py_sim에서 그대로 가져오기
-- [ ] **2. sim.rs 확장 (B-1)** — 새 타입 + SimOut 새 필드 + build_py_sim 옵션 + py_state_to_simout 재작성. SimFrame/AtomicBool 구조는 그대로
-- [ ] **3. 서버 빌드 + 동작 확인** — 시뮬이 SimOut을 새 형식으로 잘 내보내는지 확인
+- [x] **1. Python 시뮬레이터 복사 (A)** — `server/pychrono/simulator/` 4개 파일을 origin/py_sim에서 그대로 가져오기 (`ece2b5e`)
+- [x] **2. sim.rs 확장 (B-1)** — 새 타입 + SimOut 새 필드 + build_py_sim 옵션 + py_state_to_simout 재작성. SimFrame/AtomicBool 구조는 그대로
+- [ ] **3. 서버 빌드 + 동작 확인** — 시뮬이 SimOut을 새 형식으로 잘 내보내는지 확인 (cargo check ✅ / 실제 런타임 확인 대기)
 - [ ] **4. Server.cs 확장 (B-2)** — 새 필드 받기 + EventFeedback 타입
 - [ ] **5. AppManager EventFeedback 처리 (B-3)** — 메시지 toast
 - [ ] **6. D-3 사운드 재생** — Unity AudioSource 컴포넌트

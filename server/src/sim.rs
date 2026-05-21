@@ -69,14 +69,101 @@ pub struct ObjectTransform {
     pub rotation: [f32; 4],
 }
 
+// Python runtime_types.ContactTelemetry 최소 미러
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ContactPairOut {
+    #[serde(rename = "bodyA")] pub body_a: String,
+    #[serde(rename = "bodyB")] pub body_b: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ContactTelemetryOut {
+    pub contact_count: i32,
+    pub max_contact_force: f64,
+    pub max_pair: Option<ContactPairOut>,
+}
+
+// Python runtime_types.InteractionTelemetry 최소 미러
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct InteractionTelemetryOut {
+    pub mode: Option<String>,
+    #[serde(rename = "targetBody")] pub target_body: Option<String>,
+    #[serde(rename = "driveBody")]  pub drive_body:  Option<String>,
+    #[serde(rename = "driveJoint")] pub drive_joint: Option<String>,
+    #[serde(rename = "axisWorld")]  pub axis_world:  Option<Vec3>,
+    #[serde(rename = "pivotWorld")] pub pivot_world: Option<Vec3>,
+}
+
+// Python runtime_types.DiagnosticItem 미러
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DiagnosticOut {
+    pub code: String,
+    pub severity: String,
+    pub message: String,
+    pub target: Option<String>,
+}
+
+// Python runtime_types.EventFeedback 미러
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EventFeedbackOut {
+    #[serde(rename = "eventType")] pub event_type: String,
+    pub severity: String,
+    pub message: String,
+    pub target: Option<String>,
+
+    #[serde(rename = "soundId")]   pub sound_id:   Option<String>,
+    #[serde(rename = "soundType")] pub sound_type: Option<String>,
+    pub volume: Option<f32>,
+    pub pitch:  Option<f32>,
+
+    pub value:     Option<f64>,
+    pub threshold: Option<f64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SimOut {
     pub timestamp: f64,
+    pub seq: Option<i64>,
     pub objects: Vec<ObjectTransform>,
+
+    pub telemetry: Option<ContactTelemetryOut>,
+    #[serde(rename = "interactionTelemetry")]
+    pub interaction_telemetry: Option<InteractionTelemetryOut>,
+
+    pub diagnostics: Vec<DiagnosticOut>,
+    #[serde(rename = "eventFeedback")]
+    pub event_feedback: Vec<EventFeedbackOut>,
+    pub warnings: Vec<String>,
+
+    // 스키마 미고정 부분은 raw JSON value로 그대로 보관
+    #[serde(rename = "jointTelemetry")]
+    pub joint_telemetry: Option<serde_json::Value>,
+    #[serde(rename = "actuatorTelemetry")]
+    pub actuator_telemetry: Option<serde_json::Value>,
+    #[serde(rename = "gearTelemetry")]
+    pub gear_telemetry: Option<serde_json::Value>,
+    #[serde(rename = "assemblyTelemetry")]
+    pub assembly_telemetry: Option<serde_json::Value>,
 }
 
 impl crate::utils::Clearable for SimOut {
-    fn clear(&mut self) { self.objects.clear(); }
+    fn clear(&mut self) {
+        self.timestamp = 0.0;
+        self.seq = None;
+        self.objects.clear();
+
+        self.telemetry = None;
+        self.interaction_telemetry = None;
+
+        self.diagnostics.clear();
+        self.event_feedback.clear();
+        self.warnings.clear();
+
+        self.joint_telemetry = None;
+        self.actuator_telemetry = None;
+        self.gear_telemetry = None;
+        self.assembly_telemetry = None;
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,7 +251,11 @@ fn build_py_sim(py: Python, meta: &serde_json::Value, dt: f64) -> PyResult<Py<Py
     opt_kwargs.set_item("allow_obj_auto_approx", true)?;
     opt_kwargs.set_item("strict_no_inference", false)?;
     opt_kwargs.set_item("emit_part_names", true)?;
-    opt_kwargs.set_item("enable_contact_telemetry", false)?;
+    // contact telemetry / diagnostics / eventFeedback 출력 활성화
+    opt_kwargs.set_item("enable_contact_telemetry", true)?;
+    opt_kwargs.set_item("max_contact_points_report", 256)?;
+    opt_kwargs.set_item("enable_event_feedback", true)?;
+    opt_kwargs.set_item("event_feedback_enable_sound", true)?;
     opt_kwargs.set_item("physics_preset", "DEFAULT")?;
 
     let options = siminfo_mod
@@ -209,9 +300,9 @@ impl Simulator {
         Ok(())
     }
 
-    pub fn step(&mut self, inputs: &[UserIn]) -> Result<Vec<ObjectTransform>, String> {
+    pub fn step(&mut self, inputs: &[UserIn]) -> Result<SimOut, String> {
         let deduped = dedup_inputs(inputs);
-        Python::with_gil(|py| -> PyResult<Vec<ObjectTransform>> {
+        Python::with_gil(|py| -> PyResult<SimOut> {
             let sim = self.py_obj.bind(py);
 
             let mut state = sim.call_method1("step", (py.None(),))?;
@@ -226,7 +317,7 @@ impl Simulator {
                 }
             }
 
-            py_state_to_transforms(&state)
+            py_state_to_simout(py, &state)
         })
         .map_err(|e| format!("Python step 실패: {e}"))
     }
@@ -261,33 +352,86 @@ fn dedup_inputs(inputs: &[UserIn]) -> Vec<UserIn> {
     result
 }
 
-// ── Python SimState → Vec<ObjectTransform> ────────────────────────────────────
+// ── Python SimState → SimOut ──────────────────────────────────────────────────
 
-fn py_state_to_transforms(state: &Bound<'_, PyAny>) -> PyResult<Vec<ObjectTransform>> {
-    let parts = state.getattr("parts")?;
-    let mut out = Vec::new();
-    for p in parts.try_iter()? {
-        let p = p?;
-        let name: String = p.getattr("name")?.extract()?;
+fn py_state_to_simout(py: Python<'_>, state: &Bound<'_, PyAny>) -> PyResult<SimOut> {
+    let json_mod = py.import("json")?;
 
-        let pos = p.getattr("pos")?;
-        let position = [
-            pos.getattr("x")?.extract::<f32>()?,
-            pos.getattr("y")?.extract::<f32>()?,
-            pos.getattr("z")?.extract::<f32>()?,
-        ];
+    // Python SimState → dict → JSON 문자열 → serde_json::Value 로 한 번 변환한 뒤,
+    // 정의된 필드는 typed로, 미고정 필드는 raw value로 분리해서 보관한다.
+    let state_dict = state.call_method0("to_dict")?;
+    let json_str: String = json_mod.call_method1("dumps", (state_dict,))?.extract()?;
 
-        let rot = p.getattr("rot")?;
-        let rotation = [
-            rot.getattr("w")?.extract::<f32>()?,
-            rot.getattr("x")?.extract::<f32>()?,
-            rot.getattr("y")?.extract::<f32>()?,
-            rot.getattr("z")?.extract::<f32>()?,
-        ];
+    let value: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("SimState JSON parse 실패: {e}"))
+    })?;
 
-        out.push(ObjectTransform { name, position, rotation });
+    let timestamp = value.get("sim_time").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let seq       = value.get("seq").and_then(|v| v.as_i64());
+
+    // parts → objects
+    let mut objects = Vec::new();
+    if let Some(parts) = value.get("parts").and_then(|v| v.as_array()) {
+        for p in parts {
+            let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let pos  = p.get("pos").unwrap_or(&serde_json::Value::Null);
+            let rot  = p.get("rot").unwrap_or(&serde_json::Value::Null);
+
+            let position = [
+                pos.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                pos.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                pos.get("z").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+            ];
+            let rotation = [
+                rot.get("w").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32,
+                rot.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                rot.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                rot.get("z").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+            ];
+            objects.push(ObjectTransform { name, position, rotation });
+        }
     }
-    Ok(out)
+
+    let telemetry = value.get("telemetry")
+        .and_then(|t| serde_json::from_value::<ContactTelemetryOut>(t.clone()).ok());
+
+    let interaction_telemetry = value.get("interactionTelemetry")
+        .and_then(|t| serde_json::from_value::<InteractionTelemetryOut>(t.clone()).ok());
+
+    let diagnostics: Vec<DiagnosticOut> = value.get("diagnostics")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|x| serde_json::from_value(x.clone()).ok()).collect())
+        .unwrap_or_default();
+
+    let event_feedback: Vec<EventFeedbackOut> = value.get("eventFeedback")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|x| serde_json::from_value(x.clone()).ok()).collect())
+        .unwrap_or_default();
+
+    let warnings: Vec<String> = value.get("warnings")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+
+    let joint_telemetry    = value.get("jointTelemetry").cloned();
+    let actuator_telemetry = value.get("actuatorTelemetry").cloned();
+    let gear_telemetry     = value.get("gearTelemetry").cloned();
+    let assembly_telemetry = value.get("assemblyTelemetry").cloned();
+
+    Ok(SimOut {
+        timestamp,
+        seq,
+        objects,
+        telemetry,
+        interaction_telemetry,
+        diagnostics,
+        event_feedback,
+        warnings,
+        joint_telemetry,
+        actuator_telemetry,
+        gear_telemetry,
+        assembly_telemetry,
+    })
 }
 
 fn load_model_from_folder(folder: &PathBuf) -> Result<(serde_json::Value, SimOut), String> {
@@ -388,8 +532,8 @@ impl SimLoop {
                             std::panic::AssertUnwindSafe(|| sim.step(inputs))
                         );
                         match step_result {
-                            Ok(Ok(objects)) => {
-                                *sim_io_buf.simout_w.write() = SimFrame::State(SimOut { timestamp: 0.0, objects });
+                            Ok(Ok(out)) => {
+                                *sim_io_buf.simout_w.write() = SimFrame::State(out);
                                 sim_io_buf.simout_swap.swap_and_clear();
                             }
                             Ok(Err(e)) => {
