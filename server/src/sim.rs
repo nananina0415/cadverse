@@ -363,7 +363,16 @@ fn py_state_to_simout(py: Python<'_>, state: &Bound<'_, PyAny>) -> PyResult<SimO
     let state_dict = state.call_method0("to_dict")?;
     let json_str: String = json_mod.call_method1("dumps", (state_dict,))?.extract()?;
 
-    let value: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
+    // [임시 fix] Python json.dumps는 NaN/Infinity/-Infinity를 표준 JSON 외 토큰으로 출력해서
+    // serde_json::from_str이 파싱 실패한다. spring 모드 등에서 발생 확인.
+    // 본질적 해결은 Python 측에서 NaN을 막거나 정리하는 것 — BUGS.md 참고.
+    // -Infinity를 먼저 치환해야 Infinity 치환과 충돌 안 함.
+    let cleaned = json_str
+        .replace("-Infinity", "null")
+        .replace("Infinity", "null")
+        .replace("NaN", "null");
+
+    let value: serde_json::Value = serde_json::from_str(&cleaned).map_err(|e| {
         PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("SimState JSON parse 실패: {e}"))
     })?;
 
@@ -481,7 +490,7 @@ pub struct SimLoop {
 }
 
 impl SimLoop {
-    pub fn new(mut sim_io_buf: SimIoBuf) -> Self {
+    pub fn new(mut sim_io_buf: SimIoBuf, sim_error: Arc<Mutex<Option<String>>>) -> Self {
         let next_sim    = Arc::new(Mutex::new(None::<(Simulator, SimOut)>));
         let run_flag    = Arc::new(AtomicBool::new(false));
         let cond        = Arc::new((Mutex::new(()), Condvar::new()));
@@ -492,6 +501,7 @@ impl SimLoop {
             let run_flag    = run_flag.clone();
             let cond        = cond.clone();
             let sim_running = sim_running.clone();
+            let sim_error   = sim_error.clone();
             move || {
                 eprintln!("[sim_loop] 스레드 시작");
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -539,6 +549,8 @@ impl SimLoop {
                             }
                             Ok(Err(e)) => {
                                 eprintln!("[sim_loop] step 오류 → 정지: {e}");
+                                *sim_error.lock().expect("sim_error mutex poisoned") =
+                                    Some(format!("step 오류: {e}"));
                                 run_flag.store(false, Ordering::Relaxed);
                                 break;
                             }
@@ -547,6 +559,8 @@ impl SimLoop {
                                     .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
                                     .unwrap_or_else(|| "알 수 없는 패닉".to_string());
                                 eprintln!("[sim_loop] step 패닉 → 정지: {msg}");
+                                *sim_error.lock().expect("sim_error mutex poisoned") =
+                                    Some(format!("step 패닉: {msg}"));
                                 run_flag.store(false, Ordering::Relaxed);
                                 break;
                             }
@@ -602,9 +616,9 @@ pub struct SimManager {
 
 impl SimManager {
     pub fn new(sim_io_buf: SimIoBuf) -> Self {
-        let sim_loop  = SimLoop::new(sim_io_buf);
-        let reloading = Arc::new(AtomicBool::new(false));
         let sim_error = Arc::new(Mutex::new(None::<String>));
+        let sim_loop  = SimLoop::new(sim_io_buf, sim_error.clone());
+        let reloading = Arc::new(AtomicBool::new(false));
         Self { sim_loop, reloading, sim_error }
     }
 

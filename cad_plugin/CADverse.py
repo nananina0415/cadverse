@@ -217,12 +217,22 @@ def _start_server():
     log_file = open(log_path, 'w', encoding='utf-8')
     log_file.write(f'[plugin] 서버 시작: {exe}\n')
     log_file.flush()
+
+    # 디버그 빌드(target/debug)일 때만 Rust 패닉 백트레이스 활성화
+    env_vars = None
+    norm_exe = os.path.normpath(exe).lower()
+    if (os.sep + 'debug' + os.sep) in norm_exe or '/debug/' in norm_exe:
+        env_vars = {**os.environ, 'RUST_BACKTRACE': 'full'}
+        log_file.write('[plugin] 디버그 빌드 감지 → RUST_BACKTRACE=full\n')
+        log_file.flush()
+
     _server_proc = subprocess.Popen(
         [exe],
         creationflags=subprocess.CREATE_NO_WINDOW,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=log_file,
+        env=env_vars,
     )
     _server = RustServer(_server_proc)
     threading.Thread(target=_pipe_reader_thread, daemon=True).start()
