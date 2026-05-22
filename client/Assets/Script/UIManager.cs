@@ -18,7 +18,6 @@ public class UIManager : MonoBehaviour
     [Header("UI 컴포넌트 이름")]
     public Button selectMenuButton;
     public Button dragMenuButton;
-    public Button viewMenuButton;
     public Button refreshMenuButton;
 
     [Header("반응형 UI 패널")]
@@ -34,10 +33,7 @@ public class UIManager : MonoBehaviour
         
         if (dragMenuButton != null && uiHandler != null)
             dragMenuButton.onClick.AddListener(uiHandler.onDragMenuButtonClick);
-        
-        if (viewMenuButton != null && uiHandler != null)
-            viewMenuButton.onClick.AddListener(uiHandler.onViewMenuButtonClick);
-        
+
         if (refreshMenuButton != null && uiHandler != null)
             refreshMenuButton.onClick.AddListener(uiHandler.onRefreshMenuButtonClick);
     }
