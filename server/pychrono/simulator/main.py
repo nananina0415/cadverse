@@ -1805,6 +1805,16 @@ class _ARInteractionController:
                         sign = 1.0 if align >= 0.0 else -1.0
                         align_abs = abs(align)
 
+                        # [DEBUG] 회전 방향 진단
+                        print(
+                            f"[rot-dbg] body={body_name} "
+                            f"f_prev=({f_prev.x:+.3f},{f_prev.y:+.3f},{f_prev.z:+.3f}) "
+                            f"f_curr=({f_curr.x:+.3f},{f_curr.y:+.3f},{f_curr.z:+.3f}) "
+                            f"axis=({axis_world_n.x:+.3f},{axis_world_n.y:+.3f},{axis_world_n.z:+.3f}) "
+                            f"arc=({arc_axis_n.x:+.3f},{arc_axis_n.y:+.3f},{arc_axis_n.z:+.3f}) "
+                            f"align={align:+.3f} sign={sign:+.1f}"
+                        )
+
                         # 손가락이 pivot 주변에서 만든 각속도(rad/s)
                         w_drag = sign * (d_ang / float(dt))
                         w_drag *= max(0.2, align_abs)
