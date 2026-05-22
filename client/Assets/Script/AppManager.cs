@@ -45,8 +45,7 @@ namespace Cadverse
                 return false;
             }
 
-            Debug.LogWarning("[AppManager] 현재 AppManager에는 P2PConn 전송 경로가 없습니다. ARScene 또는 P2PNet 쪽 전송 함수 연결 필요");
-            return false;
+            return _scene.SendUserInput(json);
         }
 
         public void OnLoginComplete(P2PNet net)

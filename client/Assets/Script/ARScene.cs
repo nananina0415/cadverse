@@ -15,15 +15,17 @@ namespace Cadverse
         readonly ARTrackedImageManager _manager;
         readonly GameObject _root;
         readonly Texture2D  _markerTexture;
+        readonly P2PConn    _conn;
         ARAnchor    _anchor;
         public int MeshCount;
         TrackingState _lastTrackingState = TrackingState.None;
 
-        ARScene(ARTrackedImageManager manager, GameObject root, Texture2D markerTexture)
+        ARScene(ARTrackedImageManager manager, GameObject root, Texture2D markerTexture, P2PConn conn)
         {
             _manager       = manager;
             _root          = root;
             _markerTexture = markerTexture;
+            _conn          = conn;
             manager.trackablesChanged.AddListener(OnTrackedImagesChanged);
         }
 
@@ -97,8 +99,11 @@ namespace Cadverse
                 );
             }
 
-            // (5) ARScene 생성(리스너 등록) → referenceLibrary 설정 (순서 중요)
-            var scene = new ARScene(manager, root, texture);
+            // (5) 서버와 UserIn 전송용 연결 생성
+            P2PConn conn = await Task.Run(() => net.ConnectQuic(addr.RawJson));
+
+            // (6) ARScene 생성(리스너 등록) → referenceLibrary 설정 (순서 중요)
+            var scene = new ARScene(manager, root, texture, conn);
             scene.MeshCount = transforms.Count;
             manager.referenceLibrary = lib;
             manager.enabled = true;
@@ -155,6 +160,25 @@ namespace Cadverse
             _root.transform.SetParent(_anchor.transform, true);
         }
 
+        public bool SendUserInput(string json)
+        {
+            if (_conn == null)
+            {
+                Debug.LogWarning("[ARScene] P2PConn이 없습니다. UserIn 전송 불가");
+                return false;
+            }
+
+            byte[] data = Encoding.UTF8.GetBytes(json);
+            bool ok = _conn.Send(data);
+
+            if (ok)
+                Debug.Log($"[ARScene] UserIn 전송 성공: {json}");
+            else
+                Debug.LogWarning($"[ARScene] UserIn 전송 실패: {json}");
+
+            return ok;
+        }
+
         public void Dispose()
         {
             _manager.trackablesChanged.RemoveListener(OnTrackedImagesChanged);
@@ -162,6 +186,7 @@ namespace Cadverse
             if (_anchor != null) UnityEngine.Object.Destroy(_anchor.gameObject);
             UnityEngine.Object.Destroy(_root);
             UnityEngine.Object.Destroy(_markerTexture);
+            _conn?.Dispose();
         }
 
         // "0"/"1" 그리드 → Texture2D (1=검정, 0=흰색, 모듈당 10px)
