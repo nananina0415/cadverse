@@ -1,8 +1,11 @@
 using UnityEngine;
-using UnityEngine.EventSystems; 
+using UnityEngine.EventSystems;
+using UnityEngine.InputSystem;
+using UnityEngine.InputSystem.EnhancedTouch;
+using EnhancedTouch = UnityEngine.InputSystem.EnhancedTouch.Touch;
 using System;
-using System.Text; 
-using Cadverse; 
+using System.Text;
+using Cadverse;
 
 public class SimulationManager : MonoBehaviour
 {
@@ -15,40 +18,59 @@ public class SimulationManager : MonoBehaviour
     // 현재 드래그 중인 부품 이름
     private string activePartName = null;
 
+    void OnEnable()
+    {
+        EnhancedTouchSupport.Enable();
+    }
+
+    void OnDisable()
+    {
+        EnhancedTouchSupport.Disable();
+    }
+
     void Update()
     {
         if (currentMode == AppMode.None || currentMode == AppMode.View)
             return;
 
-        // 모바일 터치 우선 처리
-        if (Input.touchCount > 0)
+        // 모바일 / 터치 입력: New Input System EnhancedTouch 사용
+        foreach (var touch in EnhancedTouch.activeTouches)
         {
-            Touch touch = Input.GetTouch(0);
+            UnityEngine.TouchPhase phase = ConvertTouchPhase(touch.phase);
+            bool overUI = IsPointerOverUI(touch.touchId);
 
-            if (!IsPointerOverUI(touch.fingerId))
+            Debug.Log($"[SimulationManager] touch phase={phase}, mode={currentMode}, overUI={overUI}, pos={touch.screenPosition}");
+
+            if (!overUI)
             {
-                RouteTouchInput(touch.position, touch.phase);
+                RouteTouchInput(touch.screenPosition, phase);
             }
 
             return;
         }
 
 #if UNITY_EDITOR
-        // PC 마우스 테스트용
-        if (Input.GetMouseButtonDown(0))
+        // PC 마우스 테스트용: New Input System Mouse 사용
+        var mouse = Mouse.current;
+        if (mouse == null)
+            return;
+
+        Vector2 pos = mouse.position.ReadValue();
+
+        if (mouse.leftButton.wasPressedThisFrame)
         {
             if (!IsPointerOverUI())
-                RouteTouchInput(Input.mousePosition, TouchPhase.Began);
+                RouteTouchInput(pos, UnityEngine.TouchPhase.Began);
         }
-        else if (Input.GetMouseButton(0))
+        else if (mouse.leftButton.isPressed)
         {
             if (!IsPointerOverUI())
-                RouteTouchInput(Input.mousePosition, TouchPhase.Moved);
+                RouteTouchInput(pos, UnityEngine.TouchPhase.Moved);
         }
-        else if (Input.GetMouseButtonUp(0))
+        else if (mouse.leftButton.wasReleasedThisFrame)
         {
             if (!IsPointerOverUI())
-                RouteTouchInput(Input.mousePosition, TouchPhase.Ended);
+                RouteTouchInput(pos, UnityEngine.TouchPhase.Ended);
         }
 #endif
     }
@@ -67,21 +89,46 @@ public class SimulationManager : MonoBehaviour
         return EventSystem.current.IsPointerOverGameObject();
     }
 
-    void RouteTouchInput(Vector2 touchPos, TouchPhase phase)
+    UnityEngine.TouchPhase ConvertTouchPhase(UnityEngine.InputSystem.TouchPhase phase)
+    {
+        switch (phase)
+        {
+            case UnityEngine.InputSystem.TouchPhase.Began:
+                return UnityEngine.TouchPhase.Began;
+
+            case UnityEngine.InputSystem.TouchPhase.Moved:
+                return UnityEngine.TouchPhase.Moved;
+
+            case UnityEngine.InputSystem.TouchPhase.Stationary:
+                return UnityEngine.TouchPhase.Stationary;
+
+            case UnityEngine.InputSystem.TouchPhase.Ended:
+                return UnityEngine.TouchPhase.Ended;
+
+            case UnityEngine.InputSystem.TouchPhase.Canceled:
+                return UnityEngine.TouchPhase.Canceled;
+
+            default:
+                return UnityEngine.TouchPhase.Moved;
+        }
+    }
+
+
+    void RouteTouchInput(Vector2 touchPos, UnityEngine.TouchPhase phase)
     {
         if (currentMode == AppMode.None || currentMode == AppMode.View) return;
 
         switch (phase)
         {
-            case TouchPhase.Began:
+            case UnityEngine.TouchPhase.Began:
                 HandleTouchStart(touchPos);
                 break;
-            case TouchPhase.Moved:
-            case TouchPhase.Stationary:
+            case UnityEngine.TouchPhase.Moved:
+            case UnityEngine.TouchPhase.Stationary:
                 HandleTouching(touchPos);
                 break;
-            case TouchPhase.Ended:
-            case TouchPhase.Canceled:
+            case UnityEngine.TouchPhase.Ended:
+            case UnityEngine.TouchPhase.Canceled:
                 HandleTouchEnd();
                 break;
         }
@@ -121,6 +168,10 @@ public class SimulationManager : MonoBehaviour
 
             Debug.Log($"TouchStart 대상 부품: {activePartName}, localPoint={actionPointLocal}");
             SendToServer(JsonUtility.ToJson(data));
+        }
+        else
+        {
+            Debug.LogWarning($"[SimulationManager] Raycast 실패: touchPos={touchPos}, rayOrigin={ray.origin}, rayDir={ray.direction}");
         }
     }
 
