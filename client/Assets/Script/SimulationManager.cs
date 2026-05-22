@@ -81,6 +81,9 @@ public class SimulationManager : MonoBehaviour
 
     void OnTouchBegan(int id, Vector2 screenPos)
     {
+#if UNITY_EDITOR
+        Debug.Log($"[Touch] Began id={id} pos={screenPos} mode={currentMode}");
+#endif
         switch (currentMode)
         {
             case AppMode.Drag:
@@ -103,6 +106,9 @@ public class SimulationManager : MonoBehaviour
 
     void OnTouchEnded()
     {
+#if UNITY_EDITOR
+        Debug.Log($"[Touch] Ended mode={currentMode} dragActive={_dragActive}");
+#endif
         if (currentMode == AppMode.Drag && _dragActive) DragEnded();
         _activeTouchId = -1;
     }
@@ -115,15 +121,33 @@ public class SimulationManager : MonoBehaviour
         if (cam == null) return;
 
         Ray ray = cam.ScreenPointToRay(screenPos);
-        if (!Physics.Raycast(ray, out RaycastHit hit)) return;
+        if (!Physics.Raycast(ray, out RaycastHit hit))
+        {
+#if UNITY_EDITOR
+            Debug.Log($"[Drag] raycast miss. ray.origin={ray.origin} dir={ray.direction}");
+#endif
+            return;
+        }
 
         int partIdx = AppManager.Scene?.IndexOf(hit.collider.name) ?? -1;
+#if UNITY_EDITOR
+        Debug.Log($"[Drag] hit name={hit.collider.name} idx={partIdx} point={hit.point}");
+#endif
         if (partIdx < 0) return;
 
         var server = ActiveServer();
-        if (server == null) return;
+        if (server == null)
+        {
+#if UNITY_EDITOR
+            Debug.LogWarning("[Drag] active Server 없음 — 입력 전송 안 됨");
+#endif
+            return;
+        }
 
-        server.SendTouchStart(partIdx, hit.point, ray.origin, ray.direction);
+        bool ok = server.SendTouchStart(partIdx, hit.point, ray.origin, ray.direction);
+#if UNITY_EDITOR
+        Debug.Log($"[Drag] SendTouchStart ok={ok} partIdx={partIdx}");
+#endif
 
         if (_arrow == null) _arrow = DragArrow.Create();
         _arrow.Show(hit.point);
