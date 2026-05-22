@@ -14,6 +14,8 @@ namespace Cadverse
 
         static AppManager _instance;
 
+        public static AppManager Instance => _instance;
+
         ARTrackedImageManager _imageManager;
         ARScene               _scene;
 
@@ -32,6 +34,20 @@ namespace Cadverse
         }
 
         public static void Toast(string msg) => _instance?.ShowToast(msg);
+
+        public bool SendUserInput(string json)
+        {
+            Debug.Log($"[AppManager] UserIn 전송 요청 수신: {json}");
+
+            if (_scene == null)
+            {
+                Debug.LogWarning("[AppManager] ARScene이 아직 없습니다. UserIn 전송 불가");
+                return false;
+            }
+
+            Debug.LogWarning("[AppManager] 현재 AppManager에는 P2PConn 전송 경로가 없습니다. ARScene 또는 P2PNet 쪽 전송 함수 연결 필요");
+            return false;
+        }
 
         public void OnLoginComplete(P2PNet net)
         {

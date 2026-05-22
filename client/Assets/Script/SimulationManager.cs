@@ -4,7 +4,6 @@ using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.EnhancedTouch;
 using EnhancedTouch = UnityEngine.InputSystem.EnhancedTouch.Touch;
 using System;
-using System.Text;
 using Cadverse;
 
 public class SimulationManager : MonoBehaviour
@@ -225,18 +224,19 @@ public class SimulationManager : MonoBehaviour
 
     void SendToServer(string json)
     {
-        Debug.Log($"서버로 전송 시도: {json}");
-        
-        if (serverConn != null)
+        Debug.Log($"[SimulationManager] 서버로 전송 요청: {json}");
+
+        var app = Cadverse.AppManager.Instance;
+        if (app == null)
         {
-            byte[] sendBytes = Encoding.UTF8.GetBytes(json);
-            bool success = serverConn.Send(sendBytes);
-            
-            if (!success) Debug.LogWarning("서버 전송 실패");
+            Debug.LogWarning("[SimulationManager] AppManager.Instance를 찾지 못했습니다.");
+            return;
         }
-        else
+
+        bool success = app.SendUserInput(json);
+        if (!success)
         {
-            Debug.LogWarning("serverConn이 연결되지 않았습니다.");
+            Debug.LogWarning("[SimulationManager] AppManager를 통한 UserIn 전송 실패");
         }
     }
 }
