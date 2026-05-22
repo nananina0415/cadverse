@@ -16,6 +16,11 @@ namespace Cadverse
         public static QRScanner     Scanner { get; private set; }
         public static List<Server>  Servers { get; } = new();
 
+        // UI 측이 정보 표시 모드에 진입/이탈할 때 토글한다.
+        // true면 ReceiveLoop이 server.SimFrameAndInfo()로 telemetry까지 받는다.
+        // 백그라운드 스레드와 메인 스레드가 모두 접근하므로 volatile.
+        public static volatile bool NeedsFullInfo = false;
+
         static AppManager _instance;
 
         ARTrackedImageManager              _imageManager;
@@ -104,7 +109,9 @@ namespace Cadverse
             while (!ct.IsCancellationRequested)
             {
                 Frame f;
-                try { f = server.SimFrame(); }
+                try {
+                    f = NeedsFullInfo ? server.SimFrameAndInfo() : server.SimFrame();
+                }
                 catch { break; }
 
                 if (f is ReloadFrame)
@@ -124,7 +131,7 @@ namespace Cadverse
                 {
                     if (!string.IsNullOrEmpty(ev.Message))
                         ShowToast(ev.Message);
-                    // 사운드 재생은 D-3에서 별도 컴포넌트로 처리 — 일단 로그만 남긴다
+                    // 사운드 재생은 별도 컴포넌트로 처리 — 일단 로그만 남긴다
                     if (!string.IsNullOrEmpty(ev.SoundId))
                         Debug.Log($"[EventFeedback] sound={ev.SoundId} type={ev.SoundType} vol={ev.Volume:F2} pitch={ev.Pitch:F2}");
                 }
@@ -135,6 +142,12 @@ namespace Cadverse
 
             if (s.Diagnostics != null)
                 foreach (var d in s.Diagnostics) Debug.Log($"[sim/{d.Severity}] {d.Code}: {d.Message}");
+
+            // TODO(UI): 정보 표시 모드 진입 시 NeedsFullInfo=true 토글.
+            // 그러면 s.InteractionTelemetry / s.Telemetry / s.JointTelemetry[name] /
+            // s.ActuatorTelemetry[name] / s.GearTelemetry[name] / s.AssemblyTelemetry[name]
+            // 가 채워져 들어온다. 객체 클릭 시 hit.collider.name 으로 lookup해서 패널에 표시.
+            // SimVec3 필드(reactionForce/Torque/axisWorld/pivotWorld)는 CoordConvert.SimPosToUnity 변환 필요.
         }
 
         static TMP_FontAsset _font;

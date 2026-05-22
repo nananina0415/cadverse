@@ -1,6 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.Text;
 using UnityEngine;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace Cadverse
 {
@@ -12,10 +15,19 @@ namespace Cadverse
         public double      Timestamp;
         public SimObject[] Objects;
 
-        // py_sim 확장 출력 — 사용처가 있는 핵심 항목만 typed로 노출
+        // py_sim 확장 출력 — SimFrame() 호출만으로도 채워지는 핵심 항목
         public EventFeedback[] EventFeedback;
         public DiagnosticItem[] Diagnostics;
         public string[]         Warnings;
+
+        // SimFrameAndInfo() 호출 시에만 채워진다.
+        // 정보 표시 모드 같은 깊은 처리에 필요한 값들.
+        public InteractionTelemetry?                       InteractionTelemetry;
+        public ContactTelemetry?                           Telemetry;
+        public Dictionary<string, JointTelemetry>          JointTelemetry;
+        public Dictionary<string, ActuatorTelemetry>       ActuatorTelemetry;
+        public Dictionary<string, GearTelemetry>           GearTelemetry;
+        public Dictionary<string, AssemblyGuideTelemetry>  AssemblyTelemetry;
     }
 
     public class ReloadFrame : Frame {}
@@ -48,6 +60,72 @@ namespace Cadverse
         public string Severity;
         public string Message;
         public string Target;
+    }
+
+    // ── SimFrameAndInfo() 전용 typed telemetry ───────────────
+    // Python runtime_types.InteractionTelemetry 미러
+    public struct InteractionTelemetry
+    {
+        public string   Mode;
+        public string   TargetBody;
+        public string   DriveBody;
+        public string   DriveJoint;
+        public Vector3? AxisWorld;    // Unity 좌표로 변환됨
+        public Vector3? PivotWorld;   // Unity 좌표로 변환됨
+    }
+
+    // Python runtime_types.ContactTelemetry 미러
+    public struct ContactTelemetry
+    {
+        public int    ContactCount;
+        public double MaxContactForce;
+        public string MaxPairBodyA;
+        public string MaxPairBodyB;
+    }
+
+    // Python Vec3 미러 — 시뮬 좌표 그대로 보관. UI 사용 시 CoordConvert.SimPosToUnity(...) 변환 필요.
+    public struct SimVec3 { public float X, Y, Z; }
+
+    // Python runtime_types.JointTelemetry 미러 (교육용 joint 측정)
+    public struct JointTelemetry
+    {
+        public string   JointType;
+        public double?  Angle;            // rad
+        public double?  Position;         // m
+        public double?  AngularVelocity;  // rad/s
+        public double?  LinearVelocity;   // m/s
+        public SimVec3? ReactionForce;    // 시뮬 좌표 — UI 변환 필요
+        public SimVec3? ReactionTorque;   // 시뮬 좌표 — UI 변환 필요
+        public double?  EstimatedPower;
+    }
+
+    // Python runtime_types.ActuatorTelemetry 미러
+    public struct ActuatorTelemetry
+    {
+        public string  ActuatorType;
+        public string  TargetJoint;
+        public double? CommandedSpeed;
+        public double? CommandedTorque;
+        public double? AppliedTorque;
+        public double? EstimatedPower;
+    }
+
+    // Python runtime_types.GearTelemetry 미러 — JSON 키가 snake_case라 명시 매핑
+    public struct GearTelemetry
+    {
+        [JsonProperty("applied_efficiency")] public double AppliedEfficiency;
+        [JsonProperty("loss_torque")]        public double LossTorque;
+        [JsonProperty("backlash_deadband")]  public double BacklashDeadband;
+    }
+
+    // Python runtime_types.AssemblyGuideTelemetry 미러
+    public struct AssemblyGuideTelemetry
+    {
+        public bool    ActiveSnap;
+        public string  SnapCandidate;
+        public double  SnapErrorPos;
+        public double  SnapErrorAngle;
+        public string  SnapMode;
     }
 
     // ── 특정 서버 피어와의 연결 + 프로토콜 변환 ──────────────
@@ -166,6 +244,123 @@ namespace Cadverse
                 Warnings      = raw.warnings ?? Array.Empty<string>(),
             };
         }
+
+        // SimFrame()과 동일하게 1회 read하지만, Newtonsoft로 dict telemetry까지 typed로 풀어 반환한다.
+        // 정보 표시 모드처럼 부품별 측정값이 필요한 시점에서만 호출한다.
+        // SimFrame()과 동시에 부르면 안 된다 — 같은 _conn을 공유한다.
+        public Frame SimFrameAndInfo()
+        {
+            var data = _conn.Recv();
+            var json = Encoding.UTF8.GetString(data);
+
+            if (json.Contains("\"type\":\"reload\""))
+                return new ReloadFrame();
+
+            JObject jo;
+            try { jo = JObject.Parse(json); }
+            catch { return new StateFrame { Objects = Array.Empty<SimObject>() }; }
+
+            // parts → SimObject[]
+            var objs = Array.Empty<SimObject>();
+            if (jo["objects"] is JArray jobjs)
+            {
+                objs = new SimObject[jobjs.Count];
+                for (int i = 0; i < jobjs.Count; i++)
+                {
+                    var o = jobjs[i];
+                    var pos = new float[] {
+                        (float)(o["position"]?[0] ?? 0f),
+                        (float)(o["position"]?[1] ?? 0f),
+                        (float)(o["position"]?[2] ?? 0f),
+                    };
+                    var rot = new float[] {
+                        (float)(o["rotation"]?[0] ?? 1f),
+                        (float)(o["rotation"]?[1] ?? 0f),
+                        (float)(o["rotation"]?[2] ?? 0f),
+                        (float)(o["rotation"]?[3] ?? 0f),
+                    };
+                    objs[i] = new SimObject {
+                        Name     = (string)o["name"] ?? "",
+                        Position = CoordConvert.SimPosToUnity(pos),
+                        Rotation = CoordConvert.SimRotToUnity(rot),
+                    };
+                }
+            }
+
+            // EventFeedback / Diagnostics / Warnings — Newtonsoft로 직접 deserialize
+            var evs   = jo["eventFeedback"]?.ToObject<EventFeedback[]>(_jsonSerializer) ?? Array.Empty<EventFeedback>();
+            var diags = jo["diagnostics"]  ?.ToObject<DiagnosticItem[]>(_jsonSerializer) ?? Array.Empty<DiagnosticItem>();
+            var warns = jo["warnings"]     ?.ToObject<string[]>(_jsonSerializer)         ?? Array.Empty<string>();
+
+            // 단일 telemetry — 좌표 변환 포함해서 수동 매핑
+            InteractionTelemetry? interaction = null;
+            if (jo["interactionTelemetry"] is JObject jin)
+            {
+                interaction = new InteractionTelemetry {
+                    Mode       = (string)jin["mode"],
+                    TargetBody = (string)jin["targetBody"],
+                    DriveBody  = (string)jin["driveBody"],
+                    DriveJoint = (string)jin["driveJoint"],
+                    AxisWorld  = SimVec3ToUnity(jin["axisWorld"]),
+                    PivotWorld = SimVec3ToUnity(jin["pivotWorld"]),
+                };
+            }
+
+            ContactTelemetry? contact = null;
+            if (jo["telemetry"] is JObject jct)
+            {
+                contact = new ContactTelemetry {
+                    ContactCount    = (int)(jct["contact_count"] ?? 0),
+                    MaxContactForce = (double)(jct["max_contact_force"] ?? 0.0),
+                    MaxPairBodyA    = (string)jct["max_pair"]?["bodyA"],
+                    MaxPairBodyB    = (string)jct["max_pair"]?["bodyB"],
+                };
+            }
+
+            // dict telemetry — Newtonsoft가 Dictionary 그대로 deserialize
+            var joints     = jo["jointTelemetry"]   ?.ToObject<Dictionary<string, JointTelemetry>>(_jsonSerializer);
+            var actuators  = jo["actuatorTelemetry"]?.ToObject<Dictionary<string, ActuatorTelemetry>>(_jsonSerializer);
+            var gears      = jo["gearTelemetry"]   ?.ToObject<Dictionary<string, GearTelemetry>>(_jsonSerializer);
+            var assemblies = jo["assemblyTelemetry"]?.ToObject<Dictionary<string, AssemblyGuideTelemetry>>(_jsonSerializer);
+
+            return new StateFrame {
+                Timestamp           = (double)(jo["timestamp"] ?? 0.0),
+                Objects             = objs,
+                EventFeedback       = evs,
+                Diagnostics         = diags,
+                Warnings            = warns,
+                InteractionTelemetry= interaction,
+                Telemetry           = contact,
+                JointTelemetry      = joints,
+                ActuatorTelemetry   = actuators,
+                GearTelemetry       = gears,
+                AssemblyTelemetry   = assemblies,
+            };
+        }
+
+        static Vector3? SimVec3ToUnity(JToken t)
+        {
+            if (!(t is JObject jv)) return null;
+            return CoordConvert.SimPosToUnity(new float[] {
+                (float)(jv["x"] ?? 0f),
+                (float)(jv["y"] ?? 0f),
+                (float)(jv["z"] ?? 0f),
+            });
+        }
+
+        // 대부분 telemetry 키가 camelCase라 PascalCase 필드를 자동 매핑한다.
+        // snake_case 필드(GearTelemetry 등)는 struct에 [JsonProperty] 명시로 override.
+        // CamelCaseNamingStrategy(processDictionaryKeys=false, overrideSpecifiedNames=false):
+        //   - dict 키(JointTelemetry name 등)는 원본 유지
+        //   - JsonProperty 명시한 이름은 변환하지 않음
+        static readonly JsonSerializer _jsonSerializer = JsonSerializer.Create(
+            new JsonSerializerSettings {
+                MissingMemberHandling = MissingMemberHandling.Ignore,
+                ContractResolver = new Newtonsoft.Json.Serialization.DefaultContractResolver {
+                    NamingStrategy = new Newtonsoft.Json.Serialization.CamelCaseNamingStrategy(false, false)
+                },
+            }
+        );
 
         public void Dispose() => _conn?.Dispose();
 

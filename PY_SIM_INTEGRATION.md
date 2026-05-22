@@ -131,7 +131,12 @@
 - [x] **4. Server.cs 확장 (B-2)** — 새 필드 받기 + EventFeedback 타입 (핵심 3종: EventFeedback/Diagnostics/Warnings)
 - [x] **5. AppManager EventFeedback 처리 (B-3)** — Message → Toast, Warnings/Diagnostics → Debug 로그, SoundId는 D-3에서 처리
 - ~~6. D-3 사운드 재생~~ — **범위 밖**. `SoundId` 도착 시 `Debug.Log`만 남기고 실제 재생은 별도 작업으로 분리
-- [ ] **7. D-1 D-2 플러그인 측 소통/UI** — 마지막 단계
+- [x] **7. 통신 레이어 확장 — telemetry typed 수신**
+    - Newtonsoft.Json 패키지 추가 (manifest.json)
+    - `Server.SimFrameAndInfo()` 신규 — Newtonsoft로 dict telemetry까지 typed 파싱
+    - `StateFrame`에 `InteractionTelemetry / Telemetry / Joint/Actuator/Gear/AssemblyTelemetry` 필드 추가
+    - `AppManager.NeedsFullInfo` 토글 — UI 측이 정보 표시 모드 진입 시 켜면 `SimFrameAndInfo()` 호출
+    - UI 구현은 `HandleStateFrame`의 TODO 주석으로 안내
 
 ---
 
