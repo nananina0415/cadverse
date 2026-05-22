@@ -15,6 +15,7 @@ namespace Cadverse
         public static P2PNet        Net     { get; private set; }
         public static QRScanner     Scanner { get; private set; }
         public static List<Server>  Servers { get; } = new();
+        public static ARScene       Scene   { get; private set; }   // 현재 활성 씬 — UI/SimulationManager에서 IndexOf 호출에 사용
 
         // UI 측이 정보 표시 모드에 진입/이탈할 때 토글한다.
         // true면 ReceiveLoop이 server.SimFrameAndInfo()로 telemetry까지 받는다.
@@ -70,9 +71,11 @@ namespace Cadverse
 
             _scene?.Dispose();
             _scene = null;
+            Scene  = null;
             try
             {
                 _scene = await ARScene.Create(addr, _imageManager);
+                Scene  = _scene;
                 ShowToast($"씬 생성 완료, {_scene.MeshCount}개 메시");
 
                 var server = await Task.Run(() => new Server(Net, addr));
@@ -92,9 +95,11 @@ namespace Cadverse
         {
             _scene?.Dispose();
             _scene = null;
+            Scene  = null;
             try
             {
                 _scene = await ARScene.Create(addr, _imageManager);
+                Scene  = _scene;
                 ShowToast($"모델 교체 완료, {_scene.MeshCount}개 메시");
             }
             catch (System.Exception e)
@@ -208,6 +213,7 @@ namespace Cadverse
             foreach (var s in Servers) s.Dispose();
             Servers.Clear();
             _scene?.Dispose();
+            Scene = null;
             Net?.Dispose();
             Net = null;
         }

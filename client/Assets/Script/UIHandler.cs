@@ -14,11 +14,6 @@ public class UIHandler : MonoBehaviour
         if (simManager != null) simManager.currentMode = SimulationManager.AppMode.Drag;
     }
 
-    public void onViewMenuButtonClick()
-    {
-        if (simManager != null) simManager.currentMode = SimulationManager.AppMode.View;
-    }
-
     public void onRefreshMenuButtonClick()
     {
         if (simManager != null) simManager.currentMode = SimulationManager.AppMode.None;

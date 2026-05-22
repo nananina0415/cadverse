@@ -10,20 +10,27 @@ namespace Cadverse
 {
     public class ARScene : IDisposable
     {
-        readonly ARTrackedImageManager _manager;
-        readonly GameObject _root;
-        readonly Texture2D  _markerTexture;
+        readonly ARTrackedImageManager        _manager;
+        readonly GameObject                   _root;
+        readonly Texture2D                    _markerTexture;
+        readonly Dictionary<string, int>      _partIndex;   // body 이름 → 시뮬 인덱스 (bodies 배열 순서)
         ARAnchor    _anchor;
         public int MeshCount;
         TrackingState _lastTrackingState = TrackingState.None;
 
-        ARScene(ARTrackedImageManager manager, GameObject root, Texture2D markerTexture)
+        ARScene(ARTrackedImageManager manager, GameObject root, Texture2D markerTexture,
+                Dictionary<string, int> partIndex)
         {
             _manager       = manager;
             _root          = root;
             _markerTexture = markerTexture;
+            _partIndex     = partIndex;
             manager.trackablesChanged.AddListener(OnTrackedImagesChanged);
         }
+
+        // raycast hit의 collider.name 을 서버 partIndex로 변환. 매핑 없으면 -1.
+        public int IndexOf(string name)
+            => _partIndex != null && _partIndex.TryGetValue(name, out int idx) ? idx : -1;
 
         static async Task<byte[]> RequestWithTimeout(System.Func<byte[]> fn, int timeoutMs = 10_000)
         {
@@ -68,6 +75,10 @@ namespace Cadverse
             mat = new Material(mat);
 
             // (4) 파트별 OBJ 다운로드 → 메시 생성
+            // partIndex 매핑은 ParseBodies 순회 순서(= metadata bodies 배열 순서)로 부여하면
+            // 시뮬레이터가 부여하는 partIndex와 일치한다.
+            var partIndex = new Dictionary<string, int>();
+            int simIdx = 0;
             foreach (var kvp in transforms)
             {
                 string name  = kvp.Key;
@@ -77,18 +88,21 @@ namespace Cadverse
                 var mesh = ObjParser.Parse(objData);
 
                 var go = new GameObject(name);
-                go.AddComponent<MeshFilter>().mesh      = mesh;
+                go.AddComponent<MeshFilter>().mesh       = mesh;
                 go.AddComponent<MeshRenderer>().material = mat;
+                go.AddComponent<MeshCollider>().sharedMesh = mesh;   // raycast 가능하게
                 go.transform.SetParent(root.transform, false);
 
                 // Fusion(X,Y,Z) m → Unity(X,Z,Y), quaternion(w,x,y,z) → (-x,-z,-y,w)
                 go.transform.localPosition = new Vector3(pose[0], pose[2], pose[1]);
                 go.transform.localRotation = new Quaternion(-pose[4], -pose[6], -pose[5], pose[3]);
                 go.transform.localScale    = Vector3.one;
+
+                partIndex[name] = simIdx++;
             }
 
             // (5) ARScene 생성(리스너 등록) → referenceLibrary 설정 (순서 중요)
-            var scene = new ARScene(manager, root, texture);
+            var scene = new ARScene(manager, root, texture, partIndex);
             scene.MeshCount = transforms.Count;
             manager.enabled = false;
             manager.referenceLibrary = lib;
