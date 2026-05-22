@@ -17,33 +17,54 @@ public class SimulationManager : MonoBehaviour
 
     void Update()
     {
-        // PC 마우스 테스트용
-        if (Input.GetMouseButtonDown(0))
-        {
-            if (!EventSystem.current.IsPointerOverGameObject())
-                RouteTouchInput(Input.mousePosition, TouchPhase.Began);
-        }
-        else if (Input.GetMouseButton(0))
-        {
-            if (!EventSystem.current.IsPointerOverGameObject())
-                RouteTouchInput(Input.mousePosition, TouchPhase.Moved);
-        }
-        else if (Input.GetMouseButtonUp(0))
-        {
-            if (!EventSystem.current.IsPointerOverGameObject())
-                RouteTouchInput(Input.mousePosition, TouchPhase.Ended);
-        }
+        if (currentMode == AppMode.None || currentMode == AppMode.View)
+            return;
 
-        // 모바일 터치 구동용
+        // 모바일 터치 우선 처리
         if (Input.touchCount > 0)
         {
             Touch touch = Input.GetTouch(0);
 
-            if (!EventSystem.current.IsPointerOverGameObject(touch.fingerId))
+            if (!IsPointerOverUI(touch.fingerId))
             {
                 RouteTouchInput(touch.position, touch.phase);
             }
+
+            return;
         }
+
+#if UNITY_EDITOR
+        // PC 마우스 테스트용
+        if (Input.GetMouseButtonDown(0))
+        {
+            if (!IsPointerOverUI())
+                RouteTouchInput(Input.mousePosition, TouchPhase.Began);
+        }
+        else if (Input.GetMouseButton(0))
+        {
+            if (!IsPointerOverUI())
+                RouteTouchInput(Input.mousePosition, TouchPhase.Moved);
+        }
+        else if (Input.GetMouseButtonUp(0))
+        {
+            if (!IsPointerOverUI())
+                RouteTouchInput(Input.mousePosition, TouchPhase.Ended);
+        }
+#endif
+    }
+
+    bool IsPointerOverUI(int fingerId = -1)
+    {
+        if (EventSystem.current == null)
+        {
+            Debug.LogWarning("[SimulationManager] EventSystem.current가 없습니다. UI 판정 생략");
+            return false;
+        }
+
+        if (fingerId >= 0)
+            return EventSystem.current.IsPointerOverGameObject(fingerId);
+
+        return EventSystem.current.IsPointerOverGameObject();
     }
 
     void RouteTouchInput(Vector2 touchPos, TouchPhase phase)
@@ -68,7 +89,14 @@ public class SimulationManager : MonoBehaviour
 
     void HandleTouchStart(Vector2 touchPos)
     {
-        Ray ray = Camera.main.ScreenPointToRay(touchPos);
+        Camera cam = Camera.main;
+        if (cam == null)
+        {
+            Debug.LogWarning("[SimulationManager] Camera.main을 찾지 못했습니다.");
+            return;
+        }
+
+        Ray ray = cam.ScreenPointToRay(touchPos);
         RaycastHit hit;
 
         if (Physics.Raycast(ray, out hit))
@@ -100,7 +128,14 @@ public class SimulationManager : MonoBehaviour
     {
         if (string.IsNullOrEmpty(activePartName)) return;
 
-        Ray ray = Camera.main.ScreenPointToRay(touchPos);
+        Camera cam = Camera.main;
+        if (cam == null)
+        {
+            Debug.LogWarning("[SimulationManager] Camera.main을 찾지 못했습니다.");
+            return;
+        }
+
+        Ray ray = cam.ScreenPointToRay(touchPos);
 
         TouchingWrapper data = new TouchingWrapper
         {
