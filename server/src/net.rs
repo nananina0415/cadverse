@@ -127,9 +127,34 @@ impl NetThread {
                     let userin_tx = userin_tx.clone();
                     tokio::spawn(async move {
                         loop {
-                            let Ok(data) = conn.recv().await else { break };
-                            if let Ok(msg) = serde_json::from_slice(&data) {
-                                let _ = userin_tx.send(msg).await;
+                            let Ok(data) = conn.recv().await else {
+                                eprintln!("[net] AR conn recv ended");
+                                break;
+                            };
+
+                            eprintln!(
+                                "[net] AR data received: {} bytes, text={}",
+                                data.len(),
+                                String::from_utf8_lossy(&data)
+                            );
+
+                            match serde_json::from_slice::<UserIn>(&data) {
+                                Ok(msg) => {
+                                    eprintln!("[net] UserIn parse ok: {:?}", msg);
+
+                                    if userin_tx.send(msg).await.is_err() {
+                                        eprintln!("[net] userin_tx send failed");
+                                        break;
+                                    }
+
+                                    eprintln!("[net] UserIn forwarded to sim channel");
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "[net] UserIn parse failed: {e}, text={}",
+                                        String::from_utf8_lossy(&data)
+                                    );
+                                }
                             }
                         }
                     });
@@ -142,7 +167,9 @@ impl NetThread {
             let mut userin_w = userin_w;
             rt.spawn(async move {
                 while let Some(msg) = userin_rx.recv().await {
+                    eprintln!("[net] UserIn received from channel: {:?}", msg);
                     userin_w.write().push(msg);
+                    eprintln!("[net] UserIn pushed to triple buffer");
                 }
             });
         }

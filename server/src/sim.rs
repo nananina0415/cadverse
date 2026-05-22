@@ -324,7 +324,16 @@ impl Simulator {
     }
 
     pub fn step(&mut self, inputs: &[UserIn]) -> Result<Vec<ObjectTransform>, String> {
+        if !inputs.is_empty() {
+            eprintln!("[sim] raw inputs len={}: {:?}", inputs.len(), inputs);
+        }
+
         let deduped = dedup_inputs(inputs);
+
+        if !deduped.is_empty() {
+            eprintln!("[sim] deduped inputs len={}: {:?}", deduped.len(), deduped);
+        }
+
         Python::with_gil(|py| -> PyResult<Vec<ObjectTransform>> {
             let sim = self.py_obj.bind(py);
 
