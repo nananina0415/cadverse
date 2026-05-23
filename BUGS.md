@@ -68,3 +68,32 @@ Python `_apply_spring` 또는 telemetry 계산 어디서 NaN/Infinity가 발생�
 - `SimManager::new`에서 sim_error를 만들어 `SimLoop::new`에 클론 전달
 - step 오류/패닉 catch arm에서 `sim_error`에 메시지 set (`"step 오류: ..."` / `"step 패닉: ..."`)
 - 기존 `push_status` 흐름이 자동으로 plugin status에 실어 보냄
+
+---
+
+## [server] 자체 TripleBuffer의 reader 슬롯 use-after-free
+
+**파일:** `server/src/utils.rs::TripleBuffer`
+**증상:** 시뮬 시작 직후 `vec/mod.rs:1637`의 `slice::from_raw_parts` precondition 위반 패닉 또는 Windows `STATUS_ACCESS_VIOLATION` (0xc0000005). broadcast 루프의 `serde_json::to_vec(SimOut)` 안에서 `ContactPairOut.body_a/body_b` 같은 String의 `as_str()` 호출 시 발생.
+
+**원인 — 동기화 누락:**
+- `TripleBufReader::read()`는 `&T` 참조만 반환하고, 그 참조의 lifetime이 `swap()`을 막지 않음
+- 표준 SPSC triple buffer는 reader 슬롯 인덱스를 별도 추적해 swapper가 그 슬롯을 침범하지 못하게 해야 하는데, 자체 구현은 single `AtomicU64` state만 사용
+- writer가 짧은 시간에 swap을 2번 이상 호출하면 reader가 점유한 슬롯이 새로운 `write_idx`가 되고, `swap_and_clear`가 그 슬롯의 `Clearable::clear()`를 호출 → reader가 보던 `&T` 안의 String이 drop돼 buffer free → use-after-free
+
+**재현 (단위 테스트):**
+`utils.rs::tests::read_reference_can_be_invalidated_by_concurrent_swap` — `#[ignore]` 처리됨. 명시 실행:
+```
+cargo test --bin server -- --ignored read_reference
+```
+실제 SimOut 구조와 동일한 `Option<ContactTelemetryOut(Option<ContactPairOut(String, String)>)>` 페이로드로 `STATUS_ACCESS_VIOLATION` 재현 확인.
+
+**수정 (적용됨, 부분):**
+`simout` 채널만 검증된 `triple_buffer = "8"` crate으로 교체.
+- `Cargo.toml`: `triple_buffer = "8"` 추가
+- `SimIoBuf.simout_w`: `triple_buffer::Input<SimFrame>` 단일 필드 (Writer + Swapper 통합)
+- `simout_w.input_buffer()` / `.publish()`로 사용
+- `NetThread::new`의 `simout_r`: `triple_buffer::Output<SimFrame>`
+
+**남은 TODO:**
+`userin` (`Vec<UserIn>`)은 여전히 자체 TripleBuffer 사용 중. 같은 race가 잠재해 있지만 String/Vec 직렬화 없이 단순 read만 하므로 현실적으로 trigger되기 어려움. 그래도 모든 채널을 동일 crate으로 통일하는 게 안전 — 별도 작업으로 분리.

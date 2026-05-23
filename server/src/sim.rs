@@ -3,22 +3,23 @@ use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, atomic::{AtomicBool, Ordering}};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use crate::utils::{TripleBufReader, TripleBufWriter, TripleBufSwapper};
+use crate::utils::{TripleBufReader, TripleBufSwapper};
 
 // ── SimIoBuf ──────────────────────────────────────────────────────────────────
 
 pub struct SimIoBuf {
     pub userin_r:    TripleBufReader<Vec<UserIn>>,
     pub userin_swap: TripleBufSwapper<Vec<UserIn>>,
-    pub simout_w:    TripleBufWriter<SimFrame>,
-    pub simout_swap: TripleBufSwapper<SimFrame>,
+    // simout은 자체 TripleBuffer의 race로 use-after-free가 확인돼 검증된 crate으로 교체.
+    // input_buffer()로 슬롯 mutate, publish()로 reader에 공개.
+    pub simout_w:    triple_buffer::Input<SimFrame>,
 }
 
 impl SimIoBuf {
     pub fn clear_and_init(&mut self, init: SimOut) {
         self.userin_swap.swap_and_clear();
-        *self.simout_w.write() = SimFrame::State(init);
-        self.simout_swap.swap_and_clear();
+        *self.simout_w.input_buffer() = SimFrame::State(init);
+        self.simout_w.publish();
     }
 }
 
@@ -532,8 +533,8 @@ impl SimLoop {
                         if let Some((new_sim, _)) = next_sim.lock().expect("next_sim mutex poisoned").take() {
                             eprintln!("[sim_loop] 시뮬레이터 교체");
                             sim_io_buf.userin_swap.swap_and_clear();
-                            *sim_io_buf.simout_w.write() = SimFrame::Reload;
-                            sim_io_buf.simout_swap.swap_and_clear();
+                            *sim_io_buf.simout_w.input_buffer() = SimFrame::Reload;
+                            sim_io_buf.simout_w.publish();
                             sim = new_sim;
                         }
 
@@ -544,8 +545,8 @@ impl SimLoop {
                         );
                         match step_result {
                             Ok(Ok(out)) => {
-                                *sim_io_buf.simout_w.write() = SimFrame::State(out);
-                                sim_io_buf.simout_swap.swap_and_clear();
+                                *sim_io_buf.simout_w.input_buffer() = SimFrame::State(out);
+                                sim_io_buf.simout_w.publish();
                             }
                             Ok(Err(e)) => {
                                 eprintln!("[sim_loop] step 오류 → 정지: {e}");

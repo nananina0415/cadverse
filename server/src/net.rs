@@ -97,7 +97,7 @@ impl NetThread {
     pub fn new(
         setting: &NetSetting,
         userin_w: TripleBufWriter<Vec<UserIn>>,
-        simout_r: TripleBufReader<SimFrame>,
+        mut simout_r: triple_buffer::Output<SimFrame>,
         log: std::sync::mpsc::Sender<String>,
     ) -> anyhow::Result<NetThread> {
         let rt = tokio::runtime::Runtime::new()

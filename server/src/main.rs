@@ -58,13 +58,11 @@ fn main() {
         Vec::<UserIn>::with_capacity(32),
         Vec::<UserIn>::with_capacity(32),
     ]);
-    let (simout_r, simout_w, simout_swap) = TripleBuffer::new([
-        SimFrame::default(),
-        SimFrame::default(),
-        SimFrame::default(),
-    ]);
+    // simout은 String을 포함한 SimOut을 reader가 직렬화 중에 침범당하는 race가
+    // 자체 구현에서 발견돼, 검증된 triple_buffer crate으로 교체.
+    let (simout_w, simout_r) = triple_buffer::triple_buffer(&SimFrame::default());
 
-    let sim_io_buf = SimIoBuf { userin_r, userin_swap, simout_w, simout_swap };
+    let sim_io_buf = SimIoBuf { userin_r, userin_swap, simout_w };
 
     let mut state = AppState {
         username:     String::new(),
