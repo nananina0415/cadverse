@@ -1801,19 +1801,15 @@ class _ARInteractionController:
                     arc_axis_n = _normalize(arc_axis)
 
                     if _norm(arc_axis_n) > 1e-6:
-                        align = float(_dot(arc_axis_n, axis_world_n))
+                        # axial vector 변환 규칙 누락 보정:
+                        # 클라(Unity, LH)에서 사용자 입력을 받아 점 두 개를 polar vector 변환(swap만)으로
+                        # 전달하지만, 시뮬은 RH cross로 axis를 다시 결정한다. polar 변환만 거친 점 사이의
+                        # RH cross 결과는 사용자 LH 직관과 부호가 반전되어 나오므로 (axial vector는 swap+부호반전
+                        # 변환이 필요한데 그 단계가 누락된 셈), 사용자 입력 처리 경로의 cross 결과를 여기서
+                        # 한 번 부호 반전해 보정한다.
+                        align = -float(_dot(arc_axis_n, axis_world_n))
                         sign = 1.0 if align >= 0.0 else -1.0
                         align_abs = abs(align)
-
-                        # [DEBUG] 회전 방향 진단
-                        print(
-                            f"[rot-dbg] body={body_name} "
-                            f"f_prev=({f_prev.x:+.3f},{f_prev.y:+.3f},{f_prev.z:+.3f}) "
-                            f"f_curr=({f_curr.x:+.3f},{f_curr.y:+.3f},{f_curr.z:+.3f}) "
-                            f"axis=({axis_world_n.x:+.3f},{axis_world_n.y:+.3f},{axis_world_n.z:+.3f}) "
-                            f"arc=({arc_axis_n.x:+.3f},{arc_axis_n.y:+.3f},{arc_axis_n.z:+.3f}) "
-                            f"align={align:+.3f} sign={sign:+.1f}"
-                        )
 
                         # 손가락이 pivot 주변에서 만든 각속도(rad/s)
                         w_drag = sign * (d_ang / float(dt))

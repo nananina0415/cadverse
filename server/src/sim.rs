@@ -312,7 +312,6 @@ impl Simulator {
                 let json_mod = py.import("json")?;
 
                 for input in &deduped {
-                    eprintln!("[user_in] {:?}", input);   // DEBUG: 회전 방향 진단
                     let input_json = serde_json::to_string(input).expect("UserIn 직렬화 실패");
                     let event_dict = json_mod.call_method1("loads", (input_json,))?;
                     state = sim.call_method1("step", (event_dict,))?;
