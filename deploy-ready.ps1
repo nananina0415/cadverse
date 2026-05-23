@@ -33,30 +33,33 @@ try {
     if (-not (Test-Path $serverExe))    { throw "빌드 산출물 없음: $serverExe" }
     if (-not (Test-Path $serverBundle)) { throw "빌드 산출물 없음: $serverBundle" }
 
-    Compress-Archive -Force -Path $serverExe, $serverBundle `
-        -DestinationPath "$stage\cadverse-$v-server.zip"
-    Write-Host "서버 완료"
-
     # ── 클라이언트 APK ────────────────────────────────────────────────────────
     Write-Host "`n[2/3] 클라이언트 APK 수집..."
     $apk = Get-ChildItem "client\*.apk" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if (-not $apk) { throw "client\ 에 APK 파일이 없습니다. Unity에서 먼저 빌드하세요." }
 
-    Copy-Item $apk.FullName -Destination "$stage\cadverse-$v-client.apk" -Force
+    Copy-Item $apk.FullName -Destination "$stage\CADverse-$v-client.apk" -Force
     Write-Host "클라이언트 완료  (원본: $($apk.Name))"
 
-    # ── CAD 플러그인 ──────────────────────────────────────────────────────────
-    Write-Host "`n[3/3] CAD 플러그인 패키징..."
-    $pluginTmp = Join-Path $env:TEMP "cadverse_plugin_tmp\CADverse"
-    if (Test-Path (Split-Path $pluginTmp)) { Remove-Item (Split-Path $pluginTmp) -Recurse -Force }
-    Copy-Item "cad_plugin" -Destination $pluginTmp -Recurse
-    Remove-Item "$pluginTmp\.vscode" -Recurse -Force -ErrorAction SilentlyContinue
-    Get-ChildItem $pluginTmp -Recurse -Filter "__pycache__" |
-        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    # ── 서버+플러그인 ZIP ─────────────────────────────────────────────────────
+    Write-Host "`n[3/3] 서버+플러그인 패키징..."
+    $zipTmp = Join-Path $env:TEMP "cadverse_zip_tmp"
+    if (Test-Path $zipTmp) { Remove-Item $zipTmp -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path "$zipTmp\server" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$zipTmp\plugin" | Out-Null
 
-    Compress-Archive -Force -Path $pluginTmp -DestinationPath "$stage\cadverse-$v-cad-plugin.zip"
-    Remove-Item (Split-Path $pluginTmp) -Recurse -Force
-    Write-Host "플러그인 완료"
+    Copy-Item $serverExe    -Destination "$zipTmp\server\CADverse.exe" -Force
+    Copy-Item $serverBundle -Destination "$zipTmp\server\python_env.tar.gz" -Force
+
+    $pluginFiles = @("CADverse.manifest","CADverse.py","extract.py","extract_mesh.py","extract_meta.py","palette.html","server.py")
+    foreach ($f in $pluginFiles) {
+        Copy-Item "cad_plugin\$f" -Destination "$zipTmp\plugin\$f" -Force
+    }
+
+    Compress-Archive -Force -Path "$zipTmp\server", "$zipTmp\plugin" `
+        -DestinationPath "$stage\CADverse-$v-server.zip"
+    Remove-Item $zipTmp -Recurse -Force
+    Write-Host "패키징 완료"
 
     # ── README ────────────────────────────────────────────────────────────────
     Copy-Item "README.md" -Destination $stage -Force

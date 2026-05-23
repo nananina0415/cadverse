@@ -1921,6 +1921,53 @@ def _make_contact_material(sys: Any, c: MetaContact, *, cfg: Optional[Dict[str, 
         return _make_contact_material_smc(c)
     return _make_contact_material_nsc(c, cfg=cfg)
 
+# ---------------------------------------------------------------------
+# Collision safety policy for assembled mechanisms
+# ---------------------------------------------------------------------
+
+_COLLISION_NONE_NAME_TOKENS = (
+    "base",
+    "ground",
+    "guide",
+    "rail",
+    "bracket",
+    "bearing",
+    "housing",
+    "support",
+    "frame",
+)
+
+_COLLISION_NONE_CATEGORIES = {
+    "base",
+}
+
+
+def _norm_name_token(s: Any) -> str:
+    return str(s or "").strip().lower()
+
+
+def _should_force_collision_none_for_mvp(bdef: BodyDef, *, cfg: Optional[Dict[str, Any]] = None) -> bool:
+    """
+    MVP 안정화 정책:
+    - 구멍/홈/레일/베어링/브라켓/베이스 계열 부품은 단순 collision으로 만들면
+      실제 빈 공간이 막힌 덩어리처럼 처리되어 조인트 운동을 방해할 수 있음.
+    - 이런 부품은 기구학적 연결을 collision이 아니라 joint가 담당하도록 collision shape 생성을 생략한다.
+
+    옵션:
+    - cfg["disable_structural_collision_none_policy"] = True 이면 이 정책을 끌 수 있음.
+    """
+    cfg = cfg or {}
+
+    if bool(cfg.get("disable_structural_collision_none_policy", False)):
+        return False
+
+    name = _norm_name_token(getattr(bdef, "name", ""))
+    cat = _norm_name_token(getattr(bdef, "category", ""))
+
+    if cat in _COLLISION_NONE_CATEGORIES:
+        return True
+
+    return any(tok in name for tok in _COLLISION_NONE_NAME_TOKENS)
 
 def _coerce_collision_to_primitives(bdef: BodyDef, col_any: Any, *, cfg: Optional[Dict[str, Any]] = None) -> List[CollisionPrimitive]:
     """
@@ -1931,6 +1978,10 @@ def _coerce_collision_to_primitives(bdef: BodyDef, col_any: Any, *, cfg: Optiona
     ✅ NEW:
     - auto collision 생성 시 cfg(옵션) 기반의 base floor patch를 적용할 수 있게 cfg 전달.
     """
+
+    if _should_force_collision_none_for_mvp(bdef, cfg=cfg):
+        return []
+
     # 0) none / null
     if col_any is None:
         return []

@@ -20,7 +20,7 @@ where
     loop {
         match read_line().trim().parse() {
             Ok(v) => return v,
-            Err(e) => println!("잘못된 입력: {e:?}"),
+            Err(_) => {}
         }
     }
 }
@@ -98,5 +98,96 @@ impl<T> TripleBufSwapper<T> {
         self.swap();
         let write_idx = (self.0.state.load(Ordering::Acquire) & 0b11) as usize;
         unsafe { (*self.0.bufs.get())[write_idx].clear(); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+    use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+
+    // SimOut의 telemetry: Option<ContactTelemetryOut> 패턴 모사.
+    // clear() 시 self.telemetry = None → ContactTelemetryOut/ContactPairOut의 String 모두 drop.
+    // reader가 그 String의 buffer를 직렬화 중이면 use-after-free.
+    #[derive(Default, serde::Serialize)]
+    struct StringPayload {
+        items: Vec<String>,
+        telemetry: Option<ContactTelemetryOut>,
+    }
+
+    #[derive(serde::Serialize)]
+    struct ContactTelemetryOut {
+        contact_count: i32,
+        max_pair: Option<ContactPairOut>,
+    }
+
+    #[derive(serde::Serialize)]
+    struct ContactPairOut {
+        body_a: String,
+        body_b: String,
+    }
+
+    impl Clearable for StringPayload {
+        fn clear(&mut self) {
+            self.items.clear();
+            // 실제 SimOut::clear의 self.telemetry = None과 동일.
+            // ContactTelemetryOut/ContactPairOut의 String들이 drop되어 buffer가 free된다.
+            self.telemetry = None;
+        }
+    }
+
+    /// reader가 read()로 받은 &T 참조의 유효성을 writer/swapper가 침범할 수 있는지 확인.
+    ///
+    /// 실제 시나리오에 맞춰 reader는 serde_json::to_vec으로 직렬화 (broadcast 루프와 동일).
+    /// writer는 String이 들어간 페이로드를 채우고 swap_and_clear를 반복.
+    ///
+    /// 자체 TripleBuffer의 race로 STATUS_ACCESS_VIOLATION (Windows segfault)를 재현하는 테스트.
+    /// 의도된 실패이므로 `#[ignore]` — 명시 실행 시에만 돌림:
+    ///   cargo test --bin server -- --ignored read_reference
+    /// simout은 이미 triple_buffer crate로 교체됐고, 이 테스트는 자체 TripleBuffer가
+    /// userin에 남아 있는 동안 잠재 race가 있음을 문서화한다 (BUGS.md 참고).
+    #[test]
+    #[ignore]
+    fn read_reference_can_be_invalidated_by_concurrent_swap() {
+        let (reader, mut writer, swapper) = TripleBuffer::new([
+            StringPayload::default(),
+            StringPayload::default(),
+            StringPayload::default(),
+        ]);
+
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let stop_for_writer = stop.clone();
+
+        let writer_handle = thread::spawn(move || {
+            let mut counter = 0u64;
+            while !stop_for_writer.load(AtomicOrdering::Relaxed) {
+                {
+                    let payload = writer.write();
+                    payload.telemetry = Some(ContactTelemetryOut {
+                        contact_count: counter as i32,
+                        max_pair: Some(ContactPairOut {
+                            body_a: format!("EXPORT_shaft_{counter}"),
+                            body_b: format!("5972K315_Ball_Bearing_{counter}"),
+                        }),
+                    });
+                    for i in 0..4 {
+                        payload.items.push(format!("diagnostic_message_{counter}_{i}_padding_text"));
+                    }
+                }
+                swapper.swap_and_clear();
+                counter += 1;
+            }
+        });
+
+        // 메인 스레드 = reader. broadcast 루프가 매 read마다 serde_json::to_vec 호출하는 흐름.
+        // 직렬화 작업이 충분히 길어야 그 사이 writer가 swap을 여러 번 해서 reader slot을 침범할 수 있다.
+        for _ in 0..50_000 {
+            let payload = reader.read();
+            let _ = serde_json::to_vec(payload);
+        }
+
+        stop.store(true, AtomicOrdering::Relaxed);
+        writer_handle.join().unwrap();
     }
 }

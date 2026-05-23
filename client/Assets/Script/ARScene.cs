@@ -1,8 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.XR.ARFoundation;
@@ -12,20 +10,27 @@ namespace Cadverse
 {
     public class ARScene : IDisposable
     {
-        readonly ARTrackedImageManager _manager;
-        readonly GameObject _root;
-        readonly Texture2D  _markerTexture;
+        readonly ARTrackedImageManager        _manager;
+        readonly GameObject                   _root;
+        readonly Texture2D                    _markerTexture;
+        readonly Dictionary<string, int>      _partIndex;   // body 이름 → 시뮬 인덱스 (bodies 배열 순서)
         ARAnchor    _anchor;
         public int MeshCount;
         TrackingState _lastTrackingState = TrackingState.None;
 
-        ARScene(ARTrackedImageManager manager, GameObject root, Texture2D markerTexture)
+        ARScene(ARTrackedImageManager manager, GameObject root, Texture2D markerTexture,
+                Dictionary<string, int> partIndex)
         {
             _manager       = manager;
             _root          = root;
             _markerTexture = markerTexture;
+            _partIndex     = partIndex;
             manager.trackablesChanged.AddListener(OnTrackedImagesChanged);
         }
+
+        // raycast hit의 collider.name 을 서버 partIndex로 변환. 매핑 없으면 -1.
+        public int IndexOf(string name)
+            => _partIndex != null && _partIndex.TryGetValue(name, out int idx) ? idx : -1;
 
         static async Task<byte[]> RequestWithTimeout(System.Func<byte[]> fn, int timeoutMs = 10_000)
         {
@@ -57,7 +62,7 @@ namespace Cadverse
 
             // (2) 메타데이터 파싱
             byte[] metaData = await RequestWithTimeout(() => net.RequestHttp(addr.RawJson, "/metadata.json"));
-            var transforms = ParseTransforms(Encoding.UTF8.GetString(metaData));
+            var transforms = ParseBodies(Encoding.UTF8.GetString(metaData));
 
             // (3) _root 생성
             var root = new GameObject("_root");
@@ -70,39 +75,36 @@ namespace Cadverse
             mat = new Material(mat);
 
             // (4) 파트별 OBJ 다운로드 → 메시 생성
-            bool firstMesh = true;
+            // partIndex 매핑은 ParseBodies 순회 순서(= metadata bodies 배열 순서)로 부여하면
+            // 시뮬레이터가 부여하는 partIndex와 일치한다.
+            var partIndex = new Dictionary<string, int>();
+            int simIdx = 0;
             foreach (var kvp in transforms)
             {
-                string name   = kvp.Key;
-                float[] matrix = kvp.Value;
+                string name  = kvp.Key;
+                float[] pose = kvp.Value; // [px, py, pz, rw, rx, ry, rz]
 
                 byte[] objData = await RequestWithTimeout(() => net.RequestHttp(addr.RawJson, $"/meshes/{name}.obj"));
                 var mesh = ObjParser.Parse(objData);
 
                 var go = new GameObject(name);
-                go.AddComponent<MeshFilter>().mesh     = mesh;
+                go.AddComponent<MeshFilter>().mesh       = mesh;
                 go.AddComponent<MeshRenderer>().material = mat;
+                go.AddComponent<MeshCollider>().sharedMesh = mesh;   // raycast 가능하게
                 go.transform.SetParent(root.transform, false);
 
-                var m = CoordConvert.FusionToUnity(matrix);
-                go.transform.localPosition = new Vector3(m.m03, m.m13, m.m23);
-                go.transform.localRotation = m.rotation;
-                go.transform.localScale    = new Vector3(
-                    new Vector3(m.m00, m.m10, m.m20).magnitude,
-                    new Vector3(m.m01, m.m11, m.m21).magnitude,
-                    new Vector3(m.m02, m.m12, m.m22).magnitude
-                );
+                // Fusion(X,Y,Z) m → Unity(X,Z,Y), quaternion(w,x,y,z) → (-x,-z,-y,w)
+                go.transform.localPosition = new Vector3(pose[0], pose[2], pose[1]);
+                go.transform.localRotation = new Quaternion(-pose[4], -pose[6], -pose[5], pose[3]);
+                go.transform.localScale    = Vector3.one;
 
-                if (firstMesh)
-                {
-                    AppManager.Toast($"{name} pos={go.transform.localPosition} scale={go.transform.localScale}");
-                    firstMesh = false;
-                }
+                partIndex[name] = simIdx++;
             }
 
             // (5) ARScene 생성(리스너 등록) → referenceLibrary 설정 (순서 중요)
-            var scene = new ARScene(manager, root, texture);
+            var scene = new ARScene(manager, root, texture, partIndex);
             scene.MeshCount = transforms.Count;
+            manager.enabled = false;
             manager.referenceLibrary = lib;
             manager.enabled = true;
             return scene;
@@ -110,12 +112,12 @@ namespace Cadverse
 
         void OnTrackedImagesChanged(ARTrackablesChangedEventArgs<ARTrackedImage> e)
         {
-            AppManager.Toast($"trackables: +{e.added.Count} ~{e.updated.Count}");
-
             foreach (var img in e.added)
                 if (img.referenceImage.name == "sim_marker")
                 {
-                    AppManager.Toast($"마커 added: {img.trackingState}");
+                    AppManager.Toast(img.trackingState == TrackingState.Tracking
+                        ? "마커 감지 성공"
+                        : $"마커 감지됨 (상태: {img.trackingState})");
                     if (img.trackingState == TrackingState.Tracking)
                         AttachToMarker(img.transform);
                 }
@@ -126,8 +128,11 @@ namespace Cadverse
                     if (img.trackingState != _lastTrackingState)
                     {
                         _lastTrackingState = img.trackingState;
-                        AppManager.Toast($"마커 updated: {img.trackingState}");
+                        AppManager.Toast(img.trackingState == TrackingState.Tracking
+                            ? "마커 추적 재개"
+                            : $"마커 추적 중단 ({img.trackingState})");
                     }
+
                     if (img.trackingState == TrackingState.Tracking)
                         AttachToMarker(img.transform);
                     else
@@ -136,7 +141,10 @@ namespace Cadverse
 
             foreach (var kvp in e.removed)
                 if (kvp.Value.referenceImage.name == "sim_marker")
+                {
+                    AppManager.Toast("마커 제거됨");
                     AttachToAnchor();
+                }
         }
 
         void AttachToMarker(Transform markerTransform)
@@ -146,10 +154,13 @@ namespace Cadverse
                 UnityEngine.Object.Destroy(_anchor.gameObject);
                 _anchor = null;
             }
+            bool firstPlacement = !_root.activeSelf;
             _root.transform.SetParent(markerTransform, false);
             _root.transform.localPosition = Vector3.zero;
             _root.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
             _root.SetActive(true);
+            if (firstPlacement)
+                AppManager.Toast("모델 배치 완료");
         }
 
         void AttachToAnchor()
@@ -197,21 +208,37 @@ namespace Cadverse
             return tex;
         }
 
-        // metadata.json "transforms" 섹션 → {파트명: float[16]}
-        static Dictionary<string, float[]> ParseTransforms(string json)
+        // Server가 변환을 마친 Unity 좌표로 들어온다.
+        public void ApplyState(StateFrame s)
+        {
+            if (s?.Objects == null) return;
+            foreach (var obj in s.Objects)
+            {
+                var t = _root.transform.Find(obj.Name);
+                if (t == null) continue;
+                t.localPosition = obj.Position;
+                t.localRotation = obj.Rotation;
+            }
+        }
+
+        [System.Serializable] class _MetaBodies { public _MetaBody[] bodies; }
+        [System.Serializable] class _MetaBody   { public string name; public _MetaPose pose; }
+        [System.Serializable] class _MetaPose   { public float[] pos; public float[] rot; }
+
+        // metadata.json "bodies" 배열 → {파트명: float[7]} (pos xyz + rot wxyz)
+        static Dictionary<string, float[]> ParseBodies(string json)
         {
             var result = new Dictionary<string, float[]>();
-            var section = Regex.Match(json, @"""transforms""\s*:\s*\{(.*?)\}", RegexOptions.Singleline);
-            if (!section.Success) return result;
-
-            foreach (Match m in Regex.Matches(section.Groups[1].Value,
-                @"""([^""]+)""\s*:\s*\[([^\]]+)\]", RegexOptions.Singleline))
+            var meta = JsonUtility.FromJson<_MetaBodies>(json);
+            if (meta?.bodies == null) return result;
+            foreach (var b in meta.bodies)
             {
-                string[] parts = m.Groups[2].Value.Split(',');
-                var floats = new float[parts.Length];
-                for (int i = 0; i < parts.Length; i++)
-                    floats[i] = float.Parse(parts[i].Trim(), CultureInfo.InvariantCulture);
-                result[m.Groups[1].Value] = floats;
+                if (b?.name == null || b.pose?.pos?.Length < 3 || b.pose?.rot?.Length < 4) continue;
+                result[b.name] = new float[]
+                {
+                    b.pose.pos[0], b.pose.pos[1], b.pose.pos[2],
+                    b.pose.rot[0], b.pose.rot[1], b.pose.rot[2], b.pose.rot[3]
+                };
             }
             return result;
         }

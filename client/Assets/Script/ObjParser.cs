@@ -28,7 +28,7 @@ public static class ObjParser
             if (line.StartsWith("v "))
             {
                 var t = Tok(line, 2);
-                srcPos.Add(CoordConvert.FusionToUnity(F(t[0]), F(t[1]), F(t[2])));
+                srcPos.Add(CoordConvert.FusionDirToUnity(F(t[0]), F(t[1]), F(t[2])));
             }
             else if (line.StartsWith("vn "))
             {

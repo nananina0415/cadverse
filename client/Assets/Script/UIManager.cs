@@ -18,12 +18,10 @@ public class UIManager : MonoBehaviour
     [Header("UI 컴포넌트 이름")]
     public Button selectMenuButton;
     public Button dragMenuButton;
-    public Button viewMenuButton;
     public Button refreshMenuButton;
 
     [Header("반응형 UI 패널")]
     public GameObject portraitBottomBar;
-    public GameObject landscapeRightBar;
 
     void Start()
     {
@@ -35,26 +33,9 @@ public class UIManager : MonoBehaviour
         
         if (dragMenuButton != null && uiHandler != null)
             dragMenuButton.onClick.AddListener(uiHandler.onDragMenuButtonClick);
-        
-        if (viewMenuButton != null && uiHandler != null)
-            viewMenuButton.onClick.AddListener(uiHandler.onViewMenuButtonClick);
-        
+
         if (refreshMenuButton != null && uiHandler != null)
             refreshMenuButton.onClick.AddListener(uiHandler.onRefreshMenuButtonClick);
     }
 
-    void Update()
-    {
-        // 실시간 화면 방향 감지 및 패널 전환 (반응형 레이아웃)
-        if (Screen.orientation == ScreenOrientation.Portrait || Screen.orientation == ScreenOrientation.PortraitUpsideDown)
-        {
-            portraitBottomBar.SetActive(true);
-            landscapeRightBar.SetActive(false);
-        }
-        else if (Screen.orientation == ScreenOrientation.LandscapeLeft || Screen.orientation == ScreenOrientation.LandscapeRight)
-        {
-            portraitBottomBar.SetActive(false);
-            landscapeRightBar.SetActive(true);
-        }
-    }
 }

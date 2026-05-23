@@ -9,7 +9,7 @@ use p2p_core::{PeerInfo, PeerType, NodeAddr, JoinForm, NetId, Password};
 use serde::{Deserialize, Serialize};
 
 use crate::utils::{TripleBufWriter, TripleBufReader};
-use crate::sim::{UserIn, SimOut};
+use crate::sim::{UserIn, SimFrame};
 
 pub struct NetSetting {
     pub net_id: String,
@@ -47,9 +47,7 @@ fn collect_model_files(base: &Path, dir: &Path, out: &mut Vec<String>) -> std::i
 fn build_model_manifest(folder: &Path) -> ModelManifest {
     let mut files = Vec::new();
 
-    if let Err(e) = collect_model_files(folder, folder, &mut files) {
-        eprintln!("[manifest] 파일 목록 생성 실패: {e}");
-    }
+    let _ = collect_model_files(folder, folder, &mut files);
 
     ModelManifest { files }
 }
@@ -96,7 +94,12 @@ impl Drop for NetThread {
 }
 
 impl NetThread {
-    pub fn new(setting: &NetSetting, userin_w: TripleBufWriter<Vec<UserIn>>, simout_r: TripleBufReader<SimOut>) -> NetThread {
+    pub fn new(
+        setting: &NetSetting,
+        userin_w: TripleBufWriter<Vec<UserIn>>,
+        mut simout_r: triple_buffer::Output<SimFrame>,
+        log: std::sync::mpsc::Sender<String>,
+    ) -> anyhow::Result<NetThread> {
         let rt = tokio::runtime::Runtime::new()
             .expect("tokio 런타임 생성 실패");
 
@@ -106,8 +109,8 @@ impl NetThread {
                 pw:         Password(setting.password.clone()),
                 my_name:    setting.name.clone(),
                 peer_type:  setting.peer_type.clone(),
-            }
-        )).expect("p2p 네트워크 참가 실패"));
+            }, &log)
+        )?);
 
         let my_peer_type = Arc::new(Mutex::new(setting.peer_type.clone()));
         let ar_clients: Arc<Mutex<Vec<p2p_core::Connection>>> = Arc::new(Mutex::new(Vec::new()));
@@ -119,7 +122,10 @@ impl NetThread {
             let ar_clients = ar_clients.clone();
             rt.spawn(async move {
                 loop {
-                    let Some(conn) = net.accept_data().await else { break };
+                    let Some(conn) = net.accept_data().await else {
+                        eprintln!("[net] accept_data 종료");
+                        break;
+                    };
                     ar_clients.lock().expect("ar_clients mutex poisoned").push(conn.clone());
                     let userin_tx = userin_tx.clone();
                     tokio::spawn(async move {
@@ -141,15 +147,37 @@ impl NetThread {
                 while let Some(msg) = userin_rx.recv().await {
                     userin_w.write().push(msg);
                 }
+                eprintln!("[net] userin 채널 종료");
             });
         }
 
-        // SimOut 버퍼 읽기 → 모든 AR 클라이언트로 브로드캐스트
+        // SimFrame 버퍼 읽기 → 모든 AR 클라이언트로 브로드캐스트
         {
             let ar_clients = ar_clients.clone();
             rt.spawn(async move {
+                let mut reload_sent = false;
                 loop {
-                    let data = serde_json::to_vec(simout_r.read()).expect("SimOut 직렬화 실패");
+                    let data = match simout_r.read() {
+                        SimFrame::State(out) => {
+                            reload_sent = false;
+                            match serde_json::to_vec(out) {
+                                Ok(d) => d,
+                                Err(e) => {
+                                    eprintln!("[broadcast] 직렬화 실패: {e}");
+                                    tokio::time::sleep(std::time::Duration::from_millis(16)).await;
+                                    continue;
+                                }
+                            }
+                        }
+                        SimFrame::Reload => {
+                            if reload_sent {
+                                tokio::time::sleep(std::time::Duration::from_millis(16)).await;
+                                continue;
+                            }
+                            reload_sent = true;
+                            br#"{"type":"reload"}"#.to_vec()
+                        }
+                    };
                     let clients = ar_clients.lock().expect("ar_clients mutex poisoned").clone();
                     let mut dead = vec![];
                     for (i, conn) in clients.iter().enumerate() {
@@ -165,16 +193,15 @@ impl NetThread {
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(16)).await;
                 }
+                eprintln!("[net] broadcast 루프 종료");
             });
         }
 
         if let Some(my_info) = net.get_peers().into_iter().find(|p| p.name == setting.name) {
             crate::save_local_sim_qr_txt(&my_info.addr);
-        } else {
-            eprintln!("[NetThread] 자신의 주소를 찾을 수 없어 QR 생성 스킵");
         }
 
-        NetThread { async_rt: rt, net, my_peer_type, ar_clients }
+        Ok(NetThread { async_rt: rt, net, my_peer_type, ar_clients })
     }
 
     pub fn peer_list(&self) -> Vec<PeerInfo> {
@@ -193,13 +220,14 @@ impl NetThread {
 
         self.async_rt.spawn(async move {
             loop {
-                let Some(conn) = net.accept_file_conn().await else { break };
-                println!("[file] connection accepted");
+                let Some(conn) = net.accept_file_conn().await else {
+                    eprintln!("[net] accept_file_conn 종료");
+                    break;
+                };
                 let folder = folder.clone();
-
                 tokio::spawn(async move {
                     if let Err(e) = serve_file(conn, &folder).await {
-                        println!("[file] serve error: {e}");
+                        eprintln!("[net] serve_file 오류: {e}");
                     }
                 });
             }
@@ -217,6 +245,10 @@ impl NetThread {
         let mut t = self.my_peer_type.lock().expect("my_peer_type mutex poisoned");
         *t = PeerType::MidServer;
         Ok(())
+    }
+
+    pub fn my_node_id(&self) -> Vec<u8> {
+        self.net.my_addr().id.as_bytes().to_vec()
     }
 
     pub fn sim_info(&self, name: &str) -> Option<NodeAddr> {
@@ -240,7 +272,6 @@ impl NetThread {
         let net = self.net.clone();
 
         self.async_rt.block_on(async move {
-            println!("원격 모델 파일 목록을 요청합니다. 대상: {}", peer.name);
 
             let manifest_bytes = match net
                 .request_file(peer.addr.clone(), "/__cadverse_manifest.json")
@@ -259,8 +290,6 @@ impl NetThread {
                 anyhow::bail!("대상의 시뮬레이션이 종료된 상태입니다");
             }
 
-            println!("원격 모델 파일 {}개를 불러옵니다.", manifest.files.len());
-
             if tmp_dir.exists() {
                 fs::remove_dir_all(&tmp_dir)
                     .with_context(|| format!("임시 폴더 삭제 실패: {}", tmp_dir.display()))?;
@@ -270,10 +299,7 @@ impl NetThread {
                 .with_context(|| format!("임시 폴더 생성 실패: {}", tmp_dir.display()))?;
 
             for rel in manifest.files {
-                if !is_safe_relative_path(&rel) {
-                    eprintln!("[remote import] 안전하지 않은 경로 생략: {rel}");
-                    continue;
-                }
+                if !is_safe_relative_path(&rel) { continue; }
 
                 let request_path = format!("/{}", rel);
 
@@ -320,6 +346,7 @@ async fn serve_file(conn: p2p_core::RawConn, folder: &std::path::Path) -> anyhow
     let mut recv = conn.accept_uni().await?;
     let path_bytes = recv.read_to_end(1024).await?;
     let path = String::from_utf8(path_bytes)?;
+    eprintln!("[serve_file] 요청: {path}");
     let file_path = if path == "/local_sim_qr.txt" {
         crate::qr_path()
     } else {
@@ -327,20 +354,20 @@ async fn serve_file(conn: p2p_core::RawConn, folder: &std::path::Path) -> anyhow
     };
     let data = if path == "/__cadverse_manifest.json" {
         let manifest = build_model_manifest(folder);
+        eprintln!("[serve_file] manifest: {} 파일", manifest.files.len());
         serde_json::to_vec(&manifest).unwrap_or_default()
     } else {
-        std::fs::read(&file_path).unwrap_or_default()
+        let d = std::fs::read(&file_path).unwrap_or_default();
+        eprintln!("[serve_file] 응답: {} ({} bytes)", file_path.display(), d.len());
+        d
     };
-    println!("[FILE] {path} ({} bytes)", data.len());
     let mut send = conn.open_uni().await?;
     send.write_all(&data).await?;
     send.finish()?;
-    // 클라이언트가 데이터를 다 읽고 연결을 닫을 때까지 대기
-    // (conn을 즉시 드롭하면 CONNECTION_CLOSE가 먼저 도착해 클라이언트 read 실패)
+    // conn을 즉시 드롭하면 CONNECTION_CLOSE가 먼저 도착해 클라이언트 read 실패
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         conn.accept_uni(),
     ).await;
-    println!("[FILE] done: {path}");
     Ok(())
 }

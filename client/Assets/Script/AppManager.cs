@@ -1,4 +1,7 @@
 using System.Collections;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using TMPro;
 using UnityEngine;
@@ -9,13 +12,23 @@ namespace Cadverse
 {
     public class AppManager : MonoBehaviour
     {
-        public static P2PNet      Net     { get; private set; }
-        public static QRScanner   Scanner { get; private set; }
+        public static P2PNet        Net     { get; private set; }
+        public static QRScanner     Scanner { get; private set; }
+        public static List<Server>  Servers { get; } = new();
+        public static ARScene       Scene   { get; private set; }   // 현재 활성 씬 — UI/SimulationManager에서 IndexOf 호출에 사용
+
+        // UI 측이 정보 표시 모드에 진입/이탈할 때 토글한다.
+        // true면 ReceiveLoop이 server.SimFrameAndInfo()로 telemetry까지 받는다.
+        // 백그라운드 스레드와 메인 스레드가 모두 접근하므로 volatile.
+        public static volatile bool NeedsFullInfo = false;
 
         static AppManager _instance;
 
-        ARTrackedImageManager _imageManager;
-        ARScene               _scene;
+        ARTrackedImageManager              _imageManager;
+        ARScene                            _scene;
+        CancellationTokenSource            _recvCts;
+        readonly ConcurrentQueue<System.Action> _mainQueue = new();
+        readonly List<RectTransform> _activeToasts = new();
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         static void Bootstrap()
@@ -38,18 +51,38 @@ namespace Cadverse
             Net = net;
             _imageManager = FindAnyObjectByType<ARTrackedImageManager>();
             var cameraManager = FindAnyObjectByType<ARCameraManager>();
-            Scanner = QRScanner.Create(cameraManager, OnQRChanged);
+            if (cameraManager != null)
+                Scanner = QRScanner.Create(cameraManager, OnQRChanged);
+        }
+
+        void Update()
+        {
+            while (_mainQueue.TryDequeue(out var action)) action();
         }
 
         async void OnQRChanged(Addr addr)
         {
             ShowToast("QR 인식됨");
+            _recvCts?.Cancel();
+            _recvCts = new CancellationTokenSource();
+
+            foreach (var s in Servers) s.Dispose();
+            Servers.Clear();
+
             _scene?.Dispose();
             _scene = null;
+            Scene  = null;
             try
             {
                 _scene = await ARScene.Create(addr, _imageManager);
+                Scene  = _scene;
                 ShowToast($"씬 생성 완료, {_scene.MeshCount}개 메시");
+
+                var server = await Task.Run(() => new Server(Net, addr));
+                Servers.Add(server);
+
+                var cts = _recvCts;
+                _ = Task.Run(() => ReceiveLoop(server, cts.Token));
             }
             catch (System.Exception e)
             {
@@ -58,11 +91,83 @@ namespace Cadverse
             }
         }
 
+        async Task ReloadSceneAsync(Addr addr)
+        {
+            _scene?.Dispose();
+            _scene = null;
+            Scene  = null;
+            try
+            {
+                _scene = await ARScene.Create(addr, _imageManager);
+                Scene  = _scene;
+                ShowToast($"모델 교체 완료, {_scene.MeshCount}개 메시");
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"[ARScene] reload: {e.Message}");
+                ShowToast($"모델 교체 실패: {e.Message}");
+            }
+        }
+
+        void ReceiveLoop(Server server, CancellationToken ct)
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                Frame f;
+                try {
+                    f = NeedsFullInfo ? server.SimFrameAndInfo() : server.SimFrame();
+                }
+                catch { break; }
+
+                if (f is ReloadFrame)
+                    _mainQueue.Enqueue(() => { _ = ReloadSceneAsync(server.Addr); });
+                else if (f is StateFrame s)
+                    _mainQueue.Enqueue(() => HandleStateFrame(s));
+            }
+        }
+
+        void HandleStateFrame(StateFrame s)
+        {
+            _scene?.ApplyState(s);
+
+            if (s.EventFeedback != null)
+            {
+                foreach (var ev in s.EventFeedback)
+                {
+                    if (!string.IsNullOrEmpty(ev.Message))
+                        ShowToast(ev.Message);
+                    // 사운드 재생은 별도 컴포넌트로 처리 — 일단 로그만 남긴다
+                    if (!string.IsNullOrEmpty(ev.SoundId))
+                        Debug.Log($"[EventFeedback] sound={ev.SoundId} type={ev.SoundType} vol={ev.Volume:F2} pitch={ev.Pitch:F2}");
+                }
+            }
+
+            if (s.Warnings != null)
+                foreach (var w in s.Warnings) Debug.LogWarning($"[sim] {w}");
+
+            if (s.Diagnostics != null)
+                foreach (var d in s.Diagnostics) Debug.Log($"[sim/{d.Severity}] {d.Code}: {d.Message}");
+
+            // TODO(UI): 정보 표시 모드 진입 시 NeedsFullInfo=true 토글.
+            // 그러면 s.InteractionTelemetry / s.Telemetry / s.JointTelemetry[name] /
+            // s.ActuatorTelemetry[name] / s.GearTelemetry[name] / s.AssemblyTelemetry[name]
+            // 가 채워져 들어온다. 객체 클릭 시 hit.collider.name 으로 lookup해서 패널에 표시.
+            // SimVec3 필드(reactionForce/Torque/axisWorld/pivotWorld)는 CoordConvert.SimPosToUnity 변환 필요.
+        }
+
         static TMP_FontAsset _font;
         static TMP_FontAsset Font => _font ??= Resources.Load<TMP_FontAsset>("Font/Pretendard-Regular SDF");
 
+        const float ToastShift = 0.14f; // 토스트 높이(0.13) + 간격(0.01)
+
         void ShowToast(string msg)
         {
+            foreach (var existing in _activeToasts)
+            {
+                existing.anchorMin += new Vector2(0, ToastShift);
+                existing.anchorMax += new Vector2(0, ToastShift);
+            }
+
             var canvasGO = new GameObject("Toast");
             var canvas   = canvasGO.AddComponent<Canvas>();
             canvas.renderMode   = RenderMode.ScreenSpaceOverlay;
@@ -71,10 +176,10 @@ namespace Cadverse
 
             var textGO = new GameObject("Text");
             textGO.transform.SetParent(canvasGO.transform, false);
-            var rt        = textGO.AddComponent<RectTransform>();
-            rt.anchorMin  = new Vector2(0.1f, 0.08f);
-            rt.anchorMax  = new Vector2(0.9f, 0.22f);
-            rt.offsetMin  = rt.offsetMax = Vector2.zero;
+            var rt       = textGO.AddComponent<RectTransform>();
+            rt.anchorMin = new Vector2(0.1f, 0.06f);
+            rt.anchorMax = new Vector2(0.9f, 0.19f);
+            rt.offsetMin = rt.offsetMax = Vector2.zero;
             var tmp       = textGO.AddComponent<TextMeshProUGUI>();
             tmp.font      = Font;
             tmp.text      = msg;
@@ -82,10 +187,11 @@ namespace Cadverse
             tmp.fontSize  = 28f;
             tmp.color     = Color.white;
 
-            StartCoroutine(ToastRoutine(canvasGO, tmp));
+            _activeToasts.Add(rt);
+            StartCoroutine(ToastRoutine(canvasGO, tmp, rt));
         }
 
-        IEnumerator ToastRoutine(GameObject go, TextMeshProUGUI tmp)
+        IEnumerator ToastRoutine(GameObject go, TextMeshProUGUI tmp, RectTransform rt)
         {
             yield return new WaitForSeconds(1.4f);
             float elapsed = 0f;
@@ -97,12 +203,17 @@ namespace Cadverse
                 tmp.color = c;
                 yield return null;
             }
+            _activeToasts.Remove(rt);
             Destroy(go);
         }
 
         void OnDestroy()
         {
+            _recvCts?.Cancel();
+            foreach (var s in Servers) s.Dispose();
+            Servers.Clear();
             _scene?.Dispose();
+            Scene = null;
             Net?.Dispose();
             Net = null;
         }

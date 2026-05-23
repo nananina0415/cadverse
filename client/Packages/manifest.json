@@ -5,6 +5,7 @@
     "com.unity.learn.iet-framework": "5.0.2",
     "com.unity.mobile.android-logcat": "1.4.7",
     "com.unity.multiplayer.center": "1.0.1",
+    "com.unity.nuget.newtonsoft-json": "3.2.1",
     "com.unity.render-pipelines.universal": "17.3.0",
     "com.unity.timeline": "1.8.10",
     "com.unity.xr.arcore": "6.3.2",
