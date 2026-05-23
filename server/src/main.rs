@@ -32,9 +32,15 @@ fn exe_dir() -> std::path::PathBuf {
 }
 
 fn main() {
-    std::panic::set_hook(Box::new(|info| {
-        let msg = format!("{info}\n");
-        let _ = std::fs::write(exe_dir().join("panic.log"), &msg);
+    // 패닉 정보 + 백트레이스를 panic.log와 stderr 둘 다에 출력.
+    // exe_dir()는 hook 밖에서 캡쳐 (hook 안에서 expect가 또 패닉하면 무한 루프).
+    // 주의: Rust 1.78+ unsafe precondition 패닉은 non-unwinding이라 이 hook을 건너뛸 수 있다.
+    //       그래도 일반 panic은 모두 잡힌다.
+    let panic_log = exe_dir().join("panic.log");
+    std::panic::set_hook(Box::new(move |info| {
+        let bt = std::backtrace::Backtrace::force_capture();
+        let msg = format!("[PANIC]\n{info}\n[BACKTRACE]\n{bt}\n");
+        let _ = std::fs::write(&panic_log, &msg);
         eprint!("{msg}");
     }));
 
