@@ -136,9 +136,12 @@ namespace Cadverse
                 {
                     if (!string.IsNullOrEmpty(ev.Message))
                         ShowToast(ev.Message);
-                    // 사운드 재생은 별도 컴포넌트로 처리 — 일단 로그만 남긴다
+                    // 사운드 재생은 별도 컴포넌트로 처리한다.
                     if (!string.IsNullOrEmpty(ev.SoundId))
+                    {
                         Debug.Log($"[EventFeedback] sound={ev.SoundId} type={ev.SoundType} vol={ev.Volume:F2} pitch={ev.Pitch:F2}");
+                        EventFeedbackAudioPlayer.Ensure().Play(ev);
+                    }
                 }
             }
 
