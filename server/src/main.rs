@@ -428,22 +428,17 @@ pub fn setup_python() {
 
     #[cfg(not(debug_assertions))]
     {
+        // release 빌드: python_env unpack과 PATH 설정은 launcher(cad_plugin/CADverse.py)가
+        // 처리한다. server 자체는 이미 풀려있다고 가정하고 PYTHONHOME / CONDA_PREFIX만 잡는다.
+        // (DLL 로드는 OS가 main 진입 전에 끝내므로 PATH는 부모 프로세스가 설정해야 의미가 있다.)
         let python_env = exe_dir().join("python_env");
-        if !python_env.exists() {
-            let bundle = exe_dir().join("python_env.tar.gz");
-            assert!(bundle.exists(), "python_env.tar.gz not found next to executable");
-            std::fs::create_dir_all(&python_env).unwrap();
-            let status = std::process::Command::new("tar")
-                .args(["-xzf", bundle.to_str().unwrap(), "-C", python_env.to_str().unwrap()])
-                .status()
-                .expect("tar failed");
-            assert!(status.success(), "Failed to unpack python_env.tar.gz");
-        }
-        let current_path = std::env::var("PATH").unwrap_or_default();
+        assert!(
+            python_env.exists(),
+            "python_env not found next to executable. launcher가 unpack해야 한다 (CADverse.py 참고)."
+        );
         unsafe {
             std::env::set_var("PYTHONHOME", &python_env);
             std::env::set_var("CONDA_PREFIX", &python_env);
-            std::env::set_var("PATH", format!("{};{}", python_env.join("Library").join("bin").display(), current_path));
         }
     }
 }

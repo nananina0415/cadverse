@@ -218,13 +218,54 @@ def _start_server():
     log_file.write(f'[plugin] 서버 시작: {exe}\n')
     log_file.flush()
 
-    # 디버그 빌드(target/debug)일 때만 Rust 패닉 백트레이스 활성화
-    env_vars = None
+    exe_dir = os.path.dirname(exe)
     norm_exe = os.path.normpath(exe).lower()
-    if (os.sep + 'debug' + os.sep) in norm_exe or '/debug/' in norm_exe:
-        env_vars = {**os.environ, 'RUST_BACKTRACE': 'full'}
+    is_debug = (os.sep + 'debug' + os.sep) in norm_exe or '/debug/' in norm_exe
+
+    # server.exe 의존 DLL(SDL2.dll 등)은 OS가 main 함수 진입 전, exe 로딩 단계에서
+    # 찾아 로드한다. server 내부 setup_python의 PATH 변경은 그 시점에는 너무 늦으므로
+    # 부모 프로세스(여기) 단계에서 PATH를 미리 설정해 자식에게 상속시킨다.
+    if is_debug:
+        # debug 빌드: 시스템 conda env (CONDA_BASE/envs/cadverse) 사용
+        conda_base = os.environ.get('CONDA_BASE')
+        env_root = os.path.join(conda_base, 'envs', 'cadverse') if conda_base else None
+        if env_root is None:
+            log_file.write('[plugin] WARN: CONDA_BASE 미설정 — setup-dev-env.ps1 실행 필요\n')
+    else:
+        # release 빌드: exe 옆 python_env. 없으면 python_env.tar.gz를 풀어 만든다.
+        env_root = os.path.join(exe_dir, 'python_env')
+        if not os.path.exists(env_root):
+            bundle = os.path.join(exe_dir, 'python_env.tar.gz')
+            if not os.path.exists(bundle):
+                log_file.write(f'[plugin] ERROR: python_env.tar.gz 없음: {bundle}\n')
+                log_file.flush()
+                raise FileNotFoundError(f'python_env.tar.gz 없음: {bundle}')
+            log_file.write(f'[plugin] python_env unpack 시작: {bundle}\n')
+            log_file.flush()
+            os.makedirs(env_root, exist_ok=True)
+            subprocess.run(
+                ['tar', '-xzf', bundle, '-C', env_root],
+                check=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            log_file.write('[plugin] python_env unpack 완료\n')
+            log_file.flush()
+
+    env_vars = {**os.environ}
+
+    if is_debug:
+        env_vars['RUST_BACKTRACE'] = 'full'
         log_file.write('[plugin] 디버그 빌드 감지 → RUST_BACKTRACE=full\n')
-        log_file.flush()
+
+    if env_root:
+        dll_dirs = [
+            os.path.join(env_root, 'Library', 'bin'),
+            os.path.join(env_root, 'DLLs'),
+        ]
+        env_vars['PATH'] = os.pathsep.join(dll_dirs + [env_vars.get('PATH', '')])
+        log_file.write(f'[plugin] DLL 경로 추가: {env_root}\n')
+
+    log_file.flush()
 
     _server_proc = subprocess.Popen(
         [exe],
