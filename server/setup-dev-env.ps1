@@ -66,4 +66,22 @@ if (-not $envExists) {
     Write-Host "cadverse environment already exists."
 }
 
+# [setup] Generate server/.cargo/config.toml with conda paths
+# build.rs는 CONDA_PATH / CONDA_ENV_PATH를 이 파일에서 [env] 섹션으로 주입받는다.
+# 사용자 컴마다 conda 위치가 달라 git에 못 올리고(gitignore), setup 시점에 생성한다.
+$cargoConfigDir = Join-Path $PSScriptRoot ".cargo"
+$cargoConfig = Join-Path $cargoConfigDir "config.toml"
+New-Item -ItemType Directory -Path $cargoConfigDir -Force | Out-Null
+
+$condaExe = (Join-Path $condaBase "Scripts\conda.exe") -replace '\\', '/'
+$condaEnvPath = (Join-Path $condaBase "envs\cadverse") -replace '\\', '/'
+
+@"
+[env]
+CONDA_PATH = "$condaExe"
+CONDA_ENV_PATH = "$condaEnvPath"
+"@ | Set-Content -Path $cargoConfig -Encoding UTF8
+
+Write-Host "Generated $cargoConfig"
+
 Write-Host "Setup complete. Run build-server.ps1 to build."
