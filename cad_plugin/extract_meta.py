@@ -23,7 +23,10 @@ IDENTITY_TRANSFORM = [
     0.0, 0.0, 1.0, 0.0,
     0.0, 0.0, 0.0, 1.0,
 ]
-
+# Legacy ARScene / 현재 Rust loader compatibility.
+# server/src/sim.rs의 load_model_from_folder()는 metadata["transforms"]를 요구한다.
+# 이 값은 body.pose를 기반으로 만든 4x4 row-major transform dict이다.
+LEGACY_AR_VISUAL_SCALE = 500.0
 
 # ---------------------------------------------------------------------
 # Basic helpers
@@ -226,6 +229,101 @@ def _pose_from_transform_array(arr, unit_scale=FUSION_CM_TO_M):
         "pos": [px, py, pz],
         "rot": q,
     }
+
+
+def _quat_wxyz_to_rot3(q):
+    """
+    quaternion [w, x, y, z] -> row-major 3x3 rotation matrix.
+
+    metadata["transforms"] compatibility용이다.
+    simulator body pose 자체는 변경하지 않는다.
+    """
+    if not q or len(q) < 4:
+        return [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+
+    w, x, y, z = [safe_float(v, 0.0) for v in q[:4]]
+
+    n = math.sqrt(w * w + x * x + y * y + z * z)
+    if n < 1e-12:
+        return [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+
+    w, x, y, z = w / n, x / n, y / n, z / n
+
+    return [
+        [
+            1.0 - 2.0 * (y * y + z * z),
+            2.0 * (x * y - z * w),
+            2.0 * (x * z + y * w),
+        ],
+        [
+            2.0 * (x * y + z * w),
+            1.0 - 2.0 * (x * x + z * z),
+            2.0 * (y * z - x * w),
+        ],
+        [
+            2.0 * (x * z - y * w),
+            2.0 * (y * z + x * w),
+            1.0 - 2.0 * (x * x + y * y),
+        ],
+    ]
+
+
+def _build_legacy_ar_transforms(bodies):
+    """
+    body.pose 기반으로 metadata["transforms"]를 만든다.
+
+    목적:
+    - 현재 server/src/sim.rs의 load_model_from_folder()는 transforms를 필수로 읽는다.
+    - 기존 ARScene도 metadata["transforms"] 기반으로 mesh transform을 찾는다.
+
+    주의:
+    - 새 물리 계산을 하지 않는다.
+    - 이미 만들어진 body.pose 값을 표시/호환용 4x4 transform으로 변환만 한다.
+    """
+    transforms = {}
+
+    for body in bodies:
+        name = body.get("name")
+        if not name:
+            continue
+
+        visual = body.get("geometry", {}).get("visual", {})
+        mesh_file = str(visual.get("file", "")).replace("\\", "/")
+
+        expected_file = f"meshes/{name}.obj"
+        if mesh_file != expected_file:
+            continue
+
+        pose = body.get("pose", {})
+        pos = pose.get("pos", [0.0, 0.0, 0.0])
+        rot = pose.get("rot", IDENTITY_QUAT[:])
+
+        if not pos or len(pos) < 3:
+            pos = [0.0, 0.0, 0.0]
+
+        r = _quat_wxyz_to_rot3(rot)
+        s = LEGACY_AR_VISUAL_SCALE
+
+        tx = safe_float(pos[0], 0.0) * s
+        ty = safe_float(pos[1], 0.0) * s
+        tz = safe_float(pos[2], 0.0) * s
+
+        transforms[name] = [
+            r[0][0] * s, r[0][1] * s, r[0][2] * s, tx,
+            r[1][0] * s, r[1][1] * s, r[1][2] * s, ty,
+            r[2][0] * s, r[2][1] * s, r[2][2] * s, tz,
+            0.0, 0.0, 0.0, 1.0,
+        ]
+
+    return transforms
 
 
 def _point3d_to_m_list(pt, unit_scale=FUSION_CM_TO_M):
@@ -1415,10 +1513,14 @@ def run(context, mesh_data=None):
     gear_pairs = []
     actuators = []
 
+    # 6) Legacy ARScene / 현재 Rust loader 호환용 transforms 생성
+    transforms = _build_legacy_ar_transforms(bodies)
+
     return {
         "bodies": bodies,
         "joints": filtered_joints,
         "gearPairs": gear_pairs,
         "actuators": actuators,
+        "transforms": transforms,
         "warnings": warnings,
     }
