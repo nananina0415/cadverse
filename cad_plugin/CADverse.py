@@ -258,7 +258,10 @@ def _start_server():
         log_file.write('[plugin] 디버그 빌드 감지 → RUST_BACKTRACE=full\n')
 
     if env_root:
+        # env 루트 자체에 python3xx.dll(pyo3 dynamic link 대상) 등 핵심 DLL이 있어
+        # PATH 맨 앞에 함께 추가해야 server.exe 시작 시 OS가 찾아낼 수 있다.
         dll_dirs = [
+            env_root,
             os.path.join(env_root, 'Library', 'bin'),
             os.path.join(env_root, 'DLLs'),
         ]
