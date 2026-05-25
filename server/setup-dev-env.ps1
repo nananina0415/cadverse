@@ -53,10 +53,11 @@ if (-not $libmambaInstalled) {
 
 # [setup] Create cadverse environment if not exists
 # build-server.ps1 assumes the environment already exists (conda activate before cargo)
+# 스크립트가 어디서 호출되든 동작하도록 $PSScriptRoot 기준 절대 경로 사용
 $envExists = conda env list | Select-String "cadverse"
 if (-not $envExists) {
     Write-Host "Creating cadverse environment..."
-    conda env create -f server/pychrono/environment.yml --solver=libmamba
+    conda env create -f "$PSScriptRoot\pychrono\environment.yml" --solver=libmamba
     if ($LASTEXITCODE -ne 0) {
         Write-Error "conda env create failed."
         exit 1
