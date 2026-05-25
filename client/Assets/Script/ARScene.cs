@@ -32,6 +32,29 @@ namespace Cadverse
         public int IndexOf(string name)
             => _partIndex != null && _partIndex.TryGetValue(name, out int idx) ? idx : -1;
 
+        // partName에 해당하는 모델 부품 Transform을 찾는다.
+        // UI 레이어는 이 Transform 위치를 이용해 화면 라벨을 배치할 수 있다.
+        public bool TryGetPartTransform(string partName, out Transform partTransform)
+        {
+            partTransform = null;
+
+            if (string.IsNullOrEmpty(partName))
+                return false;
+
+            if (_root == null)
+                return false;
+
+            partTransform = _root.transform.Find(partName);
+            return partTransform != null;
+        }
+
+        public Transform FindPartTransform(string partName)
+        {
+            return TryGetPartTransform(partName, out Transform partTransform)
+                ? partTransform
+                : null;
+        }
+
         static async Task<byte[]> RequestWithTimeout(System.Func<byte[]> fn, int timeoutMs = 10_000)
         {
             var task    = Task.Run(fn);

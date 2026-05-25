@@ -18,4 +18,22 @@ public class UIHandler : MonoBehaviour
     {
         if (simManager != null) simManager.currentMode = SimulationManager.AppMode.None;
     }
+
+    public void onInfoMenuButtonClick()
+    {
+        Cadverse.AppManager.NeedsFullInfo = !Cadverse.AppManager.NeedsFullInfo;
+
+        if (Cadverse.AppManager.NeedsFullInfo)
+        {
+            Cadverse.PartDataLabelOverlay.Ensure().SetVisible(true);
+            Cadverse.StatusOverlay.Ensure().SetVisible(true);
+            Debug.Log("[UIHandler] Info display mode enabled");
+        }
+        else
+        {
+            Cadverse.PartDataLabelOverlay.Instance?.Clear();
+            Cadverse.StatusOverlay.Instance?.Clear();
+            Debug.Log("[UIHandler] Info display mode disabled");
+        }
+    }
 }

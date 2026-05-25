@@ -148,11 +148,92 @@ namespace Cadverse
             if (s.Diagnostics != null)
                 foreach (var d in s.Diagnostics) Debug.Log($"[sim/{d.Severity}] {d.Code}: {d.Message}");
 
-            // TODO(UI): 정보 표시 모드 진입 시 NeedsFullInfo=true 토글.
-            // 그러면 s.InteractionTelemetry / s.Telemetry / s.JointTelemetry[name] /
-            // s.ActuatorTelemetry[name] / s.GearTelemetry[name] / s.AssemblyTelemetry[name]
-            // 가 채워져 들어온다. 객체 클릭 시 hit.collider.name 으로 lookup해서 패널에 표시.
-            // SimVec3 필드(reactionForce/Torque/axisWorld/pivotWorld)는 CoordConvert.SimPosToUnity 변환 필요.
+            UpdatePartDataLabel(s);
+            UpdateStatusOverlay(s);
+        }
+
+        void UpdatePartDataLabel(StateFrame s)
+        {
+            if (!NeedsFullInfo)
+            {
+                PartDataLabelOverlay.Instance?.Clear();
+                return;
+            }
+
+            if (_scene == null || s == null)
+            {
+                PartDataLabelOverlay.Instance?.Clear();
+                return;
+            }
+
+            string partName = ResolvePartDataLabelTarget(s);
+            if (string.IsNullOrEmpty(partName))
+            {
+                PartDataLabelOverlay.Instance?.Clear();
+                return;
+            }
+
+            if (!_scene.TryGetPartTransform(partName, out Transform partTransform))
+            {
+                PartDataLabelOverlay.Instance?.Clear();
+                return;
+            }
+
+            PartDataLabelOverlay.Ensure().UpdateFromState(s, partTransform);
+        }
+
+        void UpdateStatusOverlay(StateFrame s)
+        {
+            if (!NeedsFullInfo)
+            {
+                StatusOverlay.Instance?.Clear();
+                return;
+            }
+
+            if (s == null)
+            {
+                StatusOverlay.Instance?.Clear();
+                return;
+            }
+
+            StatusOverlay.Ensure().UpdateFromState(s);
+        }
+
+        string ResolvePartDataLabelTarget(StateFrame s)
+        {
+            if (s == null)
+                return null;
+
+            if (s.InteractionTelemetry.HasValue)
+            {
+                var interaction = s.InteractionTelemetry.Value;
+
+                if (!string.IsNullOrEmpty(interaction.TargetBody))
+                    return interaction.TargetBody;
+
+                if (!string.IsNullOrEmpty(interaction.DriveBody))
+                    return interaction.DriveBody;
+            }
+
+            if (s.EventFeedback != null)
+            {
+                foreach (var ev in s.EventFeedback)
+                {
+                    if (!string.IsNullOrEmpty(ev.Target))
+                        return ev.Target;
+                }
+            }
+
+            if (s.Diagnostics != null)
+            {
+                foreach (var d in s.Diagnostics)
+                {
+                    if (!string.IsNullOrEmpty(d.Target))
+                        return d.Target;
+                }
+            }
+
+            return null;
         }
 
         static TMP_FontAsset _font;
