@@ -218,16 +218,42 @@ def _start_server():
     log_file.write(f'[plugin] 서버 시작: {exe}\n')
     log_file.flush()
 
+    # server.exe 실행 시 필요한 conda DLL 경로를 PATH에 추가한다.
+    # Fusion에서 실행되는 Python 프로세스는 PowerShell의 PATH를 물려받지 않을 수 있으므로,
+    # 서버 프로세스를 spawn할 때 cadverse env 경로를 명시적으로 주입한다.
+    env_vars = os.environ.copy()
+
+    conda_base = env_vars.get('CONDA_BASE')
+    if not conda_base:
+        conda_base = os.path.expanduser(r'~\anaconda3')
+
+    conda_env = os.path.join(conda_base, 'envs', 'cadverse')
+
+    env_vars['CONDA_BASE'] = conda_base
+    env_vars['CONDA_ENV_PATH'] = conda_env
+    env_vars['PYO3_PYTHON'] = os.path.join(conda_env, 'python.exe')
+    env_vars['PATH'] = (
+        conda_env + os.pathsep +
+        os.path.join(conda_env, 'Library', 'bin') + os.pathsep +
+        os.path.join(conda_env, 'DLLs') + os.pathsep +
+        env_vars.get('PATH', '')
+    )
+
+    log_file.write(f'[plugin] CONDA_BASE: {conda_base}\n')
+    log_file.write(f'[plugin] conda_env: {conda_env}\n')
+    log_file.write(f'[plugin] PATH add: {os.path.join(conda_env, "Library", "bin")}\n')
+    log_file.flush()
+
     # 디버그 빌드(target/debug)일 때만 Rust 패닉 백트레이스 활성화
-    env_vars = None
     norm_exe = os.path.normpath(exe).lower()
     if (os.sep + 'debug' + os.sep) in norm_exe or '/debug/' in norm_exe:
-        env_vars = {**os.environ, 'RUST_BACKTRACE': 'full'}
+        env_vars['RUST_BACKTRACE'] = 'full'
         log_file.write('[plugin] 디버그 빌드 감지 → RUST_BACKTRACE=full\n')
         log_file.flush()
 
     _server_proc = subprocess.Popen(
         [exe],
+        cwd=os.path.dirname(exe),
         creationflags=subprocess.CREATE_NO_WINDOW,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
