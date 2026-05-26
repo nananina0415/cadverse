@@ -1,0 +1,658 @@
+{
+  "sceneName": "B",
+  "gravity": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "transforms": {
+    "base_frame_1": [
+      10.0,
+      -4.0083033446743165e-32,
+      -3.68156952335694e-48,
+      -0.02877290655248945,
+      -4.0083033446743165e-32,
+      -10.0,
+      -1.2246465878873716e-15,
+      0.0008431574076666952,
+      1.227185490916001e-48,
+      1.2246465878873716e-15,
+      -10.0,
+      0.0012287317014168853,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "crank_1": [
+      4.689498900974931,
+      8.832247735302431,
+      9.342864488555193e-16,
+      0.4555270420422513,
+      8.832247735302431,
+      -4.689498900974933,
+      3.3905718467123147e-10,
+      -1.1968422214730678,
+      2.9946414327857777e-10,
+      -1.5900000430340227e-10,
+      -10.0,
+      0.004228731664074817,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "connecting_rod_1": [
+      9.623925154544452,
+      -2.716627434840218,
+      1.956860148168736e-16,
+      -0.3496567464771671,
+      -2.716627434840218,
+      -9.623925154544452,
+      3.390608392357667e-10,
+      -1.2543636799213462,
+      -9.211000946802722e-11,
+      -3.2630966712480437e-10,
+      -10.0,
+      -0.04577126833787552,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "motor_mount_1": [
+      10.0,
+      -8.751042470149496e-32,
+      2.1630677900485953e-42,
+      0.2990141853848593,
+      -8.751042470149496e-32,
+      -10.0,
+      3.3905602908733033e-10,
+      -0.6734729526482607,
+      -8.040259202548749e-43,
+      -3.3905602908733033e-10,
+      -10.0,
+      0.30122873168182024,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "slider_guide_frame_1": [
+      10.0,
+      -4.0083033446743165e-32,
+      -3.68156952335694e-48,
+      -0.9435947958215878,
+      -4.0083033446743165e-32,
+      -10.0,
+      -1.2246465878873716e-15,
+      -0.6491568425978601,
+      1.227185490916001e-48,
+      1.2246465878873716e-15,
+      -10.0,
+      -0.11177126855623318,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "motor_1": [
+      9.999985206647011,
+      0.017200780241908867,
+      2.39154391358674e-16,
+      0.5870360697435432,
+      0.017200780241908867,
+      -9.999985206647013,
+      3.390572301555857e-10,
+      -0.9491568425921393,
+      5.834440445712234e-13,
+      -3.390567281648925e-10,
+      -10.0,
+      0.23622873167247294,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "slider_block_1": [
+      -10.0,
+      -1.395437544532411e-15,
+      -4.783087830673911e-16,
+      -1.0192116964251932,
+      1.3954375445486285e-15,
+      -10.0,
+      -3.390584312238434e-10,
+      -1.065762726276401,
+      -4.783087830200776e-16,
+      -3.390584312238434e-10,
+      10.0,
+      -0.16177126855623314,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  },
+  "bodies": [
+    {
+      "name": "base_frame_1",
+      "category": "base",
+      "geometry": {
+        "visual": {
+          "kind": "mesh",
+          "file": "meshes/base_frame_1.obj",
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "offset": {
+            "pos": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rot": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "collision": "auto"
+      },
+      "mechanical": {
+        "mass": 2.8259999999999996,
+        "fixed": true,
+        "inertia": {
+          "mode": "explicit",
+          "Ixx": 0.0001,
+          "Iyy": 0.0060512213754521605,
+          "Izz": 0.053740988559508596
+        },
+        "contact": {
+          "friction": 0.4,
+          "restitution": 0.05
+        },
+        "damping": {
+          "type": "viscous_torque",
+          "coef": 0.0
+        }
+      },
+      "pose": {
+        "pos": [
+          -0.002877290655248945,
+          8.431574076666952e-05,
+          0.00012287317014168854
+        ],
+        "rot": [
+          6.123232939436858e-17,
+          1.0,
+          -2.0041516723371582e-33,
+          -6.135960081102347e-50
+        ]
+      }
+    },
+    {
+      "name": "crank_1",
+      "category": "link",
+      "geometry": {
+        "visual": {
+          "kind": "mesh",
+          "file": "meshes/crank_1.obj",
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "offset": {
+            "pos": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rot": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "collision": "none"
+      },
+      "mechanical": {
+        "mass": 0.03782907590532172,
+        "fixed": false,
+        "inertia": {
+          "mode": "explicit",
+          "Ixx": 0.0001,
+          "Iyy": 0.000551702344578704,
+          "Izz": 8.252641460467945e-05
+        },
+        "contact": {
+          "friction": 0.4,
+          "restitution": 0.05
+        },
+        "damping": {
+          "type": "viscous_torque",
+          "coef": 0.02
+        }
+      },
+      "pose": {
+        "pos": [
+          0.04555270420422513,
+          -0.11968422214730678,
+          0.0004228731664074817
+        ],
+        "rot": [
+          -1.4528832907127672e-11,
+          0.8570151370009439,
+          0.5152912331403023,
+          8.735699774597352e-12
+        ]
+      }
+    },
+    {
+      "name": "connecting_rod_1",
+      "category": "link",
+      "geometry": {
+        "visual": {
+          "kind": "mesh",
+          "file": "meshes/connecting_rod_1.obj",
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "offset": {
+            "pos": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rot": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "collision": "none"
+      },
+      "mechanical": {
+        "mass": 0.08708310628829463,
+        "fixed": false,
+        "inertia": {
+          "mode": "explicit",
+          "Ixx": 0.0001,
+          "Iyy": 0.0013880790101242087,
+          "Izz": 0.0002596138562245291
+        },
+        "contact": {
+          "friction": 0.4,
+          "restitution": 0.05
+        },
+        "damping": {
+          "type": "viscous_torque",
+          "coef": 0.02
+        }
+      },
+      "pose": {
+        "pos": [
+          -0.03496567464771671,
+          -0.12543636799213462,
+          -0.004577126833787552
+        ],
+        "rot": [
+          -1.6792896575413264e-11,
+          0.9905535107843607,
+          -0.13712673799364367,
+          -2.3247056514159462e-12
+        ]
+      }
+    },
+    {
+      "name": "motor_mount_1",
+      "category": "generic",
+      "geometry": {
+        "visual": {
+          "kind": "mesh",
+          "file": "meshes/motor_mount_1.obj",
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "offset": {
+            "pos": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rot": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "collision": "none"
+      },
+      "mechanical": {
+        "mass": 0.2784856924526946,
+        "fixed": true,
+        "inertia": {
+          "mode": "explicit",
+          "Ixx": 0.0001,
+          "Iyy": 0.001579431045419572,
+          "Izz": 0.0012610847001100548
+        },
+        "contact": {
+          "friction": 0.4,
+          "restitution": 0.05
+        },
+        "damping": {
+          "type": "viscous_torque",
+          "coef": 0.0
+        }
+      },
+      "pose": {
+        "pos": [
+          0.029901418538485932,
+          -0.06734729526482607,
+          0.030122873168182025
+        ],
+        "rot": [
+          -1.6952801454366515e-11,
+          1.0,
+          -4.3755212350747475e-33,
+          3.3976046744843013e-44
+        ]
+      }
+    },
+    {
+      "name": "slider_guide_frame_1",
+      "category": "base",
+      "geometry": {
+        "visual": {
+          "kind": "mesh",
+          "file": "meshes/slider_guide_frame_1.obj",
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "offset": {
+            "pos": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rot": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "collision": "auto"
+      },
+      "mechanical": {
+        "mass": 0.8594767552940513,
+        "fixed": true,
+        "inertia": {
+          "mode": "explicit",
+          "Ixx": 0.0001,
+          "Iyy": 0.003880026613143756,
+          "Izz": 0.011242855464584645
+        },
+        "contact": {
+          "friction": 0.4,
+          "restitution": 0.05
+        },
+        "damping": {
+          "type": "viscous_torque",
+          "coef": 0.0
+        }
+      },
+      "pose": {
+        "pos": [
+          -0.09435947958215878,
+          -0.06491568425978601,
+          -0.011177126855623318
+        ],
+        "rot": [
+          6.123232939436858e-17,
+          1.0,
+          -2.0041516723371582e-33,
+          -6.135960081102347e-50
+        ]
+      }
+    },
+    {
+      "name": "motor_1",
+      "category": "generic",
+      "geometry": {
+        "visual": {
+          "kind": "mesh",
+          "file": "meshes/motor_1.obj",
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "offset": {
+            "pos": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rot": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "collision": "none"
+      },
+      "mechanical": {
+        "mass": 0.18588835112602994,
+        "fixed": true,
+        "inertia": {
+          "mode": "explicit",
+          "Ixx": 0.0001,
+          "Iyy": 0.0011875725969708764,
+          "Izz": 0.0006881639519773387
+        },
+        "contact": {
+          "friction": 0.4,
+          "restitution": 0.05
+        },
+        "damping": {
+          "type": "viscous_torque",
+          "coef": 0.0
+        }
+      },
+      "pose": {
+        "pos": [
+          0.05870360697435432,
+          -0.09491568425921393,
+          0.023622873167247295
+        ],
+        "rot": [
+          -1.69528552277524e-11,
+          0.9999996301661069,
+          0.0008600393301671371,
+          1.4592085370712297e-14
+        ]
+      }
+    },
+    {
+      "name": "slider_block_1",
+      "category": "link",
+      "geometry": {
+        "visual": {
+          "kind": "mesh",
+          "file": "meshes/slider_block_1.obj",
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "offset": {
+            "pos": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rot": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "collision": "none"
+      },
+      "mechanical": {
+        "mass": 0.06968326910863733,
+        "fixed": false,
+        "inertia": {
+          "mode": "explicit",
+          "Ixx": 0.0001,
+          "Iyy": 0.0008141164992005294,
+          "Izz": 0.0007528125788263456
+        },
+        "contact": {
+          "friction": 0.4,
+          "restitution": 0.05
+        },
+        "damping": {
+          "type": "viscous_torque",
+          "coef": 0.02
+        }
+      },
+      "pose": {
+        "pos": [
+          -0.10192116964251932,
+          -0.10657627262764009,
+          -0.016177126855623315
+        ],
+        "rot": [
+          6.977187722702599e-17,
+          -2.3915439152186715e-17,
+          -1.695292156119217e-11,
+          1.0
+        ]
+      }
+    }
+  ],
+  "joints": [
+    {
+      "name": "rev_crank_rod",
+      "type": "revolute",
+      "body1": "connecting_rod_1",
+      "body2": "crank_1",
+      "frame": {
+        "pos": [
+          0.032401801434095975,
+          -0.14445276003601656,
+          -0.004577126834432323
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "name": "rev_rod_slider",
+      "type": "revolute",
+      "body1": "slider_block_1",
+      "body2": "connecting_rod_1",
+      "frame": {
+        "pos": [
+          -0.10192116964251932,
+          -0.10657627262780965,
+          -0.011177126855623314
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "name": "pri_slider_base",
+      "type": "prismatic",
+      "body1": "slider_block_1",
+      "body2": "slider_guide_frame_1",
+      "frame": {
+        "pos": [
+          -0.09551768296819878,
+          -0.09657627262835211,
+          -0.013677126855623315
+        ],
+        "rot": [
+          0.7071067811865475,
+          1.417149238035964e-33,
+          0.7071067811865475,
+          -0.0
+        ]
+      }
+    },
+    {
+      "name": "rev_motor_crank",
+      "type": "revolute",
+      "body1": "crank_1",
+      "body2": "motor_1",
+      "frame": {
+        "pos": [
+          0.05870360697435432,
+          -0.09491568425825778,
+          -0.004577126832752705
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ]
+      }
+    }
+  ],
+  "gearPairs": [],
+  "actuators": [],
+  "collisionFilter": {
+    "ignoreJoints": true,
+    "ignoreGearPairs": true,
+    "ignorePairs": []
+  },
+  "exportWarnings": [
+    "[meta] Fusion joint count for collision policy: 7",
+    "[meta] Fusion joints collected: total=7 (root.allJoints + root.allAsBuiltJoints)",
+    "[meta] Joint axis: rev_crank_rod  type=revolute axis=(+0.000000, +0.000000, -1.000000)",
+    "[meta] Joint frame: rev_crank_rod type=revolute body1=connecting_rod_1 body2=crank_1 pos=(+0.032402, -0.144453, -0.004577) axis=(+0.000000, +0.000000, -1.000000) rot=(+0.000000, +0.000000, +1.000000, +0.000000)",
+    "[meta] Joint axis: rev_rod_slider type=revolute axis=(+0.000000, +0.000000, -1.000000)",
+    "[meta] Joint frame: rev_rod_slider type=revolute body1=slider_block_1 body2=connecting_rod_1 pos=(-0.101921, -0.106576, -0.011177) axis=(+0.000000, +0.000000, -1.000000) rot=(+0.000000, +0.000000, +1.000000, +0.000000)",
+    "[meta] Fixed joint skipped by MVP policy: fixed_base_motor_mount (motor_mount_1 - base_frame_1)",
+    "[meta] Fixed joint skipped by MVP policy: fixed_motor_mount_motor (motor_1 - motor_mount_1)",
+    "[meta] Joint axis: pri_slider_base type=prismatic axis=(+1.000000, -0.000000, -0.000000)",
+    "[meta] Joint frame: pri_slider_base type=prismatic body1=slider_block_1 body2=slider_guide_frame_1 pos=(-0.095518, -0.096576, -0.013677) axis=(+1.000000, -0.000000, -0.000000) rot=(+0.707107, +0.000000, +0.707107, -0.000000)",
+    "[meta] Fixed joint skipped by MVP policy: fixed_base_slider_guide (slider_guide_frame_1 - base_frame_1)",
+    "[meta] Joint axis: rev_motor_crank type=revolute axis=(+0.000000, +0.000000, -1.000000)",
+    "[meta] Joint frame: rev_motor_crank type=revolute body1=crank_1 body2=motor_1 pos=(+0.058704, -0.094916, -0.004577) axis=(+0.000000, +0.000000, -1.000000) rot=(+0.000000, +0.000000, +1.000000, +0.000000)"
+  ]
+}
