@@ -123,30 +123,55 @@ def _show_qr_window(rows=None, title='CADverse QR', label=''):
     n_cols    = max(len(r) for r in rows)
     n_rows_qr = len(rows)
 
+    PADDING = 24  # 고정 픽셀 패딩 (사방 동일)
+
     root = tk.Tk()
     root.title(title)
     root.attributes('-topmost', True)
     root.configure(bg='white')
 
-    # QR 이미지 자체를 정확히 5cm로. 창 크기는 라벨/여백을 자동으로 포함해 결정된다.
-    dpi   = root.winfo_fpixels('1i')
-    qr_px = int((5.0 / 2.54) * dpi)
-    cell  = max(1, qr_px // max(n_cols, n_rows_qr))
-    qr_w  = cell * n_cols
-    qr_h  = cell * n_rows_qr
+    # 초기 창 크기 = QR 5cm + 패딩 * 2. 사용자가 resize하면 QR도 같이 커진다.
+    dpi          = root.winfo_fpixels('1i')
+    qr_init_px   = int((5.0 / 2.54) * dpi)
+    root_init_px = qr_init_px + PADDING * 2
+    root.geometry(f'{root_init_px}x{root_init_px}')
 
-    canvas = tk.Canvas(root, width=qr_w, height=qr_h, bg='white', highlightthickness=0)
-    canvas.pack()
+    canvas = tk.Canvas(root, bg='white', highlightthickness=0)
+    canvas.pack(fill=tk.BOTH, expand=True, padx=PADDING, pady=PADDING)
     if label:
-        tk.Label(root, text=label, font=('Segoe UI', 11), bg='white').pack(pady=(0, 6))
+        tk.Label(root, text=label, font=('Segoe UI', 11), bg='white').pack(pady=(0, PADDING // 2))
 
-    for y, row in enumerate(rows):
-        for x, ch in enumerate(row):
-            if ch == '1':
-                x0 = x * cell
-                y0 = y * cell
-                canvas.create_rectangle(x0, y0, x0 + cell, y0 + cell, fill='black', outline='')
+    def redraw(event=None):
+        w = canvas.winfo_width()
+        h = canvas.winfo_height()
+        if w < 2 or h < 2:
+            return
+        size  = min(w, h)
+        cell  = max(1, size // max(n_cols, n_rows_qr))
+        x_off = (w - n_cols * cell) // 2
+        y_off = (h - n_rows_qr * cell) // 2
+        canvas.delete('all')
+        for y, row in enumerate(rows):
+            for x, ch in enumerate(row):
+                if ch == '1':
+                    x0 = x_off + x * cell
+                    y0 = y_off + y * cell
+                    canvas.create_rectangle(x0, y0, x0 + cell, y0 + cell, fill='black', outline='')
 
+    canvas.bind('<Configure>', redraw)
+
+    # 창 비율 정사각형 강제 (한 변 늘리면 다른 변도 같이). 무한 루프 방지 위해 마지막 크기 캐시.
+    last_size = [root_init_px]
+    def enforce_square(event):
+        if event.widget is not root:
+            return
+        new_size = max(event.width, event.height)
+        if new_size == last_size[0]:
+            return
+        last_size[0] = new_size
+        root.geometry(f'{new_size}x{new_size}')
+
+    root.bind('<Configure>', enforce_square)
     root.bind('<Escape>', lambda _: root.destroy())
     root.mainloop()
 
