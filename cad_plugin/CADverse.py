@@ -123,23 +123,31 @@ def _show_qr_window(rows=None, title='CADverse QR', label=''):
     n_cols    = max(len(r) for r in rows)
     n_rows_qr = len(rows)
 
-    PADDING = 24  # 고정 픽셀 패딩 (사방 동일)
+    PADDING         = 24   # 사방 고정 픽셀 패딩
+    LABEL_FONT_SIZE = 18   # 라벨 폰트 (pt)
 
     root = tk.Tk()
     root.title(title)
     root.attributes('-topmost', True)
     root.configure(bg='white')
 
-    # 초기 창 크기 = QR 5cm + 패딩 * 2. 사용자가 resize하면 QR도 같이 커진다.
-    dpi          = root.winfo_fpixels('1i')
-    qr_init_px   = int((5.0 / 2.54) * dpi)
-    root_init_px = qr_init_px + PADDING * 2
-    root.geometry(f'{root_init_px}x{root_init_px}')
+    # 라벨은 QR 위. canvas보다 먼저 pack해야 위쪽에 자리잡는다.
+    if label:
+        tk.Label(root, text=label, font=('Segoe UI', LABEL_FONT_SIZE), bg='white').pack(
+            side=tk.TOP, padx=PADDING, pady=(PADDING, PADDING // 2)
+        )
 
     canvas = tk.Canvas(root, bg='white', highlightthickness=0)
-    canvas.pack(fill=tk.BOTH, expand=True, padx=PADDING, pady=PADDING)
-    if label:
-        tk.Label(root, text=label, font=('Segoe UI', 11), bg='white').pack(pady=(0, PADDING // 2))
+    canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=PADDING, pady=(0, PADDING))
+
+    # 초기 QR 10cm + 패딩 * 2. 라벨이 있으면 그만큼 세로를 더 늘린다.
+    # 클라이언트(ARScene)도 marker physicalSize를 0.10m로 잡아야 모델 스케일이 맞다.
+    dpi              = root.winfo_fpixels('1i')
+    qr_init_px       = int((10.0 / 2.54) * dpi)
+    label_h_estimate = (LABEL_FONT_SIZE * 2 + PADDING // 2) if label else 0
+    root_init_w      = qr_init_px + PADDING * 2
+    root_init_h      = qr_init_px + PADDING * 2 + label_h_estimate
+    root.geometry(f'{root_init_w}x{root_init_h}')
 
     def redraw(event=None):
         w = canvas.winfo_width()
@@ -159,19 +167,6 @@ def _show_qr_window(rows=None, title='CADverse QR', label=''):
                     canvas.create_rectangle(x0, y0, x0 + cell, y0 + cell, fill='black', outline='')
 
     canvas.bind('<Configure>', redraw)
-
-    # 창 비율 정사각형 강제 (한 변 늘리면 다른 변도 같이). 무한 루프 방지 위해 마지막 크기 캐시.
-    last_size = [root_init_px]
-    def enforce_square(event):
-        if event.widget is not root:
-            return
-        new_size = max(event.width, event.height)
-        if new_size == last_size[0]:
-            return
-        last_size[0] = new_size
-        root.geometry(f'{new_size}x{new_size}')
-
-    root.bind('<Configure>', enforce_square)
     root.bind('<Escape>', lambda _: root.destroy())
     root.mainloop()
 

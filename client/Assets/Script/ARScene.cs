@@ -53,7 +53,8 @@ namespace Cadverse
             if (lib == null)
                 throw new InvalidOperationException("이 기기는 런타임 마커 등록을 지원하지 않습니다.");
 
-            var jobState = lib.ScheduleAddImageWithValidationJob(texture, "sim_marker", 0.05f);
+            // physicalSize는 m 단위. 서버가 띄우는 QR 창 크기와 일치해야 모델 스케일이 맞다.
+            var jobState = lib.ScheduleAddImageWithValidationJob(texture, "sim_marker", 0.10f);
             while (!jobState.jobHandle.IsCompleted)
                 await Task.Yield();
             jobState.jobHandle.Complete();
