@@ -1,6 +1,10 @@
 use std::ffi::{CStr, CString};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::os::raw::c_char;
-use std::sync::Arc;
+use std::panic::{self, AssertUnwindSafe};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use p2p_core::{Connection, JoinForm, NetId, Password, PeerType};
 
@@ -9,23 +13,87 @@ pub const ERR_OK:            i32 = 0;
 pub const ERR_NAME_CONFLICT: i32 = 1;
 pub const ERR_GENERIC:       i32 = 2;
 
-// Rust 1.77+ c-string literal로 정적 lifetime의 NUL-terminated bytes.
 static MSG_NAME_CONFLICT: &CStr = c"이미 같은 이름의 사용자가 그룹에 있습니다";
 static MSG_GENERIC:       &CStr = c"네트워크 참가 실패";
 
 // ── 핸들 구조체 ──────────────────────────────────────────────────────────────
 
-/// Unity에서 P2P 네트워크 핸들로 사용하는 불투명 포인터 대상.
-/// Box::into_raw / Box::from_raw로 수명을 관리한다.
 pub struct FfiNet {
     rt: Arc<tokio::runtime::Runtime>,
     net: p2p_core::P2PNet,
 }
 
-/// QUIC 연결 핸들.
 pub struct FfiConn {
     rt: Arc<tokio::runtime::Runtime>,
     conn: Connection,
+}
+
+/// FFI 가입 결과. handle이 null이면 error_kind / error_message로 원인 확인.
+/// error_message는 Rust 정적 lifetime C 문자열이므로 호출자가 free하지 않는다.
+#[repr(C)]
+pub struct JoinResult {
+    pub handle: *mut FfiNet,
+    pub error_kind: i32,
+    pub error_message: *const c_char,
+}
+
+impl Default for JoinResult {
+    fn default() -> Self {
+        Self {
+            handle: std::ptr::null_mut(),
+            error_kind: ERR_GENERIC,
+            error_message: MSG_GENERIC.as_ptr(),
+        }
+    }
+}
+
+// ── 로깅 + panic hook ────────────────────────────────────────────────────────
+
+static LOG_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+static PANIC_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
+
+fn log_path() -> &'static Mutex<Option<PathBuf>> {
+    LOG_PATH.get_or_init(|| Mutex::new(None))
+}
+
+fn write_log(msg: &str) {
+    let path_opt = log_path().lock().ok().and_then(|g| g.clone());
+    match path_opt {
+        Some(path) => {
+            if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) {
+                let _ = f.write_all(msg.as_bytes());
+                if !msg.ends_with('\n') {
+                    let _ = f.write_all(b"\n");
+                }
+            } else {
+                eprintln!("{msg}");
+            }
+        }
+        None => eprintln!("{msg}"),
+    }
+}
+
+fn install_panic_hook_once() {
+    PANIC_HOOK_INSTALLED.get_or_init(|| {
+        panic::set_hook(Box::new(|info| {
+            let bt = std::backtrace::Backtrace::force_capture();
+            let msg = format!("[panic] {info}\nbacktrace:\n{bt}\n");
+            write_log(&msg);
+        }));
+    });
+}
+
+/// catch_unwind으로 panic을 FFI 경계 안에서 잡는다. panic 시 R::default()를 반환하고
+/// panic 메시지/backtrace는 panic hook이 로그 파일에 기록한다.
+fn ffi_call<R: Default>(f: impl FnOnce() -> R) -> R {
+    install_panic_hook_once();
+    match panic::catch_unwind(AssertUnwindSafe(f)) {
+        Ok(v) => v,
+        Err(_) => {
+            write_log("[ffi_call] panic caught at FFI boundary; returning default\n");
+            R::default()
+        }
+    }
 }
 
 // ── 내부 헬퍼 ────────────────────────────────────────────────────────────────
@@ -39,24 +107,42 @@ fn from_cstr(ptr: *const c_char) -> String {
 
 // ── FFI 함수 ─────────────────────────────────────────────────────────────────
 
-/// FFI 가입 결과. handle이 null이면 error_kind / error_message로 원인 확인.
-/// error_message는 Rust 정적 lifetime C 문자열이므로 호출자가 free하지 않는다.
-#[repr(C)]
-pub struct JoinResult {
-    pub handle: *mut FfiNet,
-    pub error_kind: i32,
-    pub error_message: *const c_char,
+/// native 로그 파일 경로를 설정한다. Unity persistentDataPath 안의 절대 경로를 권장.
+/// 빈 문자열을 넘기면 로깅이 해제되고 stderr로 떨어진다.
+#[unsafe(no_mangle)]
+pub extern "C" fn cv_set_log_path(path: *const c_char) {
+    install_panic_hook_once();
+    let s = from_cstr(path);
+    if let Ok(mut guard) = log_path().lock() {
+        *guard = if s.is_empty() { None } else { Some(PathBuf::from(s)) };
+    }
+    write_log("[cv_set_log_path] 로그 파일 활성화\n");
 }
 
 /// P2P 네트워크에 참가한다.
 ///
-/// - `udp_port == 0` → MidServer (시뮬 없는 클라이언트 앱 등)
+/// - `udp_port == 0` → MidServer
 /// - `udp_port > 0`  → ArClient { udp_port }
 ///
-/// 성공하면 JoinResult.handle에 FfiNet 포인터, 실패하면 null + error_kind/message.
+/// 결과는 out_result에 채워서 반환한다 (struct return ABI 의존 제거).
+/// 성공 시 out_result.handle != null, 실패 시 handle == null + error_kind/message.
 /// 반환된 핸들은 반드시 cv_net_free로 해제해야 한다.
 #[unsafe(no_mangle)]
 pub extern "C" fn cv_join(
+    net_id: *const c_char,
+    pw: *const c_char,
+    name: *const c_char,
+    udp_port: u16,
+    out_result: *mut JoinResult,
+) {
+    if out_result.is_null() {
+        return;
+    }
+    let result = ffi_call(|| join_inner(net_id, pw, name, udp_port));
+    unsafe { *out_result = result; }
+}
+
+fn join_inner(
     net_id: *const c_char,
     pw: *const c_char,
     name: *const c_char,
@@ -75,12 +161,8 @@ pub extern "C" fn cv_join(
     let rt = match tokio::runtime::Runtime::new() {
         Ok(r) => Arc::new(r),
         Err(e) => {
-            eprintln!("[cv_join] tokio runtime 생성 실패: {e}");
-            return JoinResult {
-                handle: std::ptr::null_mut(),
-                error_kind: ERR_GENERIC,
-                error_message: MSG_GENERIC.as_ptr(),
-            };
+            write_log(&format!("[cv_join] tokio runtime 생성 실패: {e}\n"));
+            return JoinResult::default();
         }
     };
 
@@ -97,11 +179,10 @@ pub extern "C" fn cv_join(
         },
         Err(e) => {
             let msg = e.to_string();
-            // p2p_core의 join_as_client는 NameConflict 시 "같은 이름의 사용자가 접속 중입니다" 메시지를 반환.
             let (kind, c_msg) = if msg.contains("같은 이름") {
                 (ERR_NAME_CONFLICT, MSG_NAME_CONFLICT.as_ptr())
             } else {
-                eprintln!("[cv_join] 네트워크 참가 실패: {e}");
+                write_log(&format!("[cv_join] 네트워크 참가 실패: {e}\n"));
                 (ERR_GENERIC, MSG_GENERIC.as_ptr())
             };
             JoinResult {
@@ -113,141 +194,137 @@ pub extern "C" fn cv_join(
     }
 }
 
-/// FfiNet을 해제한다.
 #[unsafe(no_mangle)]
 pub extern "C" fn cv_net_free(net: *mut FfiNet) {
-    if !net.is_null() {
-        unsafe { drop(Box::from_raw(net)); }
-    }
+    ffi_call(|| {
+        if !net.is_null() {
+            unsafe { drop(Box::from_raw(net)); }
+        }
+    })
 }
 
-/// 현재 피어 목록을 JSON 문자열로 반환한다.
-///
-/// 반환된 포인터는 반드시 cv_string_free로 해제해야 한다.
-///
-/// JSON 스키마:
-/// ```json
-/// [{ "addr": <NodeAddr>, "name": "...", "peer_type": "SimServer"|"MidServer"|{"ArClient":{"udp_port":N}} }]
-/// ```
 #[unsafe(no_mangle)]
 pub extern "C" fn cv_get_peers_json(net: *mut FfiNet) -> *mut c_char {
-    if net.is_null() {
-        return std::ptr::null_mut();
-    }
-    let net = unsafe { &*net };
-    let peers = net.net.get_peers();
-    let json = match serde_json::to_string(&peers) {
-        Ok(j) => j,
-        Err(e) => {
-            eprintln!("[cv_get_peers_json] 직렬화 실패: {e}");
+    ffi_call(|| {
+        if net.is_null() {
             return std::ptr::null_mut();
         }
-    };
-    match CString::new(json) {
-        Ok(s) => s.into_raw(),
-        Err(_) => std::ptr::null_mut(),
-    }
+        let net = unsafe { &*net };
+        let peers = net.net.get_peers();
+        let json = match serde_json::to_string(&peers) {
+            Ok(j) => j,
+            Err(e) => {
+                write_log(&format!("[cv_get_peers_json] 직렬화 실패: {e}\n"));
+                return std::ptr::null_mut();
+            }
+        };
+        match CString::new(json) {
+            Ok(s) => s.into_raw(),
+            Err(_) => std::ptr::null_mut(),
+        }
+    })
 }
 
-/// cv_get_peers_json이 반환한 문자열을 해제한다.
 #[unsafe(no_mangle)]
 pub extern "C" fn cv_string_free(s: *mut c_char) {
-    if !s.is_null() {
-        unsafe { drop(CString::from_raw(s)); }
-    }
+    ffi_call(|| {
+        if !s.is_null() {
+            unsafe { drop(CString::from_raw(s)); }
+        }
+    })
 }
 
-/// QUIC(UDP) 연결을 맺는다. addr_json은 PeerInfo.addr 필드 값 그대로 사용.
-///
-/// 블로킹 함수 — 메인 스레드에서 호출하지 말 것.
-/// 반환된 포인터는 반드시 cv_conn_free로 해제해야 한다.
 #[unsafe(no_mangle)]
 pub extern "C" fn cv_connect_udp(
     net: *mut FfiNet,
     addr_json: *const c_char,
 ) -> *mut FfiConn {
-    if net.is_null() || addr_json.is_null() {
-        return std::ptr::null_mut();
-    }
-    let net = unsafe { &*net };
-    let addr: p2p_core::NodeAddr = match serde_json::from_str(&from_cstr(addr_json)) {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("[cv_connect_udp] addr 역직렬화 실패: {e}");
+    ffi_call(|| {
+        if net.is_null() || addr_json.is_null() {
             return std::ptr::null_mut();
         }
-    };
-    match net.rt.block_on(net.net.connect_udp(addr)) {
-        Ok(conn) => Box::into_raw(Box::new(FfiConn { rt: net.rt.clone(), conn })),
-        Err(e) => {
-            eprintln!("[cv_connect_udp] 연결 실패: {e}");
-            std::ptr::null_mut()
+        let net = unsafe { &*net };
+        let addr: p2p_core::NodeAddr = match serde_json::from_str(&from_cstr(addr_json)) {
+            Ok(a) => a,
+            Err(e) => {
+                write_log(&format!("[cv_connect_udp] addr 역직렬화 실패: {e}\n"));
+                return std::ptr::null_mut();
+            }
+        };
+        match net.rt.block_on(net.net.connect_udp(addr)) {
+            Ok(conn) => Box::into_raw(Box::new(FfiConn { rt: net.rt.clone(), conn })),
+            Err(e) => {
+                write_log(&format!("[cv_connect_udp] 연결 실패: {e}\n"));
+                std::ptr::null_mut()
+            }
         }
-    }
+    })
 }
 
-/// QUIC 연결로 데이터를 전송한다.
-///
-/// 블로킹 함수. 성공 시 1, 실패 시 0 반환.
 #[unsafe(no_mangle)]
 pub extern "C" fn cv_conn_send(
     conn: *mut FfiConn,
     data: *const u8,
     len: u32,
 ) -> i32 {
-    if conn.is_null() || data.is_null() {
-        return 0;
-    }
-    let conn = unsafe { &*conn };
-    let bytes = unsafe { std::slice::from_raw_parts(data, len as usize) };
-    match conn.rt.block_on(conn.conn.send(bytes)) {
-        Ok(_) => 1,
-        Err(e) => {
-            eprintln!("[cv_conn_send] 전송 실패: {e}");
-            0
+    ffi_call(|| {
+        if conn.is_null() || data.is_null() {
+            return 0;
         }
-    }
+        let conn = unsafe { &*conn };
+        let bytes = unsafe { std::slice::from_raw_parts(data, len as usize) };
+        match conn.rt.block_on(conn.conn.send(bytes)) {
+            Ok(_) => 1,
+            Err(e) => {
+                write_log(&format!("[cv_conn_send] 전송 실패: {e}\n"));
+                0
+            }
+        }
+    })
 }
 
-/// QUIC 연결에서 데이터를 수신한다.
-///
-/// 블로킹 함수 — 데이터가 도착할 때까지 대기한다. 별도 스레드에서 호출할 것.
-/// 성공 시 수신 바이트 수, 실패 시 -1 반환.
 #[unsafe(no_mangle)]
 pub extern "C" fn cv_conn_recv(
     conn: *mut FfiConn,
     out: *mut u8,
     out_len: u32,
 ) -> i32 {
-    if conn.is_null() || out.is_null() {
-        return -1;
-    }
-    let conn = unsafe { &*conn };
-    match conn.rt.block_on(conn.conn.recv()) {
-        Ok(bytes) => {
-            let n = bytes.len().min(out_len as usize);
-            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, n); }
-            n as i32
+    // -1 = 실패. R::default()는 0이라 직접 처리.
+    install_panic_hook_once();
+    match panic::catch_unwind(AssertUnwindSafe(|| {
+        if conn.is_null() || out.is_null() {
+            return -1i32;
         }
-        Err(e) => {
-            eprintln!("[cv_conn_recv] 수신 실패: {e}");
+        let conn = unsafe { &*conn };
+        match conn.rt.block_on(conn.conn.recv()) {
+            Ok(bytes) => {
+                let n = bytes.len().min(out_len as usize);
+                unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, n); }
+                n as i32
+            }
+            Err(e) => {
+                write_log(&format!("[cv_conn_recv] 수신 실패: {e}\n"));
+                -1
+            }
+        }
+    })) {
+        Ok(v) => v,
+        Err(_) => {
+            write_log("[cv_conn_recv] panic caught at FFI boundary\n");
             -1
         }
     }
 }
 
-/// FfiConn을 해제한다.
 #[unsafe(no_mangle)]
 pub extern "C" fn cv_conn_free(conn: *mut FfiConn) {
-    if !conn.is_null() {
-        unsafe { drop(Box::from_raw(conn)); }
-    }
+    ffi_call(|| {
+        if !conn.is_null() {
+            unsafe { drop(Box::from_raw(conn)); }
+        }
+    })
 }
 
-/// QUIC uni-stream으로 파일을 요청한다. addr_json은 PeerInfo.addr 필드 값.
-///
-/// 블로킹 함수. 성공 시 수신 바이트 수, 실패 시 -1 반환.
-/// out 버퍼가 부족하면 앞부분만 복사되므로 충분히 크게 잡을 것.
 #[unsafe(no_mangle)]
 pub extern "C" fn cv_request_file(
     net: *mut FfiNet,
@@ -256,26 +333,35 @@ pub extern "C" fn cv_request_file(
     out: *mut u8,
     out_len: u32,
 ) -> i32 {
-    if net.is_null() || addr_json.is_null() || path.is_null() || out.is_null() {
-        return -1;
-    }
-    let net = unsafe { &*net };
-    let addr: p2p_core::NodeAddr = match serde_json::from_str(&from_cstr(addr_json)) {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("[cv_request_file] addr 역직렬화 실패: {e}");
-            return -1;
+    install_panic_hook_once();
+    match panic::catch_unwind(AssertUnwindSafe(|| {
+        if net.is_null() || addr_json.is_null() || path.is_null() || out.is_null() {
+            return -1i32;
         }
-    };
-    let path = from_cstr(path);
-    match net.rt.block_on(net.net.request_file(addr, &path)) {
-        Ok(bytes) => {
-            let n = bytes.len().min(out_len as usize);
-            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, n); }
-            n as i32
+        let net = unsafe { &*net };
+        let addr: p2p_core::NodeAddr = match serde_json::from_str(&from_cstr(addr_json)) {
+            Ok(a) => a,
+            Err(e) => {
+                write_log(&format!("[cv_request_file] addr 역직렬화 실패: {e}\n"));
+                return -1;
+            }
+        };
+        let path = from_cstr(path);
+        match net.rt.block_on(net.net.request_file(addr, &path)) {
+            Ok(bytes) => {
+                let n = bytes.len().min(out_len as usize);
+                unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, n); }
+                n as i32
+            }
+            Err(e) => {
+                write_log(&format!("[cv_request_file] 요청 실패 ({path}): {e}\n"));
+                -1
+            }
         }
-        Err(e) => {
-            eprintln!("[cv_request_file] 요청 실패: {e}");
+    })) {
+        Ok(v) => v,
+        Err(_) => {
+            write_log("[cv_request_file] panic caught at FFI boundary\n");
             -1
         }
     }
