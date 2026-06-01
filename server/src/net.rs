@@ -117,9 +117,11 @@ impl NetThread {
         let (userin_tx, mut userin_rx) = tokio::sync::mpsc::channel::<UserIn>(32);
 
         // AR 클라이언트 연결 수락 → 연결별 수신 태스크 스폰 → 채널로 전달
+        // 서버 username과 동일한 클라이언트의 입력만 시뮬에 forward한다.
         {
             let net = net.clone();
             let ar_clients = ar_clients.clone();
+            let my_name = setting.name.clone();
             rt.spawn(async move {
                 loop {
                     let Some(conn) = net.accept_data().await else {
@@ -128,7 +130,36 @@ impl NetThread {
                     };
                     ar_clients.lock().expect("ar_clients mutex poisoned").push(conn.clone());
                     let userin_tx = userin_tx.clone();
+                    let net = net.clone();
+                    let my_name = my_name.clone();
+                    let remote_id = conn.remote_id();
                     tokio::spawn(async move {
+                        // peer 등록은 비동기이므로 짧게 retry 하며 name lookup.
+                        let mut peer_name: Option<String> = None;
+                        for _ in 0..10 {
+                            if let Some(p) = net.get_peers().into_iter()
+                                .find(|p| p.addr.id == remote_id)
+                            {
+                                peer_name = Some(p.name);
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        }
+
+                        let Some(peer_name) = peer_name else {
+                            eprintln!("[net] AR 클라 peer 조회 실패 → 입력 무시: id={remote_id:?}");
+                            return;
+                        };
+
+                        if peer_name != my_name {
+                            eprintln!(
+                                "[net] AR 클라 username 불일치 → 입력 무시: server={my_name} client={peer_name}"
+                            );
+                            return;
+                        }
+
+                        eprintln!("[net] AR 클라 입력 수용 — username={peer_name}");
+
                         loop {
                             let Ok(data) = conn.recv().await else { break };
                             if let Ok(msg) = serde_json::from_slice(&data) {

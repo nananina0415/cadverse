@@ -4,6 +4,15 @@ use std::sync::Arc;
 
 use p2p_core::{Connection, JoinForm, NetId, Password, PeerType};
 
+// ── 에러 분류 + 정적 메시지 ─────────────────────────────────────────────────
+pub const ERR_OK:            i32 = 0;
+pub const ERR_NAME_CONFLICT: i32 = 1;
+pub const ERR_GENERIC:       i32 = 2;
+
+// Rust 1.77+ c-string literal로 정적 lifetime의 NUL-terminated bytes.
+static MSG_NAME_CONFLICT: &CStr = c"이미 같은 이름의 사용자가 그룹에 있습니다";
+static MSG_GENERIC:       &CStr = c"네트워크 참가 실패";
+
 // ── 핸들 구조체 ──────────────────────────────────────────────────────────────
 
 /// Unity에서 P2P 네트워크 핸들로 사용하는 불투명 포인터 대상.
@@ -30,20 +39,29 @@ fn from_cstr(ptr: *const c_char) -> String {
 
 // ── FFI 함수 ─────────────────────────────────────────────────────────────────
 
+/// FFI 가입 결과. handle이 null이면 error_kind / error_message로 원인 확인.
+/// error_message는 Rust 정적 lifetime C 문자열이므로 호출자가 free하지 않는다.
+#[repr(C)]
+pub struct JoinResult {
+    pub handle: *mut FfiNet,
+    pub error_kind: i32,
+    pub error_message: *const c_char,
+}
+
 /// P2P 네트워크에 참가한다.
 ///
 /// - `udp_port == 0` → MidServer (시뮬 없는 클라이언트 앱 등)
 /// - `udp_port > 0`  → ArClient { udp_port }
 ///
-/// 성공하면 FfiNet 포인터, 실패하면 null 반환.
-/// 반환된 포인터는 반드시 cv_net_free로 해제해야 한다.
+/// 성공하면 JoinResult.handle에 FfiNet 포인터, 실패하면 null + error_kind/message.
+/// 반환된 핸들은 반드시 cv_net_free로 해제해야 한다.
 #[unsafe(no_mangle)]
 pub extern "C" fn cv_join(
     net_id: *const c_char,
     pw: *const c_char,
     name: *const c_char,
     udp_port: u16,
-) -> *mut FfiNet {
+) -> JoinResult {
     let net_id = from_cstr(net_id);
     let pw = from_cstr(pw);
     let name = from_cstr(name);
@@ -58,24 +76,41 @@ pub extern "C" fn cv_join(
         Ok(r) => Arc::new(r),
         Err(e) => {
             eprintln!("[cv_join] tokio runtime 생성 실패: {e}");
-            return std::ptr::null_mut();
+            return JoinResult {
+                handle: std::ptr::null_mut(),
+                error_kind: ERR_GENERIC,
+                error_message: MSG_GENERIC.as_ptr(),
+            };
         }
     };
 
-    let net = match rt.block_on(p2p_core::join_as_client(JoinForm {
+    match rt.block_on(p2p_core::join_as_client(JoinForm {
         net_id: NetId(net_id),
         pw: Password(pw),
         my_name: name,
         peer_type,
     })) {
-        Ok(n) => n,
+        Ok(net) => JoinResult {
+            handle: Box::into_raw(Box::new(FfiNet { rt, net })),
+            error_kind: ERR_OK,
+            error_message: std::ptr::null(),
+        },
         Err(e) => {
-            eprintln!("[cv_join] 네트워크 참가 실패: {e}");
-            return std::ptr::null_mut();
+            let msg = e.to_string();
+            // p2p_core의 join_as_client는 NameConflict 시 "같은 이름의 사용자가 접속 중입니다" 메시지를 반환.
+            let (kind, c_msg) = if msg.contains("같은 이름") {
+                (ERR_NAME_CONFLICT, MSG_NAME_CONFLICT.as_ptr())
+            } else {
+                eprintln!("[cv_join] 네트워크 참가 실패: {e}");
+                (ERR_GENERIC, MSG_GENERIC.as_ptr())
+            };
+            JoinResult {
+                handle: std::ptr::null_mut(),
+                error_kind: kind,
+                error_message: c_msg,
+            }
         }
-    };
-
-    Box::into_raw(Box::new(FfiNet { rt, net }))
+    }
 }
 
 /// FfiNet을 해제한다.

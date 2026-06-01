@@ -228,7 +228,19 @@ pub async fn join_p2p_net(form: JoinForm, log: &std::sync::mpsc::Sender<String>)
             };
             send_to_coord(&conn, &ToCoord::Register(my_info)).await?;
 
-            let peers: Arc<Mutex<Vec<PeerInfo>>> = Arc::new(Mutex::new(Vec::new()));
+            // 코디네이터의 첫 응답으로 가입 가능/충돌 여부가 결정된다.
+            let first = tokio::time::timeout(Duration::from_secs(15), recv_from_coord(&conn))
+                .await
+                .map_err(|_| anyhow::anyhow!("코디네이터 응답 타임아웃 (15s)"))??;
+            let initial_peers = match first {
+                ToPeer::Ack(list) => list,
+                ToPeer::Broadcast(list) => list,
+                ToPeer::NameConflict => {
+                    return Err(anyhow::anyhow!("이미 같은 이름의 사용자가 그룹에 있습니다"));
+                }
+            };
+
+            let peers: Arc<Mutex<Vec<PeerInfo>>> = Arc::new(Mutex::new(initial_peers));
             tokio::spawn(peer_recv_loop(conn.clone(), peers.clone()));
             tokio::spawn(peer_heartbeat_loop(conn.clone()));
 
@@ -403,6 +415,14 @@ async fn publish_coordinator_id(keypair: &pkarr::Keypair, my_id: EndpointId) -> 
         .await?;
 
     Ok(())
+}
+
+/// 코디네이터로부터 ToPeer 메시지 한 번 받기. join 직후 Register 응답(Ack/NameConflict) 대기용.
+async fn recv_from_coord(conn: &iroh::endpoint::Connection) -> Result<ToPeer> {
+    let mut recv = conn.accept_uni().await?;
+    let data = recv.read_to_end(64 * 1024).await?;
+    let msg: ToPeer = serde_json::from_slice(&data)?;
+    Ok(msg)
 }
 
 async fn send_to_peer(conn: &iroh::endpoint::Connection, msg: &ToPeer) -> Result<()> {
