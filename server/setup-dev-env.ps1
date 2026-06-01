@@ -80,6 +80,7 @@ $condaEnvPath = (Join-Path $condaBase "envs\cadverse") -replace '\\', '/'
 [env]
 CONDA_PATH = "$condaExe"
 CONDA_ENV_PATH = "$condaEnvPath"
+PYO3_PYTHON = "$condaEnvPath/python.exe"
 "@ | Set-Content -Path $cargoConfig -Encoding UTF8
 
 Write-Host "Generated $cargoConfig"
