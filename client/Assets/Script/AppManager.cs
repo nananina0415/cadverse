@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using TMPro;
@@ -33,9 +34,53 @@ namespace Cadverse
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         static void Bootstrap()
         {
+            InitLogging();
             var go = new GameObject("AppManager");
             DontDestroyOnLoad(go);
             go.AddComponent<AppManager>();
+        }
+
+        // 디바이스 파일 로깅 — Unity 로그(Debug.Log/예외)는 cv_unity.log에,
+        // native(.so) 로그는 cv_native.log에 append. adb pull로 회수한다.
+        // Android 경로: /storage/emulated/0/Android/data/<bundleId>/files/
+        static StreamWriter _unityLogWriter;
+        static readonly object _unityLogLock = new();
+        static void InitLogging()
+        {
+            try
+            {
+                var dir = Application.persistentDataPath;
+                Directory.CreateDirectory(dir);
+
+                var unityLog  = Path.Combine(dir, "cv_unity.log");
+                var nativeLog = Path.Combine(dir, "cv_native.log");
+
+                _unityLogWriter = new StreamWriter(unityLog, append: true) { AutoFlush = true };
+                _unityLogWriter.WriteLine($"=== session start {System.DateTime.Now:O} ===");
+                Application.logMessageReceivedThreaded += OnUnityLog;
+
+                P2PNet.SetNativeLogPath(nativeLog);
+                Debug.Log($"[Logging] unity={unityLog} native={nativeLog}");
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogWarning($"[Logging] init 실패: {e.Message}");
+            }
+        }
+
+        static void OnUnityLog(string condition, string stackTrace, LogType type)
+        {
+            if (_unityLogWriter == null) return;
+            try
+            {
+                lock (_unityLogLock)
+                {
+                    _unityLogWriter.WriteLine($"[{type}] {condition}");
+                    if (type == LogType.Exception || type == LogType.Error)
+                        _unityLogWriter.WriteLine(stackTrace);
+                }
+            }
+            catch { }
         }
 
         void Awake()

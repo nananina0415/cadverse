@@ -48,6 +48,12 @@ namespace Cadverse
             {
                 net = await connectTask;
             }
+            catch (P2PJoinException e)
+            {
+                Debug.LogError($"[LoginManager] join 실패 kind={e.Kind}: {e.Message}");
+                _loginPanel.ShowError(e.Message);
+                return;
+            }
             catch (Exception e)
             {
                 Debug.LogError($"[LoginManager] 연결 실패: {e.Message}");

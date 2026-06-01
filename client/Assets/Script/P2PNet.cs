@@ -58,6 +58,29 @@ namespace Cadverse
 
 
     /// <summary>
+    /// cv_join 실패 시 throw되는 예외. Kind로 NameConflict 등을 구분한다.
+    /// Message에는 Rust 측 정적 한국어 문자열이 그대로 들어온다.
+    /// </summary>
+    public sealed class P2PJoinException : Exception
+    {
+        public const int KindNameConflict = 1;
+        public const int KindGeneric      = 2;
+        public int Kind { get; }
+        public P2PJoinException(int kind, string message) : base(message) { Kind = kind; }
+    }
+
+    /// <summary>
+    /// cv_join FFI 반환 struct. ErrorMessage는 Rust 정적 C string이므로 free 금지.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct JoinResult
+    {
+        public IntPtr Handle;
+        public int    ErrorKind;
+        public IntPtr ErrorMessage;
+    }
+
+    /// <summary>
     /// unity-ffi (libunity_ffi.dll / libunity_ffi.so) P/Invoke 바인딩.
     ///
     /// 피어 목록 구조 (cv_get_peers_json 반환 JSON):
@@ -82,7 +105,8 @@ namespace Cadverse
         // Unity는 플랫폼에 따라 자동으로 .dll / .so 확장자를 붙인다.
         const string Lib = "unity_ffi";
 
-        [DllImport(Lib)] static extern IntPtr cv_join(string netId, string pw, string name, ushort udpPort);
+        [DllImport(Lib)] static extern void   cv_join(string netId, string pw, string name, ushort udpPort, out JoinResult result);
+        [DllImport(Lib)] static extern void   cv_set_log_path(string path);
         [DllImport(Lib)] static extern void   cv_net_free(IntPtr net);
         [DllImport(Lib)] static extern IntPtr cv_get_peers_json(IntPtr net);
         [DllImport(Lib)] static extern void   cv_string_free(IntPtr s);
@@ -98,9 +122,31 @@ namespace Cadverse
         /// <param name="udpPort">0 이면 MidServer, 양수이면 ArClient(해당 포트)로 등록.</param>
         public P2PNet(string netId, string pw, string name, ushort udpPort = 0)
         {
-            _handle = cv_join(netId, pw, name, udpPort);
-            if (_handle == IntPtr.Zero)
-                throw new InvalidOperationException("cv_join 실패: 네트워크 참가 불가");
+            cv_join(netId, pw, name, udpPort, out var result);
+            if (result.Handle == IntPtr.Zero)
+            {
+                string msg = PtrToStringUtf8(result.ErrorMessage) ?? "네트워크 참가 실패";
+                throw new P2PJoinException(result.ErrorKind, msg);
+            }
+            _handle = result.Handle;
+        }
+
+        /// <summary>
+        /// native(.so) 측 로그 파일 경로를 설정한다. panic + 에러가 이 파일에 append된다.
+        /// 빈 문자열을 넘기면 stderr로 떨어진다. 메인 스레드에서 1회 호출.
+        /// </summary>
+        public static void SetNativeLogPath(string path) => cv_set_log_path(path ?? "");
+
+        // Rust 정적 C string(UTF-8, NUL 종료)을 C# string으로 디코드. free 하지 않음.
+        static string PtrToStringUtf8(IntPtr ptr)
+        {
+            if (ptr == IntPtr.Zero) return null;
+            int len = 0;
+            while (Marshal.ReadByte(ptr, len) != 0) len++;
+            if (len == 0) return string.Empty;
+            byte[] bytes = new byte[len];
+            Marshal.Copy(ptr, bytes, 0, len);
+            return System.Text.Encoding.UTF8.GetString(bytes);
         }
 
         /// <summary>피어 목록을 JSON 문자열로 반환한다.</summary>
