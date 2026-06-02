@@ -26,8 +26,7 @@ namespace Cadverse
         static AppManager _instance;
 
         ARTrackedImageManager              _imageManager;
-        ARScene                            _scene;
-        CancellationTokenSource            _recvCts;
+        SceneSession                       _session;
         readonly ConcurrentQueue<System.Action> _mainQueue = new();
         readonly List<RectTransform> _activeToasts = new();
 
@@ -108,26 +107,17 @@ namespace Cadverse
         async void OnQRChanged(Addr addr)
         {
             ShowToast("QR 인식됨");
-            _recvCts?.Cancel();
-            _recvCts = new CancellationTokenSource();
 
-            foreach (var s in Servers) s.Dispose();
-            Servers.Clear();
+            // 이전 세션은 끝까지 정리. 어떤 단계든 실패하면 새 인스턴스로 다시 시작.
+            ReplaceSession(null);
 
-            _scene?.Dispose();
-            _scene = null;
-            Scene  = null;
+            SceneSession next;
             try
             {
-                _scene = await ARScene.Create(addr, _imageManager);
-                Scene  = _scene;
-                ShowToast($"씬 생성 완료, {_scene.MeshCount}개 메시");
-
-                var server = await Task.Run(() => new Server(Net, addr));
-                Servers.Add(server);
-
-                var cts = _recvCts;
-                _ = Task.Run(() => ReceiveLoop(server, cts.Token));
+                next = await SceneSession.LoadAsync(
+                    addr, Net, _imageManager, _mainQueue,
+                    onReload:     ReloadSceneAsync,
+                    onStateExtra: HandleStateExtras);
             }
             catch (System.Exception e)
             {
@@ -135,49 +125,52 @@ namespace Cadverse
                 ShowToast($"씬 로드 실패: {e.Message}");
                 // 같은 QR을 다시 비추면 재시도 가능하도록 scanner의 마지막 ID 무효화
                 Scanner?.InvalidateLast();
+                return;
             }
+
+            ReplaceSession(next);
+            ShowToast($"씬 생성 완료, {next.Scene.MeshCount}개 메시");
         }
 
+        // ReloadFrame 수신 시 같은 addr로 재로드. 자원은 새 세션이 받음.
         async Task ReloadSceneAsync(Addr addr)
         {
-            _scene?.Dispose();
-            _scene = null;
-            Scene  = null;
+            SceneSession next;
             try
             {
-                _scene = await ARScene.Create(addr, _imageManager);
-                Scene  = _scene;
-                ShowToast($"모델 교체 완료, {_scene.MeshCount}개 메시");
+                next = await SceneSession.LoadAsync(
+                    addr, Net, _imageManager, _mainQueue,
+                    onReload:     ReloadSceneAsync,
+                    onStateExtra: HandleStateExtras);
             }
             catch (System.Exception e)
             {
                 Debug.LogError($"[ARScene] reload: {e.Message}");
                 ShowToast($"모델 교체 실패: {e.Message}");
                 Scanner?.InvalidateLast();
+                return;
             }
+
+            ReplaceSession(next);
+            ShowToast($"모델 교체 완료, {next.Scene.MeshCount}개 메시");
         }
 
-        void ReceiveLoop(Server server, CancellationToken ct)
+        // 단일 active session 슬롯 교체. next=null이면 비활성화.
+        void ReplaceSession(SceneSession next)
         {
-            while (!ct.IsCancellationRequested)
-            {
-                Frame f;
-                try {
-                    f = NeedsFullInfo ? server.SimFrameAndInfo() : server.SimFrame();
-                }
-                catch { break; }
+            var prev = _session;
+            _session = next;
+            Scene = next?.Scene;
 
-                if (f is ReloadFrame)
-                    _mainQueue.Enqueue(() => { _ = ReloadSceneAsync(server.Addr); });
-                else if (f is StateFrame s)
-                    _mainQueue.Enqueue(() => HandleStateFrame(s));
-            }
+            Servers.Clear();
+            if (next != null) Servers.Add(next.Server);
+
+            prev?.Dispose();
         }
 
-        void HandleStateFrame(StateFrame s)
+        // SceneSession이 ApplyState를 마친 뒤 호출. 토스트/로그/사운드 등 부수 효과 전용.
+        void HandleStateExtras(StateFrame s)
         {
-            _scene?.ApplyState(s);
-
             if (s.EventFeedback != null)
             {
                 foreach (var ev in s.EventFeedback)
@@ -257,11 +250,7 @@ namespace Cadverse
 
         void OnDestroy()
         {
-            _recvCts?.Cancel();
-            foreach (var s in Servers) s.Dispose();
-            Servers.Clear();
-            _scene?.Dispose();
-            Scene = null;
+            ReplaceSession(null);
             Net?.Dispose();
             Net = null;
         }
