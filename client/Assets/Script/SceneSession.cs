@@ -2,34 +2,40 @@ using System;
 using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
-using UnityEngine;
-using UnityEngine.XR.ARFoundation;
 
 namespace Cadverse
 {
-    // 한 QR(addr)에 대응되는 세션 단위.
-    // ARScene + Server + 백그라운드 ReceiveLoop를 자신의 자원으로 보유하고,
-    // Dispose 한 번으로 모두 정리한다.
+    // 한 QR(addr)에 대응되는 세션.
+    // Server + 백그라운드 ReceiveLoop 자원만 보유. 모델 시각화는 영구 SceneManager 안의
+    // ModelRoot가 담당한다 (ModelRoot는 빌려 쓴다 — 소유는 SceneManager).
     //
-    // - IsActive=true면 들어온 frame을 메인 큐에 enqueue (시각화/이벤트 적용)
-    // - IsActive=false(cold)면 frame을 받아내기만 하고 즉시 drop
-    //   (서버 측 send 큐가 백업되지 않도록 drain은 유지)
+    // IsActive=true  : frame을 메인 큐에 enqueue → ApplyState + onStateExtra
+    //                  ModelRoot.SetVisible(true)
+    // IsActive=false : frame을 받아내기만 하고 drop (server send 큐 백업 방지)
+    //                  ModelRoot.SetVisible(false)
     //
-    // 어떤 단계든 throw는 LoadAsync 호출자가 받는다. 호출자는 Failed로 간주하고
-    // 이 인스턴스를 그냥 Dispose만 하면 된다. 부분 회복은 시도하지 않는다.
+    // Dispose는 server/recv 정리만. ModelRoot는 SceneManager가 RemoveModel로 정리.
     public sealed class SceneSession : IDisposable
     {
-        public Addr    Addr   { get; }
-        public ARScene Scene  { get; private set; }
-        public Server  Server { get; private set; }
+        public Addr      Addr   { get; }
+        public ModelRoot Model  { get; private set; }
+        public Server    Server { get; private set; }
 
-        // 활성 세션은 frame을 메인 큐에 push. 그 외는 drain 후 drop.
-        public bool IsActive { get; set; } = true;
+        public bool IsActive
+        {
+            get => _isActive;
+            set
+            {
+                _isActive = value;
+                Model?.SetVisible(value);
+            }
+        }
+        bool _isActive;
 
-        readonly CancellationTokenSource        _cts = new();
-        readonly ConcurrentQueue<Action>        _mainQueue;
-        readonly Func<Addr, Task>               _onReload;       // ReloadFrame 수신 시 메인 스레드에서 호출
-        readonly Action<StateFrame>             _onStateExtra;   // ApplyState 직후 부수 처리 (토스트/로그 등)
+        readonly CancellationTokenSource     _cts = new();
+        readonly ConcurrentQueue<Action>     _mainQueue;
+        readonly Func<Addr, Task>            _onReload;
+        readonly Action<StateFrame>          _onStateExtra;
         Task _recvTask;
         bool _disposed;
 
@@ -45,15 +51,16 @@ namespace Cadverse
         public static async Task<SceneSession> LoadAsync(
             Addr addr,
             P2PNet net,
-            ARTrackedImageManager manager,
+            SceneManager sceneManager,
             ConcurrentQueue<Action> mainQueue,
             Func<Addr, Task> onReload,
-            Action<StateFrame> onStateExtra)
+            Action<StateFrame> onStateExtra,
+            AssetCache cache = null)
         {
             var s = new SceneSession(addr, mainQueue, onReload, onStateExtra);
             try
             {
-                s.Scene  = await ARScene.Create(addr, manager);
+                s.Model  = await sceneManager.AddModelAsync(addr, cache);
                 s.Server = await Task.Run(() => new Server(net, addr));
                 s._recvTask = Task.Run(() => s.ReceiveLoop());
                 return s;
@@ -77,7 +84,7 @@ namespace Cadverse
                 }
                 catch { break; }
 
-                if (!IsActive) continue;   // cold: drain only
+                if (!_isActive) continue;   // cold: drain only
 
                 if (f is ReloadFrame)
                 {
@@ -85,11 +92,11 @@ namespace Cadverse
                 }
                 else if (f is StateFrame state)
                 {
-                    var scene = Scene;
+                    var model = Model;
                     var extra = _onStateExtra;
                     _mainQueue.Enqueue(() =>
                     {
-                        scene?.ApplyState(state);
+                        model?.ApplyState(state);
                         extra?.Invoke(state);
                     });
                 }
@@ -103,7 +110,7 @@ namespace Cadverse
 
             try { _cts.Cancel(); } catch {}
             try { Server?.Dispose(); } catch {}
-            try { Scene?.Dispose(); }  catch {}
+            // ModelRoot는 SceneManager.RemoveModel이 정리 (호출자 책임).
         }
     }
 }

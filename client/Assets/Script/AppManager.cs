@@ -15,20 +15,22 @@ namespace Cadverse
     {
         public static P2PNet        Net     { get; private set; }
         public static QRScanner     Scanner { get; private set; }
-        public static List<Server>  Servers { get; } = new();
-        public static ARScene       Scene   { get; private set; }   // 현재 활성 씬 — UI/SimulationManager에서 IndexOf 호출에 사용
+        public static List<Server>  Servers { get; } = new();   // ActiveServer만 노출 (호환용)
+        public static ModelRoot     Scene   { get; private set; }   // 활성 ModelRoot — UI/SimulationManager의 IndexOf 호출에 사용
 
-        // UI 측이 정보 표시 모드에 진입/이탈할 때 토글한다.
-        // true면 ReceiveLoop이 server.SimFrameAndInfo()로 telemetry까지 받는다.
-        // 백그라운드 스레드와 메인 스레드가 모두 접근하므로 volatile.
         public static volatile bool NeedsFullInfo = false;
+
+        const int MAX_SESSIONS = 2;   // active 1 + cold 최대 1 (= 최근 2개)
 
         static AppManager _instance;
 
-        ARTrackedImageManager              _imageManager;
-        SceneSession                       _session;
+        ARTrackedImageManager   _imageManager;
+        SceneManager            _sceneManager;
+        AssetCache              _assetCache;
+        readonly LinkedList<SceneSession>       _sessions  = new();   // head=oldest, tail=most recently active
+        SceneSession                            _active;
         readonly ConcurrentQueue<System.Action> _mainQueue = new();
-        readonly List<RectTransform> _activeToasts = new();
+        readonly List<RectTransform>            _activeToasts = new();
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         static void Bootstrap()
@@ -94,6 +96,14 @@ namespace Cadverse
         {
             Net = net;
             _imageManager = FindAnyObjectByType<ARTrackedImageManager>();
+            if (_imageManager != null)
+                _sceneManager = new SceneManager(_imageManager);
+
+            // AssetCache — 디스크는 시작 시 비우고(clean start) 새로 시작
+            var cacheDir = Path.Combine(Application.persistentDataPath, "qr_cache");
+            AssetCache.Cleanup(cacheDir);
+            _assetCache = new AssetCache(net, cacheDir);
+
             var cameraManager = FindAnyObjectByType<ARCameraManager>();
             if (cameraManager != null)
                 Scanner = QRScanner.Create(cameraManager, OnQRChanged);
@@ -108,40 +118,52 @@ namespace Cadverse
         {
             ShowToast("QR 인식됨");
 
-            // 이전 세션은 끝까지 정리. 어떤 단계든 실패하면 새 인스턴스로 다시 시작.
-            ReplaceSession(null);
+            // 이미 set에 있으면 active 토글만 — 즉시 전환 (다운로드/디코드 없음)
+            var existing = FindSession(addr.Id);
+            if (existing != null)
+            {
+                SetActive(existing);
+                ShowToast("이전 세션 복귀");
+                return;
+            }
 
             SceneSession next;
             try
             {
                 next = await SceneSession.LoadAsync(
-                    addr, Net, _imageManager, _mainQueue,
+                    addr, Net, _sceneManager, _mainQueue,
                     onReload:     ReloadSceneAsync,
-                    onStateExtra: HandleStateExtras);
+                    onStateExtra: HandleStateExtras,
+                    cache:        _assetCache);
             }
             catch (System.Exception e)
             {
                 Debug.LogError($"[ARScene] {e.Message}");
                 ShowToast($"씬 로드 실패: {e.Message}");
-                // 같은 QR을 다시 비추면 재시도 가능하도록 scanner의 마지막 ID 무효화
                 Scanner?.InvalidateLast();
                 return;
             }
 
-            ReplaceSession(next);
-            ShowToast($"씬 생성 완료, {next.Scene.MeshCount}개 메시");
+            AddSession(next);
+            SetActive(next);
+            ShowToast($"씬 생성 완료, {next.Model.MeshCount}개 메시");
         }
 
-        // ReloadFrame 수신 시 같은 addr로 재로드. 자원은 새 세션이 받음.
         async Task ReloadSceneAsync(Addr addr)
         {
+            // ReloadFrame 수신 시 같은 addr의 모델/세션을 새로 만든다.
+            // 기존 세션이 있으면 일단 drop (model + server + recv 모두 정리) → 새로 LoadAsync.
+            var existing = FindSession(addr.Id);
+            if (existing != null) DropSession(existing);
+
             SceneSession next;
             try
             {
                 next = await SceneSession.LoadAsync(
-                    addr, Net, _imageManager, _mainQueue,
+                    addr, Net, _sceneManager, _mainQueue,
                     onReload:     ReloadSceneAsync,
-                    onStateExtra: HandleStateExtras);
+                    onStateExtra: HandleStateExtras,
+                    cache:        _assetCache);
             }
             catch (System.Exception e)
             {
@@ -151,21 +173,59 @@ namespace Cadverse
                 return;
             }
 
-            ReplaceSession(next);
-            ShowToast($"모델 교체 완료, {next.Scene.MeshCount}개 메시");
+            AddSession(next);
+            SetActive(next);
+            ShowToast($"모델 교체 완료, {next.Model.MeshCount}개 메시");
         }
 
-        // 단일 active session 슬롯 교체. next=null이면 비활성화.
-        void ReplaceSession(SceneSession next)
+        // ── SessionSet (LRU N=MAX_SESSIONS) ────────────────────────────
+        SceneSession FindSession(string addrId)
         {
-            var prev = _session;
-            _session = next;
-            Scene = next?.Scene;
+            foreach (var s in _sessions) if (s.Addr.Id == addrId) return s;
+            return null;
+        }
 
+        // 새 세션을 set에 추가. 가득 차면 active가 아닌 가장 오래된 cold를 evict.
+        void AddSession(SceneSession s)
+        {
+            while (_sessions.Count >= MAX_SESSIONS)
+            {
+                SceneSession victim = null;
+                for (var node = _sessions.First; node != null; node = node.Next)
+                {
+                    if (node.Value != _active) { victim = node.Value; break; }
+                }
+                if (victim == null) break;  // 안전장치 — 활성 외에 evict할 게 없음
+                DropSession(victim);
+            }
+            _sessions.AddLast(s);
+        }
+
+        void DropSession(SceneSession s)
+        {
+            _sessions.Remove(s);
+            _sceneManager.RemoveModel(s.Addr.Id);
+            s.Dispose();
+        }
+
+        // active 슬롯 교체. cold는 IsActive=false로, active만 IsActive=true.
+        // Servers / Scene 외부 API도 동시에 갱신.
+        void SetActive(SceneSession s)
+        {
+            _active = s;
+            foreach (var sess in _sessions)
+                sess.IsActive = (sess == s);
+
+            Scene = s?.Model;
             Servers.Clear();
-            if (next != null) Servers.Add(next.Server);
+            if (s != null) Servers.Add(s.Server);
 
-            prev?.Dispose();
+            // LRU promote — list의 tail로
+            if (s != null && _sessions.Contains(s))
+            {
+                _sessions.Remove(s);
+                _sessions.AddLast(s);
+            }
         }
 
         // SceneSession이 ApplyState를 마친 뒤 호출. 토스트/로그/사운드 등 부수 효과 전용.
@@ -248,9 +308,26 @@ namespace Cadverse
             Destroy(go);
         }
 
+        void OnApplicationQuit()
+        {
+            // 디스크 캐시 비우기 (다음 실행 시 clean start와 함께 작동)
+            try
+            {
+                var cacheDir = Path.Combine(Application.persistentDataPath, "qr_cache");
+                AssetCache.Cleanup(cacheDir);
+            }
+            catch (System.Exception e) { Debug.LogWarning($"[AssetCache] quit cleanup: {e.Message}"); }
+        }
+
         void OnDestroy()
         {
-            ReplaceSession(null);
+            // 모든 세션 정리
+            foreach (var s in _sessions) { _sceneManager?.RemoveModel(s.Addr.Id); s.Dispose(); }
+            _sessions.Clear();
+            _active = null;
+            Scene = null;
+            Servers.Clear();
+
             Net?.Dispose();
             Net = null;
         }
