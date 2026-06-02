@@ -133,6 +133,8 @@ namespace Cadverse
             {
                 Debug.LogError($"[ARScene] {e.Message}");
                 ShowToast($"씬 로드 실패: {e.Message}");
+                // 같은 QR을 다시 비추면 재시도 가능하도록 scanner의 마지막 ID 무효화
+                Scanner?.InvalidateLast();
             }
         }
 
@@ -151,6 +153,7 @@ namespace Cadverse
             {
                 Debug.LogError($"[ARScene] reload: {e.Message}");
                 ShowToast($"모델 교체 실패: {e.Message}");
+                Scanner?.InvalidateLast();
             }
         }
 

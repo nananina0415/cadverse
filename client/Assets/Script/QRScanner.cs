@@ -73,23 +73,45 @@ namespace Cadverse
             return Addr.TryParse(result.Text);
         }
 
+        // 직전 콜백을 보낸 addr.Id를 잊는다. 씬 로드/연결 실패 등으로 회복이 필요할 때
+        // 호출하면 같은 QR을 다시 비춰도 콜백이 한 번 더 발사된다.
+        public void InvalidateLast() => _lastId = null;
+
         IEnumerator ScanLoop()
         {
             var wait = new WaitForSeconds(0.3f);
             while (true)
             {
-                var frame = AcquireFrame();
-                if (frame.HasValue)
+                // 1) frame acquire + task 띄우기 (yield 없이 한 번에)
+                Task<Addr> task = null;
+                try
                 {
-                    var (buf, w, h) = frame.Value;
-                    var task = Task.Run(() => Decode(buf, w, h));
+                    var frame = AcquireFrame();
+                    if (frame.HasValue)
+                    {
+                        var (buf, w, h) = frame.Value;
+                        task = Task.Run(() => Decode(buf, w, h));
+                    }
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"[QR Frame] {e.Message}");
+                }
+
+                // 2) 디코딩 완료 대기 (yield는 try 밖)
+                if (task != null)
+                {
                     yield return new WaitUntil(() => task.IsCompleted);
 
-                    var addr = task.Result;
+                    Addr addr = null;
+                    try { addr = task.Result; }
+                    catch (Exception e) { Debug.LogWarning($"[QR Decode] {e.Message}"); }
+
                     if (addr != null && addr.Id != _lastId)
                     {
                         _lastId = addr.Id;
-                        _onChanged?.Invoke(addr);
+                        try { _onChanged?.Invoke(addr); }
+                        catch (Exception e) { Debug.LogError($"[QR onChanged] {e.Message}\n{e.StackTrace}"); }
                     }
                 }
 
