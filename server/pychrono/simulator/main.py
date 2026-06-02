@@ -1916,7 +1916,15 @@ class _ARInteractionController:
             if fmag > self.SPRING_F_MAX:
                 F = _mul(_normalize(F), self.SPRING_F_MAX)
 
-            _apply_force_at_point_world(body, F, p_grab)
+            # axial vector 변환 규칙 누락 보정 (commit 04328c3 동일 사유):
+            # 클라(Unity, LH)는 polar swap만으로 점을 전달 → 시뮬 RH cross로 만들어지는
+            # auto torque(r × F)의 axial 부호가 사용자 LH 직관과 반대. _apply_rotate에서
+            # 이미 같은 보정을 적용했고, spring 모드에서도 동일하게 처리한다.
+            # force(병진)는 그대로 CG에 적용, torque만 부호 반전.
+            r = _sub(p_grab, body.GetPos())
+            tau = _cross(r, F)
+            _apply_force_world(body, F)
+            _apply_torque_world(body, _mul(tau, -1.0))
             return
 
         v = _get_linvel_world(body)

@@ -144,7 +144,9 @@ public class SimulationManager : MonoBehaviour
             return;
         }
 
-        bool ok = server.SendTouchStart(partIdx, hit.point, ray.origin, ray.direction);
+        // finger를 action(hit.point)과 동일하게 보내 첫 프레임 spring 길이 0으로 시작.
+        // 이전엔 ray.origin(= 카메라 위치)을 finger로 보내 항상 폰 쪽으로 끌리는 힘이 가해졌음.
+        bool ok = server.SendTouchStart(partIdx, hit.point, hit.point, ray.direction);
 #if UNITY_EDITOR
         Debug.Log($"[Drag] SendTouchStart ok={ok} partIdx={partIdx}");
 #endif
@@ -162,8 +164,10 @@ public class SimulationManager : MonoBehaviour
         if (cam == null) return;
 
         Ray ray = cam.ScreenPointToRay(screenPos);
-        ActiveServer()?.SendTouching(ray.origin, ray.direction);
-        _arrow?.UpdateTip(ray);
+        // DragArrow가 계산한 tip(= 모델점 지나는 평면 ⊥ cam.forward와 ray의 교차점)을
+        // 시뮬 finger로 그대로 송신. 시각화와 시뮬 force가 항상 일치.
+        Vector3 tip = _arrow != null ? _arrow.UpdateTip(ray) : ray.origin;
+        ActiveServer()?.SendTouching(tip, ray.direction);
     }
 
     void DragEnded()

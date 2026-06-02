@@ -4,12 +4,13 @@ namespace Cadverse
 {
     // Drag 모드 터치 중 화면에 표시되는 화살표.
     // 시작점은 터치 시작 시 raycast hit.point에 고정되고,
-    // 끝점은 시작점이 위치한 평면(카메라 forward에 수직)과 현재 ray의 교차점.
+    // 끝점은 시작점을 지나고 현재 카메라 forward에 수직인 평면과 ray의 교차점.
+    // 평면이 매 프레임 폰 화면에 평행하게 갱신된다.
     //
     // 사용 흐름:
     //   var arrow = DragArrow.Create();
     //   arrow.Show(hitPoint);                  // 터치 시작
-    //   arrow.UpdateTip(currentRay);           // 터치 이동
+    //   Vector3 tip = arrow.UpdateTip(currentRay); // 터치 이동, tip을 시뮬 finger로도 사용
     //   arrow.Hide();                          // 터치 종료
     //   arrow.DestroyArrow();                  // 정리
     public class DragArrow : MonoBehaviour
@@ -21,7 +22,6 @@ namespace Cadverse
         LineRenderer _shaft;
         LineRenderer _head;
         Vector3      _start;
-        Vector3      _planeNormal;   // 시작점이 놓인 평면의 법선 (= 카메라 forward at Show time)
 
         public static DragArrow Create()
         {
@@ -51,9 +51,6 @@ namespace Cadverse
         public void Show(Vector3 start)
         {
             _start = start;
-            // 시작 시점의 카메라 forward를 평면 법선으로 고정 — 이후 카메라가 움직여도 평면 안 따라감
-            var cam = Camera.main;
-            _planeNormal = cam != null ? cam.transform.forward : Vector3.forward;
             _shaft.SetPosition(0, _start);
             _shaft.SetPosition(1, _start);
             _head.SetPosition(0, _start);
@@ -61,14 +58,19 @@ namespace Cadverse
             gameObject.SetActive(true);
         }
 
-        public void UpdateTip(Ray currentRay)
+        // 시각화의 끝점(tip)을 반환 — SimulationManager가 이걸 그대로 시뮬 finger로 전송해
+        // 화면에 보이는 화살표와 시뮬에 적용되는 force vector를 일치시킨다.
+        // 평면 평행/뒤쪽 케이스에서는 _start를 반환해 spring 길이 0으로 안전 fallback.
+        public Vector3 UpdateTip(Ray currentRay)
         {
-            // 시작점 평면(law: n·(p - start) = 0)과 ray의 교차
-            float denom = Vector3.Dot(_planeNormal, currentRay.direction);
-            if (Mathf.Abs(denom) < 1e-6f) return;   // ray가 평면과 평행
+            var cam = Camera.main;
+            Vector3 n = cam != null ? cam.transform.forward : Vector3.forward;
 
-            float t = Vector3.Dot(_planeNormal, _start - currentRay.origin) / denom;
-            if (t < 0f) return;                     // ray 뒤쪽이면 무시
+            float denom = Vector3.Dot(n, currentRay.direction);
+            if (Mathf.Abs(denom) < 1e-6f) return _start;
+
+            float t = Vector3.Dot(n, _start - currentRay.origin) / denom;
+            if (t < 0f) return _start;
 
             Vector3 tip = currentRay.origin + currentRay.direction * t;
             Vector3 dir = tip - _start;
@@ -78,18 +80,16 @@ namespace Cadverse
                 _shaft.SetPosition(1, _start);
                 _head.SetPosition(0, _start);
                 _head.SetPosition(1, _start);
-                return;
+                return tip;
             }
 
-            // shaft는 start → (tip - 화살촉 길이)까지
             float shaftLen = Mathf.Max(0f, len - HeadLength);
             Vector3 shaftEnd = _start + dir.normalized * shaftLen;
             _shaft.SetPosition(0, _start);
             _shaft.SetPosition(1, shaftEnd);
-
-            // head는 shaftEnd → tip (두꺼운 라인으로 표현)
             _head.SetPosition(0, shaftEnd);
             _head.SetPosition(1, tip);
+            return tip;
         }
 
         public void Hide() => gameObject.SetActive(false);
