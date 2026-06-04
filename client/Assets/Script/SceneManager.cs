@@ -70,14 +70,13 @@ namespace Cadverse
             root.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
             root.SetActive(false);
 
-            var mat = Resources.Load<Material>("Materials/SimMesh");
-            if (mat == null)
+            var baseMat = Resources.Load<Material>("Materials/SimMesh");
+            if (baseMat == null)
             {
                 UnityEngine.Object.Destroy(root);
                 UnityEngine.Object.Destroy(texture);
                 throw new InvalidOperationException("Materials/SimMesh 에셋을 찾을 수 없습니다.");
             }
-            mat = new Material(mat);
 
             var partIndex = new Dictionary<string, int>();
             int simIdx = 0;
@@ -89,9 +88,16 @@ namespace Cadverse
                 byte[] objData = await RequestWithTimeout(() => Fetch($"/meshes/{name}.obj"));
                 var mesh = ObjParser.Parse(objData);
 
+                // 파트별 구분색 — golden ratio로 hue 분포(인접 idx도 충분히 다름),
+                // saturation/value를 낮춰 탁한 파스텔 톤(쨍하지 않음).
+                var partMat = new Material(baseMat);
+                var color   = PartColor(simIdx);
+                partMat.color = color;
+                if (partMat.HasProperty("_BaseColor")) partMat.SetColor("_BaseColor", color);
+
                 var go = new GameObject(name);
                 go.AddComponent<MeshFilter>().mesh         = mesh;
-                go.AddComponent<MeshRenderer>().material   = mat;
+                go.AddComponent<MeshRenderer>().material   = partMat;
                 go.AddComponent<MeshCollider>().sharedMesh = mesh;
                 go.transform.SetParent(root.transform, false);
 
@@ -129,6 +135,17 @@ namespace Cadverse
             foreach (var kvp in e.removed)
                 if (_models.TryGetValue(kvp.Value.referenceImage.name, out var m))
                     m.OnImageRemoved();
+        }
+
+        // 파트 인덱스 → 구분색. golden ratio로 hue를 분포해 인접 idx도 색차가 큰 톤을 만든다.
+        // saturation/value를 낮춰 탁한 파스텔(쨍하지 않음).
+        static Color PartColor(int idx)
+        {
+            const float GOLDEN = 0.61803398875f;
+            const float SAT    = 0.45f;
+            const float VAL    = 0.85f;
+            float h = (idx * GOLDEN + 0.13f) % 1f;   // +0.13: 첫 색이 단조로운 빨강에서 시작하지 않도록 살짝 시프트
+            return Color.HSVToRGB(h, SAT, VAL);
         }
 
         static async Task<byte[]> RequestWithTimeout(Func<byte[]> fn, int timeoutMs = 10_000)

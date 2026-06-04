@@ -56,8 +56,17 @@ try {
         Copy-Item "cad_plugin\$f" -Destination "$zipTmp\plugin\$f" -Force
     }
 
-    Compress-Archive -Force -Path "$zipTmp\server", "$zipTmp\plugin" `
-        -DestinationPath "$stage\CADverse-$v-server.zip"
+    # Compress-Archive는 python_env.tar.gz 같은 큰 파일에서 극단적으로 느려 hang처럼 보임.
+    # tar.gz는 이미 압축 상태라 추가 압축 효과도 거의 없으므로 .NET ZipFile을 store mode로 사용.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zipOut = "$stage\CADverse-$v-server.zip"
+    if (Test-Path $zipOut) { Remove-Item $zipOut -Force }
+    [System.IO.Compression.ZipFile]::CreateFromDirectory(
+        $zipTmp,
+        $zipOut,
+        [System.IO.Compression.CompressionLevel]::NoCompression,
+        $false   # includeBaseDirectory=false → zip 루트에 server/, plugin/ 직접
+    )
     Remove-Item $zipTmp -Recurse -Force
     Write-Host "패키징 완료"
 
