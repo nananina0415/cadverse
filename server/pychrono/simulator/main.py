@@ -1307,9 +1307,16 @@ class _TouchContext:
     universal_reverse_count: int = 0
     universal_hold_steps: int = 0
 
+    # prismatic 단독 조인트용:
+    # TouchStart 기준 상대 이동량으로 슬라이더를 구동한다.
+    prismatic_start_finger_world: Optional[chrono.ChVector3d] = None
+    prismatic_start_body_pos_world: Optional[chrono.ChVector3d] = None
+    prismatic_start_q: float = 0.0
+
 class _ARInteractionController:
     MODE_ROTATE = "rotate"
     MODE_SPRING = "spring"
+    MODE_PRISMATIC = "prismatic"
     MODE_CYLINDRICAL = "cylindrical"
     MODE_UNIVERSAL = "universal"
 
@@ -1421,6 +1428,25 @@ class _ARInteractionController:
 
         if len(revs) == 1:
             return revs[0]
+        return None
+
+    def _find_single_prismatic_joint_meta(self, sim: "Simulator", target_body_name: str):
+        pris = []
+        try:
+            for j in sim.joints.values():
+                jm = j.meta
+                if getattr(jm, "type", None) != "prismatic":
+                    continue
+
+                b1 = getattr(jm, "body1", None)
+                b2 = getattr(jm, "body2", None)
+                if b1 == target_body_name or b2 == target_body_name:
+                    pris.append(jm)
+        except Exception:
+            return None
+
+        if len(pris) == 1:
+            return pris[0]
         return None
 
     def _joint_axis_world_from_meta(self, jm: Any) -> chrono.ChVector3d:
@@ -2202,6 +2228,15 @@ class _ARInteractionController:
         except Exception:
             return self.MODE_SPRING
 
+        # 단순 병진 바디
+        if (len(revolute_joints) == 0) and (len(other_joints) == 1):
+            jm = other_joints[0]
+            if getattr(jm, "type", None) == "prismatic":
+                axis = self._joint_axis_world_from_meta(jm)
+                if _norm(axis) > 1e-6:
+                    return self.MODE_PRISMATIC
+            return self.MODE_SPRING
+
         # 단순 회전 바디
         if (len(revolute_joints) == 1) and (len(other_joints) == 0):
             axis = sim._infer_revolute_axis_world_for_body(target_body_name)
@@ -2297,6 +2332,8 @@ class _ARInteractionController:
 
         if self._mode == self.MODE_ROTATE:
             self._apply_rotate(sim=sim, body=target_body, body_name=target_name, dt=dt, dragging_now=dragging_now)
+        elif self._mode == self.MODE_PRISMATIC:
+            self._apply_prismatic(sim=sim, body=target_body, body_name=target_name, dt=dt, dragging_now=dragging_now)
         else:
             self._apply_spring(sim=sim, body=target_body, body_name=target_name, dt=dt, dragging_now=dragging_now)
 
@@ -2652,6 +2689,123 @@ class _ARInteractionController:
         tau_damp = _mul(axis_world_n, -m.copysign(tau_mag, w_along))
         _apply_torque_world(body, tau_damp)
         return
+
+    def _apply_prismatic(self, *, sim: "Simulator", body: chrono.ChBody, body_name: str, dt: float, dragging_now: bool) -> None:
+        """
+        단일 prismatic 조인트 전용 AR 입력.
+        - 손가락 입력을 조인트 축 방향으로만 투영한다.
+        - Y/Z 방향 힘과 터치 지점 토크를 만들지 않는다.
+        - 따라서 slider_block이 레일 밖으로 튀거나 회전하는 것을 줄인다.
+        """
+        jm = self._find_single_prismatic_joint_meta(sim, body_name)
+        if jm is None:
+            self._apply_spring(sim=sim, body=body, body_name=body_name, dt=dt, dragging_now=dragging_now)
+            return
+
+        axis_world = self._joint_axis_world_from_meta(jm)
+        if _norm(axis_world) < 1e-9:
+            self._apply_spring(sim=sim, body=body, body_name=body_name, dt=dt, dragging_now=dragging_now)
+            return
+
+        axis_n = _normalize(axis_world)
+
+        if dragging_now:
+            p_des = self.ctx.last_finger_world
+            if p_des is None:
+                return
+
+            # TouchStart 기준값을 한 번만 저장한다.
+            # 절대 손가락 위치가 아니라, 시작점 대비 손가락이 축 방향으로 얼마나 움직였는지만 사용한다.
+            # joint frame 기준점과 limit을 사용한다.
+            pivot_world = self._joint_pivot_world_from_meta(jm)
+
+            lower = -0.025
+            upper = 0.025
+            try:
+                lim = getattr(jm, "limits", None)
+                if lim is not None and bool(getattr(lim, "enable", False)):
+                    lower = float(getattr(lim, "lower", lower))
+                    upper = float(getattr(lim, "upper", upper))
+            except Exception:
+                pass
+
+            # limit 끝에 딱 붙으면 다시 움직이기 어려울 수 있어서 아주 조금 안쪽만 사용
+            margin = 0.002
+            lower_safe = lower + margin
+            upper_safe = upper - margin
+            if lower_safe > upper_safe:
+                lower_safe = lower
+                upper_safe = upper
+
+            # TouchStart 기준값을 한 번만 저장한다.
+            if self.ctx.prismatic_start_finger_world is None:
+                self.ctx.prismatic_start_finger_world = p_des
+                self.ctx.prismatic_start_body_pos_world = body.GetPos()
+
+                # 현재 body 위치가 joint 축 기준으로 몇 m 위치인지 저장한다.
+                body_from_pivot = _sub(body.GetPos(), pivot_world)
+                self.ctx.prismatic_start_q = float(_dot(body_from_pivot, axis_n))
+
+            start_finger = self.ctx.prismatic_start_finger_world
+            start_body_pos = self.ctx.prismatic_start_body_pos_world
+            start_q = float(self.ctx.prismatic_start_q)
+
+            if start_finger is None or start_body_pos is None:
+                return
+
+            # 손가락 이동량을 prismatic 축 방향으로만 투영한다.
+            finger_delta_world = _sub(p_des, start_finger)
+            delta_along = float(_dot(finger_delta_world, axis_n))
+
+            # 절대 joint coordinate 기준으로 target을 잡는다.
+            # 이제 현재 body 위치가 새 limit 중심이 되지 않는다.
+            target_q = _clamp(start_q + delta_along, lower_safe, upper_safe)
+
+            # body의 기존 off-axis 위치는 유지하고, 축 방향으로만 이동 목표를 만든다.
+            move_along = target_q - start_q
+            target_pos = _add(start_body_pos, _mul(axis_n, move_along))
+
+            p_body = body.GetPos()
+            err_world = _sub(target_pos, p_body)
+            x_along = float(_dot(err_world, axis_n))
+
+            v_body = _get_linvel_world(body)
+            v_along = float(_dot(v_body, axis_n))
+
+            # 가벼운 slider_block용 약한 PD
+            k = 0.45
+            c = 0.35
+            fmax = 0.006
+
+            f_scalar = k * x_along - c * v_along
+            f_scalar = _clamp(f_scalar, -fmax, +fmax)
+
+            F = _mul(axis_n, f_scalar)
+
+            # 반드시 COM에 힘만 적용한다.
+            # 터치 지점 토크를 만들지 않는다.
+            _apply_force_world(body, F)
+
+            # 병진 조인트 바디는 회전하면 안 되므로 각속도는 감쇠/제거한다.
+            w = _get_angvel_world(body)
+            _apply_torque_world(body, _mul(w, -8.0))
+            return
+
+        # TouchEnd 이후에는 다음 TouchStart에서 새 기준을 잡도록 초기화
+        self.ctx.prismatic_start_finger_world = None
+        self.ctx.prismatic_start_body_pos_world = None
+        self.ctx.prismatic_start_q = 0.0
+
+        # TouchEnd 이후: 축 방향 속도만 부드럽게 감쇠하고, 회전은 강하게 감쇠
+        v = _get_linvel_world(body)
+        v_along = float(_dot(v, axis_n))
+        v_axis = _mul(axis_n, v_along)
+
+        f_damp = _clamp(-0.25 * v_along, -0.008, 0.008)
+        _apply_force_world(body, _mul(axis_n, f_damp))
+
+        w = _get_angvel_world(body)
+        _apply_torque_world(body, _mul(w, -0.02))
 
     def _apply_spring(self, *, sim: "Simulator", body: chrono.ChBody, body_name: str, dt: float, dragging_now: bool) -> None:
         ap_local = self.ctx.action_point_local
