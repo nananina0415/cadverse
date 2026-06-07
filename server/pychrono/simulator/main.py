@@ -2567,53 +2567,67 @@ class _ARInteractionController:
             w_along_now = float(_dot(w_before, axis_world_n))
             abs_w = abs(w_along_now)
 
-            # TouchStart 기준으로 현재 손가락이 어느 방향으로 충분히 벗어났는지 보고
-            # 회전 방향을 결정한다.
+            # TouchStart 기준 벡터와 현재 벡터를 joint axis에 수직인 평면으로 투영한 뒤,
+            # axis 기준 signed angle 방향을 계산한다.
             #
-            # 기존 방식은 prev -> current의 순간 회전 방향을 계속 추정했기 때문에,
-            # 입력 이벤트가 촘촘하게 들어오면 손가락 떨림만으로도 방향이 반대로 튈 수 있었다.
-            # 여기서는 TouchStart 기준점 하나를 고정해서 훨씬 둔감하게 만든다.
+            # 기존 tangent 방식:
+            #   tangent = cross(axis, r_start)
+            #   signed_move = dot(move_from_start, tangent)
+            #
+            # 새 방식:
+            #   r0 = start - pivot
+            #   r1 = current - pivot
+            #   r0/r1을 axis 수직 평면에 투영
+            #   signed = dot(axis, cross(r0_proj, r1_proj))
+            #
+            # 이렇게 하면 회전축이 X/Y/Z/-Y/-Z 어느 방향이어도 같은 원리로 동작한다.
             f_start = self.ctx.start_finger_world
 
             if f_start is not None:
-                r_start = _sub(f_start, center_world)
-                move_from_start = _sub(f_curr, f_start)
+                r0 = _sub(f_start, center_world)
+                r1 = _sub(f_curr, center_world)
 
-                if _norm(r_start) > 1e-6:
-                    # 시작 터치점에서 회전축 기준 접선 방향을 만든다.
-                    # 이 방향으로 이동하면 +회전, 반대 방향이면 -회전으로 본다.
-                    tangent_world = _cross(axis_world_n, _normalize(r_start))
-                    tangent_world = _normalize(tangent_world)
+                # axis 방향 성분 제거: 회전축에 수직인 평면으로 투영
+                r0_proj = _sub(r0, _mul(axis_world_n, _dot(r0, axis_world_n)))
+                r1_proj = _sub(r1, _mul(axis_world_n, _dot(r1, axis_world_n)))
 
-                    if _norm(tangent_world) > 1e-6:
-                        signed_move = float(_dot(move_from_start, tangent_world))
+                n0 = _norm(r0_proj)
+                n1 = _norm(r1_proj)
 
-                        # TouchStart 근처에서는 방향 갱신을 하지 않는다.
-                        # 이 deadzone 덕분에 손가락 떨림/이벤트 폭주에 덜 민감해진다.
-                        if abs(signed_move) > float(self.ROT_HOLD_START_DEADZONE):
-                            # Unity 좌표계/기존 보정 방향과 반대로 느껴지면 여기 sign 앞에 -를 붙이면 된다.
-                            sign = -1.0 if signed_move >= 0.0 else 1.0
+                if n0 > 1e-6 and n1 > 1e-6:
+                    r0_n = _mul(r0_proj, 1.0 / n0)
+                    r1_n = _mul(r1_proj, 1.0 / n1)
 
-                            candidate_w = sign * float(self.ROT_HOLD_CMD_SPEED)
-                            current_w = float(self.ctx.rotate_hold_w_cmd)
+                    # signed angle의 sin 성분.
+                    # +면 axis_world_n 기준 양의 회전, -면 음의 회전.
+                    signed_turn = float(_dot(axis_world_n, _cross(r0_n, r1_n)))
 
-                            # 아직 방향이 없으면 바로 채택
-                            if abs(current_w) < 1e-6:
+                    # 너무 작은 회전은 손떨림/AR 노이즈로 보고 무시
+                    if abs(signed_turn) > float(self.ROT_HOLD_START_DEADZONE):
+                        # 체감 방향이 반대면 여기 한 줄만 뒤집으면 된다.
+                        # 기본은 수학적 right-hand rule 기준.
+                        sign = 1.0 if signed_turn >= 0.0 else -1.0
+
+                        candidate_w = sign * float(self.ROT_HOLD_CMD_SPEED)
+                        current_w = float(self.ctx.rotate_hold_w_cmd)
+
+                        # 아직 방향이 없으면 바로 채택
+                        if abs(current_w) < 1e-6:
+                            self.ctx.rotate_hold_w_cmd = candidate_w
+                            self.ctx.rotate_hold_reverse_count = 0
+
+                        # 같은 방향이면 바로 유지/갱신
+                        elif current_w * candidate_w > 0.0:
+                            self.ctx.rotate_hold_w_cmd = candidate_w
+                            self.ctx.rotate_hold_reverse_count = 0
+
+                        # 반대 방향이면 바로 뒤집지 않고, 여러 번 연속 확인 후 반전
+                        else:
+                            self.ctx.rotate_hold_reverse_count += 1
+
+                            if self.ctx.rotate_hold_reverse_count >= int(self.ROT_HOLD_REVERSE_CONFIRM_STEPS):
                                 self.ctx.rotate_hold_w_cmd = candidate_w
                                 self.ctx.rotate_hold_reverse_count = 0
-
-                            # 같은 방향이면 바로 유지/갱신
-                            elif current_w * candidate_w > 0.0:
-                                self.ctx.rotate_hold_w_cmd = candidate_w
-                                self.ctx.rotate_hold_reverse_count = 0
-
-                            # 반대 방향이면 바로 뒤집지 않고, 여러 번 연속 확인 후 반전
-                            else:
-                                self.ctx.rotate_hold_reverse_count += 1
-
-                                if self.ctx.rotate_hold_reverse_count >= int(self.ROT_HOLD_REVERSE_CONFIRM_STEPS):
-                                    self.ctx.rotate_hold_w_cmd = candidate_w
-                                    self.ctx.rotate_hold_reverse_count = 0
 
             # 아직 한 번도 유효한 회전 방향을 받지 못했으면 입력 토크를 주지 않는다.
             w_hold = float(self.ctx.rotate_hold_w_cmd)
