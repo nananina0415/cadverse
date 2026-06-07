@@ -227,7 +227,29 @@ fn main() {
 
                 state.importing = false;
                 match result {
-                    Ok(path) => eprintln!("[import] 완료: {}", path.display()),
+                    Ok(path) => {
+                        eprintln!("[import] 완료: {}", path.display());
+
+                        // 가져온 모델로 시뮬 교체 — 기존 시뮬 정지 + 새 path로 재시작.
+                        // 이후 사용자가 자기 Fusion 모델을 저장하면 documentSaved → reload로
+                        // 자기 모델로 자연스럽게 돌아온다.
+                        if let Some(mgr) = state.sim_manager.as_ref() {
+                            mgr.stop();
+                            mgr.reloading.store(true, Ordering::Relaxed);
+                            push_status(&state, &mut last_status, &status_tx);
+
+                            match mgr.start(&path) {
+                                Ok(()) => {
+                                    eprintln!("[import] 시뮬 교체 완료");
+                                    if let Some(net) = state.net.as_ref() {
+                                        let _ = net.notice_sim_online(path.clone());
+                                    }
+                                }
+                                Err(e) => eprintln!("[import] 시뮬 교체 실패: {e}"),
+                            }
+                            mgr.reloading.store(false, Ordering::Relaxed);
+                        }
+                    }
                     Err(e)   => {
                         eprintln!("[import] 실패: {e}");
                         state.import_error = Some(e.to_string());
