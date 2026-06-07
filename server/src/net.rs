@@ -62,14 +62,16 @@ fn is_safe_relative_path(path: &str) -> bool {
 }
 
 fn sanitize_folder_name(name: &str) -> String {
+    // 사용자명에 한글/일본어/중국어 등 unicode 문자가 들어와도 폴더명으로 보존한다.
+    // 차단 대상은 OS 파일시스템에서 위험한 문자(Windows 예약 + 제어문자)만.
     let s: String = name
         .chars()
         .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
-            }
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c }
+            else if c.is_control() { '_' }
+            else if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') { '_' }
+            else if c.is_alphabetic() || c.is_numeric() { c }   // 한글 등 통과
+            else { '_' }
         })
         .collect();
 
