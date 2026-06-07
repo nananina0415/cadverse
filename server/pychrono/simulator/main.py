@@ -1397,7 +1397,7 @@ class _ARInteractionController:
     UNIVERSAL_HOLD_STEPS = 6
 
     # 출력/입력 체감 방향이 반대면 -1.0, 맞으면 +1.0
-    UNIVERSAL_DIRECTION_SIGN = -1.0
+    UNIVERSAL_DIRECTION_SIGN = +1.0
 
     # ---- Free damping in spring mode (force/torque-based) ----
     # spring mode에서도 손을 뗀 뒤 떠다니거나 계속 도는 것을 줄인다.
@@ -2592,7 +2592,7 @@ class _ARInteractionController:
                         # 이 deadzone 덕분에 손가락 떨림/이벤트 폭주에 덜 민감해진다.
                         if abs(signed_move) > float(self.ROT_HOLD_START_DEADZONE):
                             # Unity 좌표계/기존 보정 방향과 반대로 느껴지면 여기 sign 앞에 -를 붙이면 된다.
-                            sign = 1.0 if signed_move >= 0.0 else -1.0
+                            sign = -1.0 if signed_move >= 0.0 else 1.0
 
                             candidate_w = sign * float(self.ROT_HOLD_CMD_SPEED)
                             current_w = float(self.ctx.rotate_hold_w_cmd)
