@@ -1086,6 +1086,27 @@ def _coerce_user_input_any(user_input_any: Any) -> Optional[UserInput]:
     print("[WARN] Unsupported userInput type:", type(user_input_any))
     return None
 
+def _force_disable_all_collision(scene: Any) -> None:
+    """
+    테스트/교육용 조인트 동작 확인을 위해 모든 body의 collision을 강제로 끈다.
+    exporter가 collision='auto'를 넣어도 여기서 None 처리한다.
+    """
+    try:
+        for bm in list(getattr(scene, "bodies", []) or []):
+            geom = getattr(bm, "geometry", None)
+            if geom is None:
+                continue
+
+            try:
+                setattr(geom, "collision", None)
+            except Exception:
+                try:
+                    object.__setattr__(geom, "collision", None)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
 # ============================================================
 # Metadata validation diagnostics
 # ============================================================
@@ -1235,13 +1256,69 @@ class _TouchContext:
     # post-step sanitize가 현재 측정치를 따라가지 않고, 이 값을 단조감쇠시킨다.
     rotate_free_w_cmd: float = 0.0
 
+    # Touching 중 손가락 움직임이 멈춰도 계속 줄 회전 목표 각속도
+    # 0이면 아직 유지 회전 명령이 없는 상태다.
+    rotate_hold_w_cmd: float = 0.0
+
+    # 반대 방향 입력이 순간적으로 튀는 것을 막기 위한 확인 카운터
+    rotate_hold_reverse_count: int = 0
+
     # 폐루프 기구에서 실제 torque를 줄 body
     # 예: target=coupler_link여도 drive_body=input_link로 바꿔서 구동
     drive_body_name: Optional[str] = None
 
+    # TouchEnd 이후 free-phase damping을 계속 걸 실제 회전 구동 body
+    # 손을 떼면 drive_body_name이 비워질 수 있으므로, 마지막 drive body를 따로 보관한다.
+    release_drive_body_name: Optional[str] = None
+
+    # cylindrical 조합용:
+    # target shaft는 revolute로 회전하고,
+    # 중간 dummy/slider body는 prismatic 축으로 병진한다.
+    cylindrical_rotate_body_name: Optional[str] = None
+    cylindrical_slide_body_name: Optional[str] = None
+    cylindrical_axis_world: Optional[chrono.ChVector3d] = None
+    cylindrical_pivot_world: Optional[chrono.ChVector3d] = None
+
+    # cylindrical 병진 목표 위치 제어용
+    cylindrical_start_finger_world: Optional[chrono.ChVector3d] = None
+    cylindrical_start_slide_pos_world: Optional[chrono.ChVector3d] = None
+    cylindrical_last_finger_world: Optional[chrono.ChVector3d] = None
+    cylindrical_target_offset: float = 0.0
+
+    # cylindrical 병진 입력 방향 안정화용
+    cylindrical_last_step_sign: int = 0
+    cylindrical_reverse_count: int = 0
+
+    # cylindrical 병진을 일정 속도 느낌으로 제어하기 위한 명령 방향
+    cylindrical_command_sign: int = 0
+
+    # universal 조합용:
+    # target fork -- revolute -- common body -- revolute -- other fork
+    universal_body_name: Optional[str] = None
+    universal_common_body_name: Optional[str] = None
+    universal_other_body_name: Optional[str] = None
+    universal_axis_world: Optional[chrono.ChVector3d] = None
+    universal_pivot_world: Optional[chrono.ChVector3d] = None
+
+    # universal 등속 회전 입력 안정화용
+    universal_last_finger_world: Optional[chrono.ChVector3d] = None
+    universal_command_sign: int = 0
+    universal_last_step_sign: int = 0
+    universal_reverse_count: int = 0
+    universal_hold_steps: int = 0
+
+    # prismatic 단독 조인트용:
+    # TouchStart 기준 상대 이동량으로 슬라이더를 구동한다.
+    prismatic_start_finger_world: Optional[chrono.ChVector3d] = None
+    prismatic_start_body_pos_world: Optional[chrono.ChVector3d] = None
+    prismatic_start_q: float = 0.0
+
 class _ARInteractionController:
     MODE_ROTATE = "rotate"
     MODE_SPRING = "spring"
+    MODE_PRISMATIC = "prismatic"
+    MODE_CYLINDRICAL = "cylindrical"
+    MODE_UNIVERSAL = "universal"
 
     # ---- Rotate drag (inertia-aware) ----
     DRAG_ALPHA_MAX = 35.0          # 최대 각가속도
@@ -1256,20 +1333,35 @@ class _ARInteractionController:
     ROT_DRAG_SPEED_KP_ALPHA = 10.0
     ROT_DRAG_SPEED_TAU_MAX_ALPHA = 6.0
 
+    # Touching 중 한 번 방향을 주면 손을 떼기 전까지 유지할 목표 각속도
+    # 교육용 데모에서는 천천히 관찰 가능하도록 낮게 둔다.
+    ROT_HOLD_CMD_SPEED = 0.28
+
+    # TouchStart 기준점에서 이 거리 이상 움직였을 때만 회전 방향을 갱신한다.
+    # 단위는 시뮬레이션 world 단위다. 모델 크기에 따라 0.003~0.015 사이로 조절.
+    ROT_HOLD_START_DEADZONE = 0.008
+
+    # 방향 반전 안전장치:
+    # 사용자 입력 이벤트가 매우 촘촘히 들어오므로,
+    # 반대 방향 입력이 여러 번 연속 확인되어야 실제 회전 방향을 바꾼다.
+    ROT_HOLD_REVERSE_CONFIRM_STEPS = 10
+
+    # 축과 잘 맞지 않는 입력은 방향 갱신에서 제외한다.
+    # 값을 높일수록 손가락 떨림/비스듬한 입력에 덜 민감해진다.
+    ROT_HOLD_ALIGN_MIN = 0.40
+
     # drag 중 damping (alpha 기반)
-    ROT_DRAG_CW_ALPHA = 0.25
+    ROT_DRAG_CW_ALPHA = 0.12
 
     # ---- Rotate damping (inertia-aware torque-based) ----
-    # 기존 tau = Cw * w  대신
-    # tau = Cw_alpha * Ieff * w  형태로 써서
-    # 관성이 달라도 비슷한 각감속(alpha)이 나오게 만든다.
-    ROT_DAMP_CW_ALPHA = 0.90          # [1/s]
-    VEL_EPS_SNAP_ROT = 0.03
-    ROT_DAMP_TAU_MAX_ALPHA = 1.80     # [rad/s^2] * Ieff 로 환산
+    # 교육용 데모에서는 손을 뗀 뒤 관성이 오래 남지 않도록 감쇠한다.
+    ROT_DAMP_CW_ALPHA = 3.20          # [1/s]
+    VEL_EPS_SNAP_ROT = 0.12
+    ROT_DAMP_TAU_MAX_ALPHA = 10.00    # [rad/s^2] * Ieff 로 환산
     ROT_DAMP_NOFLIP_SAFETY = 0.95
 
     # TouchEnd 직후 free phase 제어 파라미터
-    ROT_RELEASE_HOLD_STEPS = 3
+    ROT_RELEASE_HOLD_STEPS = 0
     ROT_FREE_LOW_SPEED_REF = 0.8
 
     # ---- Spring ----
@@ -1277,9 +1369,40 @@ class _ARInteractionController:
     SPRING_C = 8.0
     SPRING_F_MAX = 200.0
 
+    # ---- Cylindrical ----
+    # 회전은 기존 _apply_rotate를 재사용하고,
+    # 병진은 prismatic 축 방향 힘으로 보조한다.
+    CYL_SLIDE_K = 1.2
+    CYL_SLIDE_C = 36.0
+    CYL_SLIDE_F_MAX = 0.06
+
+    # 교육용 일정 속도 병진 명령
+    CYL_SLIDE_CMD_SPEED = 0.0035
+
+    # TouchStart 기준으로 이 거리 이상 축방향 이동했을 때만 병진 방향을 갱신한다.
+    # 값이 클수록 손 떨림/AR ray 튐에 둔감해진다.
+    CYL_SLIDE_START_DEADZONE = 0.004
+
+    # 병진 방향 반전 안전장치:
+    # 반대 방향 입력이 여러 번 연속 확인되어야 실제 명령 방향을 바꾼다.
+    CYL_SLIDE_REVERSE_CONFIRM_STEPS = 10
+
+    # 실제 prismatic limit까지 밀지 않고, 교육용으로 안전한 내부 범위만 사용
+    CYL_SLIDE_SOFT_LIMIT = 0.014
+    CYL_SLIDE_END_EPS = 0.002
+
+    # ---- Universal ----
+    # 교육용: 입력축을 너무 무겁지 않게 부드럽게 회전시킨다.
+    UNIVERSAL_CMD_ANG_SPEED = 0.55
+    UNIVERSAL_HOLD_STEPS = 6
+
+    # 출력/입력 체감 방향이 반대면 -1.0, 맞으면 +1.0
+    UNIVERSAL_DIRECTION_SIGN = -1.0
+
     # ---- Free damping in spring mode (force/torque-based) ----
-    FREE_DAMP_CV = 1.0
-    FREE_DAMP_CW = 1.0
+    # spring mode에서도 손을 뗀 뒤 떠다니거나 계속 도는 것을 줄인다.
+    FREE_DAMP_CV = 6.0
+    FREE_DAMP_CW = 8.0
 
     def __init__(self) -> None:
         self.ctx = _TouchContext()
@@ -1305,6 +1428,296 @@ class _ARInteractionController:
 
         if len(revs) == 1:
             return revs[0]
+        return None
+
+    def _find_single_prismatic_joint_meta(self, sim: "Simulator", target_body_name: str):
+        pris = []
+        try:
+            for j in sim.joints.values():
+                jm = j.meta
+                if getattr(jm, "type", None) != "prismatic":
+                    continue
+
+                b1 = getattr(jm, "body1", None)
+                b2 = getattr(jm, "body2", None)
+                if b1 == target_body_name or b2 == target_body_name:
+                    pris.append(jm)
+        except Exception:
+            return None
+
+        if len(pris) == 1:
+            return pris[0]
+        return None
+
+    def _joint_axis_world_from_meta(self, jm: Any) -> chrono.ChVector3d:
+        """
+        joint meta.frame.rot 기준으로 Chrono lock joint의 local Z축을 world 축으로 변환한다.
+        exporter 로그에서 axis가 frame rot으로부터 계산되므로 여기서도 같은 기준을 쓴다.
+        """
+        try:
+            fr = getattr(jm, "frame", None)
+            if fr is None:
+                return chrono.ChVector3d(0.0, 0.0, 0.0)
+
+            rot = getattr(fr, "rot", None)
+            if rot is None:
+                return chrono.ChVector3d(0.0, 0.0, 0.0)
+
+            q = chrono.ChQuaterniond(
+                float(getattr(rot, "w", 1.0)),
+                float(getattr(rot, "x", 0.0)),
+                float(getattr(rot, "y", 0.0)),
+                float(getattr(rot, "z", 0.0)),
+            )
+
+            return _normalize(_quat_rotate(q, chrono.ChVector3d(0.0, 0.0, 1.0)))
+        except Exception:
+            return chrono.ChVector3d(0.0, 0.0, 0.0)
+
+    def _joint_pivot_world_from_meta(self, jm: Any) -> chrono.ChVector3d:
+        try:
+            fr = getattr(jm, "frame", None)
+            pos = getattr(fr, "pos", None) if fr is not None else None
+            if pos is not None:
+                return chrono.ChVector3d(float(pos.x), float(pos.y), float(pos.z))
+        except Exception:
+            pass
+        return chrono.ChVector3d(0.0, 0.0, 0.0)
+
+    def _find_cylindrical_combo(self, sim: "Simulator", target_body_name: str) -> Optional[dict]:
+        """
+        실린더리컬 조합 탐색:
+        target body -- revolute -- middle body -- prismatic -- base/fixed
+
+        예:
+        moving_shaft_1 -- rev_dummy_shaft -- dummy_slider_1 -- pri_base_dummy -- base_guide_1
+        """
+        if not target_body_name:
+            return None
+
+        try:
+            joints = [j.meta for j in sim.joints.values()]
+        except Exception:
+            return None
+
+        # 1) target에 직접 붙은 revolute 찾기
+        for rev in joints:
+            try:
+                if getattr(rev, "type", None) != "revolute":
+                    continue
+
+                rb1 = str(getattr(rev, "body1", ""))
+                rb2 = str(getattr(rev, "body2", ""))
+
+                if rb1 != target_body_name and rb2 != target_body_name:
+                    continue
+
+                middle_body_name = rb2 if rb1 == target_body_name else rb1
+                if not middle_body_name:
+                    continue
+
+                # 2) middle body에 붙은 prismatic 찾기
+                for pri in joints:
+                    if getattr(pri, "type", None) != "prismatic":
+                        continue
+
+                    pb1 = str(getattr(pri, "body1", ""))
+                    pb2 = str(getattr(pri, "body2", ""))
+
+                    if pb1 != middle_body_name and pb2 != middle_body_name:
+                        continue
+
+                    axis_rev = self._joint_axis_world_from_meta(rev)
+                    axis_pri = self._joint_axis_world_from_meta(pri)
+
+                    if _norm(axis_rev) < 1e-6 or _norm(axis_pri) < 1e-6:
+                        continue
+
+                    # 실린더리컬은 회전축과 병진축이 거의 평행해야 한다.
+                    parallel = abs(_dot(_normalize(axis_rev), _normalize(axis_pri)))
+                    if parallel < 0.85:
+                        continue
+
+                    # 축 방향은 prismatic 축 기준으로 사용한다.
+                    axis_world = _normalize(axis_pri)
+                    pivot_world = self._joint_pivot_world_from_meta(rev)
+
+                    return {
+                        "rotate_body_name": target_body_name,
+                        "slide_body_name": middle_body_name,
+                        "revolute_joint": rev,
+                        "prismatic_joint": pri,
+                        "axis_world": axis_world,
+                        "pivot_world": pivot_world,
+                    }
+            except Exception:
+                continue
+
+        return None
+
+    def _find_universal_combo(self, sim: "Simulator", target_body_name: str) -> Optional[dict]:
+        """
+        유니버셜 조합 탐색.
+
+        현재 CAD 구조:
+        fixed_input_support -- rev_input_support -- input_fork
+        input_fork -- rev_input_cross -- cross_block
+        cross_block -- rev_cross_output -- output_fork
+        output_fork -- rev_output_support -- fixed_output_support
+
+        핵심:
+        - AR로 target fork를 잡았을 때, drive 축은 cross 쪽 조인트가 아니라
+          fixed support와 연결된 revolute 축이어야 한다.
+        - 예: target=input_fork_1 이면 rev_input_support 축으로 돌려야 함.
+        """
+        if not target_body_name:
+            return None
+
+        try:
+            joints = [j.meta for j in sim.joints.values()]
+        except Exception:
+            return None
+
+        def _body_name_pair(jm: Any) -> tuple[str, str]:
+            return (
+                str(getattr(jm, "body1", "") or ""),
+                str(getattr(jm, "body2", "") or ""),
+            )
+
+        def _other_body(jm: Any, body_name: str) -> Optional[str]:
+            b1, b2 = _body_name_pair(jm)
+            if b1 == body_name:
+                return b2
+            if b2 == body_name:
+                return b1
+            return None
+
+        def _is_fixed_name(name: str) -> bool:
+            if not name:
+                return False
+
+            # 1) Chrono body 기준
+            try:
+                if name in sim.bodies:
+                    body = sim.bodies[name].body
+                    if _is_fixed_body(body):
+                        return True
+            except Exception:
+                pass
+
+            # 2) metadata 기준
+            try:
+                for bm in getattr(sim.info.scene, "bodies", []) or []:
+                    if str(getattr(bm, "name", "") or "") != name:
+                        continue
+                    mech = getattr(bm, "mechanical", None)
+                    if mech is not None and bool(getattr(mech, "fixed", False)):
+                        return True
+            except Exception:
+                pass
+
+            # 3) 이름 fallback
+            lname = name.lower()
+            if "fixed" in lname or "support" in lname or lname in ("ground", "base", "world"):
+                return True
+
+            return False
+
+        # target에 직접 붙은 revolute를 support 쪽 / cross 쪽으로 나눈다.
+        target_revs = []
+        for jm in joints:
+            try:
+                if getattr(jm, "type", None) != "revolute":
+                    continue
+
+                other = _other_body(jm, target_body_name)
+                if other is None:
+                    continue
+
+                target_revs.append((jm, other))
+            except Exception:
+                continue
+
+        if not target_revs:
+            return None
+
+        support_revs = []
+        inner_revs = []
+
+        for jm, other in target_revs:
+            if _is_fixed_name(other):
+                support_revs.append((jm, other))
+            else:
+                inner_revs.append((jm, other))
+
+        # 새 유니버셜 구조에서는 target fork에
+        # 1) fixed support로 가는 revolute
+        # 2) cross_block으로 가는 revolute
+        # 둘 다 있어야 한다.
+        for drive_rev, support_body_name in support_revs:
+            for inner_a, common_body_name in inner_revs:
+                try:
+                    if not common_body_name or _is_fixed_name(common_body_name):
+                        continue
+
+                    # common_body(cross_block)에 붙은, target이 아닌 다른 revolute를 찾는다.
+                    for inner_b in joints:
+                        if inner_b is inner_a or inner_b is drive_rev:
+                            continue
+
+                        if getattr(inner_b, "type", None) != "revolute":
+                            continue
+
+                        other_body_name = _other_body(inner_b, common_body_name)
+                        if other_body_name is None:
+                            continue
+
+                        if other_body_name == target_body_name:
+                            continue
+
+                        if _is_fixed_name(other_body_name):
+                            continue
+
+                        # inner_a와 inner_b가 유니버셜 내부의 직교축인지 확인
+                        axis_a = self._joint_axis_world_from_meta(inner_a)
+                        axis_b = self._joint_axis_world_from_meta(inner_b)
+                        drive_axis = self._joint_axis_world_from_meta(drive_rev)
+
+                        if _norm(axis_a) < 1e-6 or _norm(axis_b) < 1e-6 or _norm(drive_axis) < 1e-6:
+                            continue
+
+                        axis_a_n = _normalize(axis_a)
+                        axis_b_n = _normalize(axis_b)
+                        drive_axis_n = _normalize(drive_axis)
+
+                        # 완전 직교면 dot=0. CAD 오차를 고려해서 넉넉히 허용.
+                        perpendicular = abs(_dot(axis_a_n, axis_b_n))
+                        if perpendicular > 0.45:
+                            continue
+
+                        drive_pivot_world = self._joint_pivot_world_from_meta(drive_rev)
+
+                        return {
+                            "body_name": target_body_name,
+                            "common_body_name": common_body_name,
+                            "other_body_name": other_body_name,
+
+                            # 중요:
+                            # 실제 AR 구동축은 support revolute다.
+                            "drive_joint": drive_rev,
+                            "inner_joint_a": inner_a,
+                            "inner_joint_b": inner_b,
+                            "support_body_name": support_body_name,
+
+                            "axis_world": drive_axis_n,
+                            "pivot_world": drive_pivot_world,
+
+                            "inner_axis_world": axis_a_n,
+                            "other_axis_world": axis_b_n,
+                        }
+                except Exception:
+                    continue
+
         return None
 
     def _find_drive_revolute_joint_meta(self, sim: "Simulator", target_body_name: str):
@@ -1571,12 +1984,116 @@ class _ARInteractionController:
             self._prev_rotate_finger_world = chrono.ChVector3d(fp.x, fp.y, fp.z)
             self.ctx.rotate_release_step_count = 0
             self.ctx.rotate_free_w_cmd = 0.0
+            self.ctx.rotate_hold_w_cmd = 0.0
+            self.ctx.rotate_hold_reverse_count = 0
 
             self._mode = self._auto_select_mode(sim, target_name)
 
-            # rotate mode 기준은 TouchStart 시점에 고정
+            # mode별 기준은 TouchStart 시점에 고정
             self.ctx.rotate_axis_world = None
             self.ctx.rotate_pivot_world = None
+            self.ctx.cylindrical_rotate_body_name = None
+            self.ctx.cylindrical_slide_body_name = None
+            self.ctx.cylindrical_axis_world = None
+            self.ctx.cylindrical_pivot_world = None
+            self.ctx.universal_body_name = None
+            self.ctx.universal_common_body_name = None
+            self.ctx.universal_other_body_name = None
+            self.ctx.universal_axis_world = None
+            self.ctx.universal_pivot_world = None
+
+            if self._mode == self.MODE_CYLINDRICAL and target_name:
+                combo = self._find_cylindrical_combo(sim, target_name)
+                if combo is not None:
+                    self.ctx.cylindrical_rotate_body_name = combo["rotate_body_name"]
+                    self.ctx.cylindrical_slide_body_name = combo["slide_body_name"]
+                    self.ctx.cylindrical_axis_world = combo["axis_world"]
+                    self.ctx.cylindrical_pivot_world = combo["pivot_world"]
+
+                    self.ctx.cylindrical_start_finger_world = chrono.ChVector3d(fp.x, fp.y, fp.z)
+                    self.ctx.cylindrical_last_finger_world = chrono.ChVector3d(fp.x, fp.y, fp.z)
+                    self.ctx.cylindrical_target_offset = 0.0
+                    self.ctx.cylindrical_last_step_sign = 0
+                    self.ctx.cylindrical_reverse_count = 0
+                    self.ctx.cylindrical_command_sign = 0
+
+                    try:
+                        slide_body = sim.bodies[combo["slide_body_name"]].body
+
+                        # TouchStart 시점에 이전 입력에서 남은 병진/회전 속도를 제거
+                        _set_linvel_world_best_effort(slide_body, chrono.ChVector3d(0.0, 0.0, 0.0))
+                        _set_angvel_world_best_effort(slide_body, chrono.ChVector3d(0.0, 0.0, 0.0))
+
+                        sp = slide_body.GetPos()
+                        self.ctx.cylindrical_start_slide_pos_world = chrono.ChVector3d(sp.x, sp.y, sp.z)
+                    except Exception:
+                        self.ctx.cylindrical_start_slide_pos_world = None
+
+                    self.ctx.drive_body_name = combo["rotate_body_name"]
+                    self.ctx.rotate_axis_world = combo["axis_world"]
+                    self.ctx.rotate_pivot_world = combo["pivot_world"]
+
+                    ax = combo["axis_world"]
+                    pv = combo["pivot_world"]
+                    print(
+                        f"[AR DEBUG] target={target_name} mode=cylindrical "
+                        f"rotate_body={combo['rotate_body_name']} "
+                        f"slide_body={combo['slide_body_name']} "
+                        f"axis=({ax.x:+.3f},{ax.y:+.3f},{ax.z:+.3f}) "
+                        f"pivot=({pv.x:+.3f},{pv.y:+.3f},{pv.z:+.3f})"
+                    )
+                else:
+                    self._mode = self.MODE_SPRING
+
+            if self._mode == self.MODE_UNIVERSAL and target_name:
+                combo = self._find_universal_combo(sim, target_name)
+                if combo is not None:
+                    self.ctx.universal_body_name = combo["body_name"]
+                    self.ctx.universal_common_body_name = combo["common_body_name"]
+                    self.ctx.universal_other_body_name = combo["other_body_name"]
+                    self.ctx.universal_axis_world = combo["axis_world"]
+                    self.ctx.universal_pivot_world = combo["pivot_world"]
+
+                    self.ctx.universal_last_finger_world = chrono.ChVector3d(fp.x, fp.y, fp.z)
+                    self.ctx.universal_command_sign = 0
+                    self.ctx.universal_last_step_sign = 0
+                    self.ctx.universal_reverse_count = 0
+                    self.ctx.universal_hold_steps = 0
+
+                    try:
+                        drive_body = sim.bodies[combo["body_name"]].body
+                        _set_angvel_world_best_effort(drive_body, chrono.ChVector3d(0.0, 0.0, 0.0))
+                        _set_linvel_world_best_effort(drive_body, chrono.ChVector3d(0.0, 0.0, 0.0))
+                    except Exception:
+                        pass
+
+                    self.ctx.drive_body_name = combo["body_name"]
+                    self.ctx.rotate_axis_world = combo["axis_world"]
+                    self.ctx.rotate_pivot_world = combo["pivot_world"]
+
+                    ax = combo["axis_world"]
+                    pv = combo["pivot_world"]
+                    drive_joint_name = ""
+                    try:
+                        drive_joint_name = str(getattr(combo.get("drive_joint", None), "name", "") or "")
+                    except Exception:
+                        drive_joint_name = ""
+
+                    print(
+                        f"[AR DEBUG] target={target_name} mode=universal "
+                        f"body={combo['body_name']} "
+                        f"common={combo['common_body_name']} "
+                        f"other={combo['other_body_name']} "
+                        f"driveJoint={drive_joint_name} "
+                        f"axis=({ax.x:+.3f},{ax.y:+.3f},{ax.z:+.3f}) "
+                        f"pivot=({pv.x:+.3f},{pv.y:+.3f},{pv.z:+.3f})"
+                    )
+                else:
+                    self._mode = self.MODE_ROTATE
+
+            # 새 조작이 시작되면 이전 TouchEnd damping 대상은 더 이상 쓰지 않는다.
+            self.ctx.release_drive_body_name = None
+
             if self._mode == self.MODE_ROTATE and target_name:
                 try:
                     drive_body_name = self._resolve_drive_body_name(sim, target_name)
@@ -1626,10 +2143,47 @@ class _ARInteractionController:
         if isinstance(user_input, TouchEndEvent):
             self.ctx.active = False
             self.ctx.start_finger_world = None
+
+            # TouchEnd 이후에도 회전 감쇠가 실제 구동 body에 걸리도록
+            # 마지막 drive body를 release 전용 필드에 저장한다.
+            #
+            # 예:
+            # target=coupler_link 이지만 실제 torque는 input_link에 들어간 경우,
+            # 손을 뗀 뒤에도 input_link에 damping torque가 걸려야 한다.
+            self.ctx.release_drive_body_name = (
+                self.ctx.drive_body_name
+                or self._last_dynamic_target
+                or self.ctx.target_name
+            )
+
+            # 여기서 선속도/각속도를 0으로 강제 설정하면
+            # 자연 감쇠가 아니라 순간 정지가 되어버린다.
+            # 따라서 회전 쪽은 velocity overwrite를 하지 않고,
+            # 이후 _apply_rotate()의 free-phase damping torque에 맡긴다.
             self.ctx.drive_body_name = None
+
+            # TouchEnd 이후에도 free-phase damping이 적용되어야 하므로,
+            # cylindrical/universal의 body/axis/pivot 정보는 지우지 않는다.
+            # 다음 TouchStart에서 어차피 새 mode 기준으로 다시 초기화된다.
+
+            self.ctx.cylindrical_start_finger_world = None
+            self.ctx.cylindrical_last_finger_world = None
+            self.ctx.cylindrical_target_offset = 0.0
+            self.ctx.cylindrical_last_step_sign = 0
+            self.ctx.cylindrical_reverse_count = 0
+            self.ctx.cylindrical_command_sign = 0
+
+            self.ctx.universal_last_finger_world = None
+            self.ctx.universal_command_sign = 0
+            self.ctx.universal_last_step_sign = 0
+            self.ctx.universal_reverse_count = 0
+            self.ctx.universal_hold_steps = 0
+
             self._prev_finger_world = None
             self._prev_rotate_finger_world = None
             self.ctx.rotate_release_step_count = 0
+            self.ctx.rotate_hold_w_cmd = 0.0
+            self.ctx.rotate_hold_reverse_count = 0
 
             # ✅ TouchEnd에서는 각속도 overwrite / 강제 캡을 하지 않는다.
             #    현재 물리 상태를 그대로 이어받고, 이후 free phase에서 damping torque만 적용되게 둔다.
@@ -1645,6 +2199,14 @@ class _ARInteractionController:
         body = sim.bodies[target_body_name].body
         if _is_fixed_body(body):
             return self.MODE_ROTATE
+
+        # revolute + prismatic 조합이면 rotate로 빨려 들어가지 말고 cylindrical로 처리한다.
+        if self._find_cylindrical_combo(sim, target_body_name) is not None:
+            return self.MODE_CYLINDRICAL
+
+        # revolute + revolute 직교 조합이면 universal로 처리한다.
+        if self._find_universal_combo(sim, target_body_name) is not None:
+            return self.MODE_UNIVERSAL
 
         revolute_joints = []
         other_joints = []
@@ -1664,6 +2226,15 @@ class _ARInteractionController:
                 else:
                     other_joints.append(jm)
         except Exception:
+            return self.MODE_SPRING
+
+        # 단순 병진 바디
+        if (len(revolute_joints) == 0) and (len(other_joints) == 1):
+            jm = other_joints[0]
+            if getattr(jm, "type", None) == "prismatic":
+                axis = self._joint_axis_world_from_meta(jm)
+                if _norm(axis) > 1e-6:
+                    return self.MODE_PRISMATIC
             return self.MODE_SPRING
 
         # 단순 회전 바디
@@ -1727,9 +2298,27 @@ class _ARInteractionController:
         )
 
     def compute_and_apply(self, *, sim: "Simulator", dt: float) -> None:
-        target_name = self.ctx.drive_body_name or self.ctx.target_name
-        if not target_name:
-            target_name = self._last_dynamic_target
+        dragging_now = self.ctx.active and (self.ctx.last_finger_world is not None)
+
+        if self._mode == self.MODE_CYLINDRICAL:
+            self._apply_cylindrical(sim=sim, dt=dt, dragging_now=dragging_now)
+            return
+
+        if self._mode == self.MODE_UNIVERSAL:
+            self._apply_universal(sim=sim, dt=dt, dragging_now=dragging_now)
+            return
+
+        if self.ctx.active:
+            target_name = self.ctx.drive_body_name or self.ctx.target_name
+        else:
+            # TouchEnd 이후에는 target body가 아니라,
+            # 실제로 회전 torque를 받던 release body에 감쇠를 계속 건다.
+            target_name = (
+                self.ctx.release_drive_body_name
+                or self.ctx.drive_body_name
+                or self._last_dynamic_target
+                or self.ctx.target_name
+            )
 
         if not target_name or target_name not in sim.bodies:
             return
@@ -1741,12 +2330,200 @@ class _ARInteractionController:
         self._last_dynamic_target = target_name
         sim._maybe_release_drive_actuators_for_target(target_name)
 
-        dragging_now = self.ctx.active and (self.ctx.last_finger_world is not None)
-
         if self._mode == self.MODE_ROTATE:
             self._apply_rotate(sim=sim, body=target_body, body_name=target_name, dt=dt, dragging_now=dragging_now)
+        elif self._mode == self.MODE_PRISMATIC:
+            self._apply_prismatic(sim=sim, body=target_body, body_name=target_name, dt=dt, dragging_now=dragging_now)
         else:
             self._apply_spring(sim=sim, body=target_body, body_name=target_name, dt=dt, dragging_now=dragging_now)
+
+    def _apply_universal(self, *, sim: "Simulator", dt: float, dragging_now: bool) -> None:
+        body_name = self.ctx.universal_body_name
+        axis_world = self.ctx.universal_axis_world
+        pivot_world = self.ctx.universal_pivot_world
+
+        if not body_name:
+            return
+
+        if body_name not in sim.bodies:
+            return
+
+        body = sim.bodies[body_name].body
+        if _is_fixed_body(body):
+            return
+
+        if axis_world is None or _norm(axis_world) < 1e-9:
+            return
+
+        axis_n = _normalize(axis_world)
+        self._last_dynamic_target = body_name
+
+        sim._maybe_release_drive_actuators_for_target(body_name)
+
+        # universal은 별도 등속 명령을 쓰지 않고,
+        # 기존 rotate 입력 로직을 그대로 재사용한다.
+        # 단, axis/pivot은 universal 탐색에서 찾은 support revolute 기준으로 고정한다.
+        old_drive_body_name = self.ctx.drive_body_name
+        old_axis = self.ctx.rotate_axis_world
+        old_pivot = self.ctx.rotate_pivot_world
+
+        self.ctx.drive_body_name = body_name
+        self.ctx.rotate_axis_world = axis_n
+        self.ctx.rotate_pivot_world = pivot_world if pivot_world is not None else body.GetPos()
+
+        self._apply_rotate(
+            sim=sim,
+            body=body,
+            body_name=body_name,
+            dt=dt,
+            dragging_now=dragging_now,
+        )
+
+        self.ctx.drive_body_name = old_drive_body_name
+        self.ctx.rotate_axis_world = old_axis
+        self.ctx.rotate_pivot_world = old_pivot
+
+    def _apply_cylindrical(self, *, sim: "Simulator", dt: float, dragging_now: bool) -> None:
+        rotate_name = self.ctx.cylindrical_rotate_body_name
+        slide_name = self.ctx.cylindrical_slide_body_name
+        axis_world = self.ctx.cylindrical_axis_world
+        pivot_world = self.ctx.cylindrical_pivot_world
+
+        if not rotate_name or not slide_name:
+            return
+
+        if rotate_name not in sim.bodies or slide_name not in sim.bodies:
+            return
+
+        rotate_body = sim.bodies[rotate_name].body
+        slide_body = sim.bodies[slide_name].body
+
+        if _is_fixed_body(rotate_body) or _is_fixed_body(slide_body):
+            return
+
+        if axis_world is None or _norm(axis_world) < 1e-9:
+            return
+
+        axis_n = _normalize(axis_world)
+        self._last_dynamic_target = rotate_name
+
+        sim._maybe_release_drive_actuators_for_target(rotate_name)
+        sim._maybe_release_drive_actuators_for_target(slide_name)
+
+        # 1) 회전 성분: 기존 rotate 제어를 그대로 재사용한다.
+        old_axis = self.ctx.rotate_axis_world
+        old_pivot = self.ctx.rotate_pivot_world
+
+        self.ctx.rotate_axis_world = axis_n
+        self.ctx.rotate_pivot_world = pivot_world if pivot_world is not None else rotate_body.GetPos()
+
+        self._apply_rotate(
+            sim=sim,
+            body=rotate_body,
+            body_name=rotate_name,
+            dt=dt,
+            dragging_now=dragging_now,
+        )
+
+        self.ctx.rotate_axis_world = old_axis
+        self.ctx.rotate_pivot_world = old_pivot
+
+        # 2) 병진 성분:
+        # TouchStart 기준 absolute target 방식 대신,
+        # 손가락의 작은 이동량을 누적한 목표 offset을 천천히 따라간다.
+        # 이렇게 하면 터치 노이즈 때문에 시작 위치로 회귀하는 느낌이 줄어든다.
+        if dragging_now:
+            f_curr = self.ctx.last_finger_world
+            f_start = self.ctx.cylindrical_start_finger_world
+            slide_start_pos = self.ctx.cylindrical_start_slide_pos_world
+
+            if f_curr is None or f_start is None or slide_start_pos is None:
+                return
+
+            # TouchStart 기준으로 현재 손가락이 병진축 방향으로 얼마나 벗어났는지 본다.
+            # prev -> current의 작은 프레임 차이를 보지 않기 때문에 AR 입력 튐에 훨씬 둔감하다.
+            move_from_start = _sub(f_curr, f_start)
+            signed_move = float(_dot(move_from_start, axis_n))
+
+            step_sign = 0
+            if abs(signed_move) > float(self.CYL_SLIDE_START_DEADZONE):
+                step_sign = 1 if signed_move > 0.0 else -1
+
+            if step_sign != 0:
+                current_sign = int(self.ctx.cylindrical_command_sign)
+
+                # 아직 병진 방향이 없으면 바로 채택
+                if current_sign == 0:
+                    self.ctx.cylindrical_command_sign = step_sign
+                    self.ctx.cylindrical_last_step_sign = step_sign
+                    self.ctx.cylindrical_reverse_count = 0
+
+                # 같은 방향이면 바로 유지
+                elif current_sign == step_sign:
+                    self.ctx.cylindrical_last_step_sign = step_sign
+                    self.ctx.cylindrical_reverse_count = 0
+
+                # 반대 방향이면 바로 뒤집지 않고, 여러 번 연속 확인 후 반전
+                else:
+                    self.ctx.cylindrical_reverse_count += 1
+
+                    if self.ctx.cylindrical_reverse_count >= int(self.CYL_SLIDE_REVERSE_CONFIRM_STEPS):
+                        self.ctx.cylindrical_command_sign = step_sign
+                        self.ctx.cylindrical_last_step_sign = step_sign
+                        self.ctx.cylindrical_reverse_count = 0
+
+            # 손가락을 가만히 두고 있어도 마지막 입력 방향으로 천천히 계속 이동.
+            # 즉 "꾹 누르고 있으면 일정 속도로 이동"하는 느낌.
+            cmd_speed = float(self.CYL_SLIDE_CMD_SPEED)
+            self.ctx.cylindrical_target_offset += (
+                float(self.ctx.cylindrical_command_sign) * cmd_speed * float(dt)
+            )
+
+            # 전체 이동 목표 범위를 제한한다.
+            soft_limit = float(self.CYL_SLIDE_SOFT_LIMIT)
+
+            self.ctx.cylindrical_target_offset = _clamp(
+                self.ctx.cylindrical_target_offset,
+                -soft_limit,
+                soft_limit,
+            )
+
+            current_offset = float(_dot(_sub(slide_body.GetPos(), slide_start_pos), axis_n))
+
+            soft_limit = float(self.CYL_SLIDE_SOFT_LIMIT)
+            end_eps = float(self.CYL_SLIDE_END_EPS)
+
+            # soft limit 근처에서 바깥쪽으로 더 밀려는 목표는 막는다.
+            if current_offset >= soft_limit - end_eps and self.ctx.cylindrical_target_offset > current_offset:
+                self.ctx.cylindrical_target_offset = current_offset
+                if self.ctx.cylindrical_command_sign > 0:
+                    self.ctx.cylindrical_command_sign = 0
+
+            if current_offset <= -soft_limit + end_eps and self.ctx.cylindrical_target_offset < current_offset:
+                self.ctx.cylindrical_target_offset = current_offset
+                if self.ctx.cylindrical_command_sign < 0:
+                    self.ctx.cylindrical_command_sign = 0
+
+            # 힘으로 목표 위치를 따라가게 하지 않고,
+            # 명령 방향에 따라 거의 등속도로 움직이게 한다.
+            v_cmd = float(self.ctx.cylindrical_command_sign) * float(self.CYL_SLIDE_CMD_SPEED)
+
+            # soft limit 근처에서는 바깥쪽 방향 속도 명령 제거
+            if current_offset >= soft_limit - end_eps and v_cmd > 0.0:
+                v_cmd = 0.0
+                self.ctx.cylindrical_command_sign = 0
+
+            if current_offset <= -soft_limit + end_eps and v_cmd < 0.0:
+                v_cmd = 0.0
+                self.ctx.cylindrical_command_sign = 0
+
+            _set_linvel_world_best_effort(slide_body, _mul(axis_n, v_cmd))
+            _set_angvel_world_best_effort(slide_body, chrono.ChVector3d(0.0, 0.0, 0.0))
+            return
+
+        # 3) 손을 떼면 병진 속도를 즉시 제거한다.
+        _set_linvel_world_best_effort(slide_body, chrono.ChVector3d(0.0, 0.0, 0.0))
+        _set_angvel_world_best_effort(slide_body, chrono.ChVector3d(0.0, 0.0, 0.0))
 
     def _apply_rotate(self, *, sim: "Simulator", body: chrono.ChBody, body_name: str, dt: float, dragging_now: bool) -> None:
         axis_world = self.ctx.rotate_axis_world
@@ -1774,6 +2551,9 @@ class _ARInteractionController:
             f_curr = self.ctx.last_finger_world
             f_prev = self._prev_rotate_finger_world
 
+            if f_curr is None:
+                return
+
             if f_prev is None:
                 self._prev_rotate_finger_world = chrono.ChVector3d(f_curr.x, f_curr.y, f_curr.z)
                 return
@@ -1787,58 +2567,76 @@ class _ARInteractionController:
             w_along_now = float(_dot(w_before, axis_world_n))
             abs_w = abs(w_along_now)
 
-            tau_drag = chrono.ChVector3d(0.0, 0.0, 0.0)
+            # TouchStart 기준으로 현재 손가락이 어느 방향으로 충분히 벗어났는지 보고
+            # 회전 방향을 결정한다.
+            #
+            # 기존 방식은 prev -> current의 순간 회전 방향을 계속 추정했기 때문에,
+            # 입력 이벤트가 촘촘하게 들어오면 손가락 떨림만으로도 방향이 반대로 튈 수 있었다.
+            # 여기서는 TouchStart 기준점 하나를 고정해서 훨씬 둔감하게 만든다.
+            f_start = self.ctx.start_finger_world
 
-            if _norm(v0) > 1e-6 and _norm(v1) > 1e-6 and dt > 1e-9:
-                v0n = _normalize(v0)
-                v1n = _normalize(v1)
+            if f_start is not None:
+                r_start = _sub(f_start, center_world)
+                move_from_start = _sub(f_curr, f_start)
 
-                c = _clamp(_dot(v0n, v1n), -1.0, 1.0)
-                d_ang = m.acos(c)
+                if _norm(r_start) > 1e-6:
+                    # 시작 터치점에서 회전축 기준 접선 방향을 만든다.
+                    # 이 방향으로 이동하면 +회전, 반대 방향이면 -회전으로 본다.
+                    tangent_world = _cross(axis_world_n, _normalize(r_start))
+                    tangent_world = _normalize(tangent_world)
 
-                if d_ang > self.DRAG_ANGLE_EPS:
-                    arc_axis = _cross(v0n, v1n)
-                    arc_axis_n = _normalize(arc_axis)
+                    if _norm(tangent_world) > 1e-6:
+                        signed_move = float(_dot(move_from_start, tangent_world))
 
-                    if _norm(arc_axis_n) > 1e-6:
-                        # axial vector 변환 규칙 누락 보정:
-                        # 클라(Unity, LH)에서 사용자 입력을 받아 점 두 개를 polar vector 변환(swap만)으로
-                        # 전달하지만, 시뮬은 RH cross로 axis를 다시 결정한다. polar 변환만 거친 점 사이의
-                        # RH cross 결과는 사용자 LH 직관과 부호가 반전되어 나오므로 (axial vector는 swap+부호반전
-                        # 변환이 필요한데 그 단계가 누락된 셈), 사용자 입력 처리 경로의 cross 결과를 여기서
-                        # 한 번 부호 반전해 보정한다.
-                        align = -float(_dot(arc_axis_n, axis_world_n))
-                        sign = 1.0 if align >= 0.0 else -1.0
-                        align_abs = abs(align)
+                        # TouchStart 근처에서는 방향 갱신을 하지 않는다.
+                        # 이 deadzone 덕분에 손가락 떨림/이벤트 폭주에 덜 민감해진다.
+                        if abs(signed_move) > float(self.ROT_HOLD_START_DEADZONE):
+                            # Unity 좌표계/기존 보정 방향과 반대로 느껴지면 여기 sign 앞에 -를 붙이면 된다.
+                            sign = 1.0 if signed_move >= 0.0 else -1.0
 
-                        # 손가락이 pivot 주변에서 만든 각속도(rad/s)
-                        w_drag = sign * (d_ang / float(dt))
-                        w_drag *= max(0.2, align_abs)
-                        w_drag *= float(self.ROT_DRAG_TARGET_SPEED_GAIN)
+                            candidate_w = sign * float(self.ROT_HOLD_CMD_SPEED)
+                            current_w = float(self.ctx.rotate_hold_w_cmd)
 
-                        # 너무 큰 순간 입력 방지
-                        w_drag = _clamp(
-                            w_drag,
-                            -float(self.ROT_DRAG_SPEED_HARD),
-                            +float(self.ROT_DRAG_SPEED_HARD),
-                        )
+                            # 아직 방향이 없으면 바로 채택
+                            if abs(current_w) < 1e-6:
+                                self.ctx.rotate_hold_w_cmd = candidate_w
+                                self.ctx.rotate_hold_reverse_count = 0
 
-                        # 현재 축방향 각속도와 목표 각속도의 차이를 줄이는 PD 느낌의 토크
-                        w_err = float(w_drag - w_along_now)
-                        alpha_cmd = float(self.ROT_DRAG_SPEED_KP_ALPHA) * w_err
+                            # 같은 방향이면 바로 유지/갱신
+                            elif current_w * candidate_w > 0.0:
+                                self.ctx.rotate_hold_w_cmd = candidate_w
+                                self.ctx.rotate_hold_reverse_count = 0
 
-                        # 각가속도 제한
-                        alpha_cmd = _clamp(
-                            alpha_cmd,
-                            -float(self.ROT_DRAG_SPEED_TAU_MAX_ALPHA),
-                            +float(self.ROT_DRAG_SPEED_TAU_MAX_ALPHA),
-                        )
+                            # 반대 방향이면 바로 뒤집지 않고, 여러 번 연속 확인 후 반전
+                            else:
+                                self.ctx.rotate_hold_reverse_count += 1
 
-                        # hard speed 근처에서는 더 가속하지 않도록 제한
-                        if abs_w >= self.ROT_DRAG_SPEED_HARD and (w_along_now * alpha_cmd) > 0.0:
-                            alpha_cmd = 0.0
+                                if self.ctx.rotate_hold_reverse_count >= int(self.ROT_HOLD_REVERSE_CONFIRM_STEPS):
+                                    self.ctx.rotate_hold_w_cmd = candidate_w
+                                    self.ctx.rotate_hold_reverse_count = 0
 
-                        tau_drag = _mul(axis_world_n, Ieff * alpha_cmd)
+            # 아직 한 번도 유효한 회전 방향을 받지 못했으면 입력 토크를 주지 않는다.
+            w_hold = float(self.ctx.rotate_hold_w_cmd)
+            if abs(w_hold) < 1e-6:
+                return
+
+            # 현재 축방향 각속도를 hold 목표 각속도로 계속 끌고 간다.
+            # 즉, 손가락을 멈추고 계속 누르고 있어도 일정 속도로 계속 회전한다.
+            w_err = float(w_hold - w_along_now)
+            alpha_cmd = float(self.ROT_DRAG_SPEED_KP_ALPHA) * w_err
+
+            # 각가속도 제한
+            alpha_cmd = _clamp(
+                alpha_cmd,
+                -float(self.ROT_DRAG_SPEED_TAU_MAX_ALPHA),
+                +float(self.ROT_DRAG_SPEED_TAU_MAX_ALPHA),
+            )
+
+            # hard speed 근처에서는 더 가속하지 않도록 제한
+            if abs_w >= self.ROT_DRAG_SPEED_HARD and (w_along_now * alpha_cmd) > 0.0:
+                alpha_cmd = 0.0
+
+            tau_drag = _mul(axis_world_n, Ieff * alpha_cmd)
 
             # drag 중 축방향 감쇠
             tau_drag_damp_mag = float(self.ROT_DRAG_CW_ALPHA) * Ieff * abs_w
@@ -1863,7 +2661,11 @@ class _ARInteractionController:
         abs_w = abs(w_along)
 
         # 아주 작은 속도면 snap-to-rest
+        # 단순 return만 하면 미세 각속도가 계속 남을 수 있으므로,
+        # 회전축 방향 성분만 제거한다.
         if abs_w < self.VEL_EPS_SNAP_ROT:
+            w_rest = _sub(w_world, _mul(axis_world_n, w_along))
+            _set_angvel_world_best_effort(body, w_rest)
             return
 
         # free phase damping
@@ -1887,6 +2689,123 @@ class _ARInteractionController:
         tau_damp = _mul(axis_world_n, -m.copysign(tau_mag, w_along))
         _apply_torque_world(body, tau_damp)
         return
+
+    def _apply_prismatic(self, *, sim: "Simulator", body: chrono.ChBody, body_name: str, dt: float, dragging_now: bool) -> None:
+        """
+        단일 prismatic 조인트 전용 AR 입력.
+        - 손가락 입력을 조인트 축 방향으로만 투영한다.
+        - Y/Z 방향 힘과 터치 지점 토크를 만들지 않는다.
+        - 따라서 slider_block이 레일 밖으로 튀거나 회전하는 것을 줄인다.
+        """
+        jm = self._find_single_prismatic_joint_meta(sim, body_name)
+        if jm is None:
+            self._apply_spring(sim=sim, body=body, body_name=body_name, dt=dt, dragging_now=dragging_now)
+            return
+
+        axis_world = self._joint_axis_world_from_meta(jm)
+        if _norm(axis_world) < 1e-9:
+            self._apply_spring(sim=sim, body=body, body_name=body_name, dt=dt, dragging_now=dragging_now)
+            return
+
+        axis_n = _normalize(axis_world)
+
+        if dragging_now:
+            p_des = self.ctx.last_finger_world
+            if p_des is None:
+                return
+
+            # TouchStart 기준값을 한 번만 저장한다.
+            # 절대 손가락 위치가 아니라, 시작점 대비 손가락이 축 방향으로 얼마나 움직였는지만 사용한다.
+            # joint frame 기준점과 limit을 사용한다.
+            pivot_world = self._joint_pivot_world_from_meta(jm)
+
+            lower = -0.025
+            upper = 0.025
+            try:
+                lim = getattr(jm, "limits", None)
+                if lim is not None and bool(getattr(lim, "enable", False)):
+                    lower = float(getattr(lim, "lower", lower))
+                    upper = float(getattr(lim, "upper", upper))
+            except Exception:
+                pass
+
+            # limit 끝에 딱 붙으면 다시 움직이기 어려울 수 있어서 아주 조금 안쪽만 사용
+            margin = 0.002
+            lower_safe = lower + margin
+            upper_safe = upper - margin
+            if lower_safe > upper_safe:
+                lower_safe = lower
+                upper_safe = upper
+
+            # TouchStart 기준값을 한 번만 저장한다.
+            if self.ctx.prismatic_start_finger_world is None:
+                self.ctx.prismatic_start_finger_world = p_des
+                self.ctx.prismatic_start_body_pos_world = body.GetPos()
+
+                # 현재 body 위치가 joint 축 기준으로 몇 m 위치인지 저장한다.
+                body_from_pivot = _sub(body.GetPos(), pivot_world)
+                self.ctx.prismatic_start_q = float(_dot(body_from_pivot, axis_n))
+
+            start_finger = self.ctx.prismatic_start_finger_world
+            start_body_pos = self.ctx.prismatic_start_body_pos_world
+            start_q = float(self.ctx.prismatic_start_q)
+
+            if start_finger is None or start_body_pos is None:
+                return
+
+            # 손가락 이동량을 prismatic 축 방향으로만 투영한다.
+            finger_delta_world = _sub(p_des, start_finger)
+            delta_along = float(_dot(finger_delta_world, axis_n))
+
+            # 절대 joint coordinate 기준으로 target을 잡는다.
+            # 이제 현재 body 위치가 새 limit 중심이 되지 않는다.
+            target_q = _clamp(start_q + delta_along, lower_safe, upper_safe)
+
+            # body의 기존 off-axis 위치는 유지하고, 축 방향으로만 이동 목표를 만든다.
+            move_along = target_q - start_q
+            target_pos = _add(start_body_pos, _mul(axis_n, move_along))
+
+            p_body = body.GetPos()
+            err_world = _sub(target_pos, p_body)
+            x_along = float(_dot(err_world, axis_n))
+
+            v_body = _get_linvel_world(body)
+            v_along = float(_dot(v_body, axis_n))
+
+            # 가벼운 slider_block용 약한 PD
+            k = 0.45
+            c = 0.35
+            fmax = 0.006
+
+            f_scalar = k * x_along - c * v_along
+            f_scalar = _clamp(f_scalar, -fmax, +fmax)
+
+            F = _mul(axis_n, f_scalar)
+
+            # 반드시 COM에 힘만 적용한다.
+            # 터치 지점 토크를 만들지 않는다.
+            _apply_force_world(body, F)
+
+            # 병진 조인트 바디는 회전하면 안 되므로 각속도는 감쇠/제거한다.
+            w = _get_angvel_world(body)
+            _apply_torque_world(body, _mul(w, -8.0))
+            return
+
+        # TouchEnd 이후에는 다음 TouchStart에서 새 기준을 잡도록 초기화
+        self.ctx.prismatic_start_finger_world = None
+        self.ctx.prismatic_start_body_pos_world = None
+        self.ctx.prismatic_start_q = 0.0
+
+        # TouchEnd 이후: 축 방향 속도만 부드럽게 감쇠하고, 회전은 강하게 감쇠
+        v = _get_linvel_world(body)
+        v_along = float(_dot(v, axis_n))
+        v_axis = _mul(axis_n, v_along)
+
+        f_damp = _clamp(-0.25 * v_along, -0.008, 0.008)
+        _apply_force_world(body, _mul(axis_n, f_damp))
+
+        w = _get_angvel_world(body)
+        _apply_torque_world(body, _mul(w, -0.02))
 
     def _apply_spring(self, *, sim: "Simulator", body: chrono.ChBody, body_name: str, dt: float, dragging_now: bool) -> None:
         ap_local = self.ctx.action_point_local
@@ -1972,6 +2891,9 @@ class Simulator:
 
     def __init__(self, info: SimInfo):
         self.info: SimInfo = info
+
+        # 테스트/교육용: metadata에 어떤 collision 설정이 있든 시뮬레이터 생성 전 모두 끈다.
+        _force_disable_all_collision(info.scene)
 
         # Metadata validation diagnostics
         try:
