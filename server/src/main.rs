@@ -157,6 +157,9 @@ fn main() {
                     continue;
                 }
                 if let Some(mgr) = state.sim_manager.as_ref() {
+                    // 항상 자기 모델로 시작 — 기존 sim(특히 직전 import sim)을 먼저 정지해
+                    // start 실패해도 import sim이 계속 돌지 않게 한다.
+                    mgr.stop();
                     push_status(&state, &mut last_status, &status_tx);
                     let path = std::path::Path::new(&model_path);
                     match mgr.start(path) {
