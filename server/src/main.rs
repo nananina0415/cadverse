@@ -26,14 +26,16 @@ use sim::{UserIn, SimFrame, SimManager, SimIoBuf};
 use pipe::{PipeCmd, StatusMsg, MemberStatus};
 
 struct AppState {
-    username:     String,
-    password:     String,
-    net:          Option<NetThread>,
-    sim_manager:  Option<SimManager>,
-    extracting:   bool,
-    importing:    bool,
-    import_error: Option<String>,
-    net_error:    Option<String>,
+    username:       String,
+    password:       String,
+    net:            Option<NetThread>,
+    sim_manager:    Option<SimManager>,
+    extracting:     bool,
+    importing:      bool,
+    import_error:   Option<String>,
+    net_error:      Option<String>,
+    f3z_done_rx:    Option<mpsc::Receiver<String>>,
+    f3z_ready_path: Option<String>,
 }
 
 fn exe_dir() -> std::path::PathBuf {
@@ -78,14 +80,16 @@ fn main() {
     let sim_io_buf = SimIoBuf { userin_r, userin_swap, simout_w };
 
     let mut state = AppState {
-        username:     String::new(),
-        password:     String::new(),
-        net:          None,
-        sim_manager:  Some(SimManager::new(sim_io_buf)),
-        extracting:   false,
-        importing:    false,
-        import_error: None,
-        net_error:    None,
+        username:       String::new(),
+        password:       String::new(),
+        net:            None,
+        sim_manager:    Some(SimManager::new(sim_io_buf)),
+        extracting:     false,
+        importing:      false,
+        import_error:   None,
+        net_error:      None,
+        f3z_done_rx:    None,
+        f3z_ready_path: None,
     };
 
     let shared_status: Arc<Mutex<StatusMsg>> = Arc::new(Mutex::new(StatusMsg::default()));
@@ -110,6 +114,17 @@ fn main() {
     };
 
     loop {
+        // f3z 백그라운드 다운로드 완료 체크
+        if let Some(rx) = state.f3z_done_rx.as_ref() {
+            if let Ok(path) = rx.try_recv() {
+                eprintln!("[f3z] 다운로드 완료: {path}");
+                state.f3z_done_rx = None;
+                state.f3z_ready_path = Some(path);
+                push_status(&state, &mut last_status, &status_tx);
+                state.f3z_ready_path = None;
+            }
+        }
+
         let cmd = cmd_rx.recv_timeout(Duration::from_millis(500));
         if let Err(mpsc::RecvTimeoutError::Disconnected) = cmd {
             eprintln!("[main] 커맨드 채널 끊김 → 종료");
@@ -244,7 +259,7 @@ fn main() {
 
                 state.importing = false;
                 match result {
-                    Ok(path) => {
+                    Ok((path, f3z_info)) => {
                         eprintln!("[import] 완료: {}", path.display());
 
                         // 가져온 모델로 시뮬 교체 — 기존 시뮬 정지 + 새 path로 재시작.
@@ -267,8 +282,19 @@ fn main() {
                             }
                             mgr.reloading.store(false, Ordering::Relaxed);
                         }
+
+                        // f3z 백그라운드 다운로드 시작
+                        if let Some((addr, hash)) = f3z_info {
+                            let f3z_path = std::path::PathBuf::from(&import_root)
+                                .join(format!("{}.f3z", hash));
+                            let (tx, rx) = mpsc::channel();
+                            state.f3z_done_rx = Some(rx);
+                            if let Some(net) = state.net.as_ref() {
+                                net.download_f3z_background(addr, f3z_path, tx);
+                            }
+                        }
                     }
-                    Err(e)   => {
+                    Err(e) => {
                         eprintln!("[import] 실패: {e}");
                         state.import_error = Some(e.to_string());
                     }
@@ -326,13 +352,14 @@ fn build_status(state: &AppState) -> StatusMsg {
         sim_running,
         paused: false,
         reloading,
-        extracting:   state.extracting,
-        importing:    state.importing,
-        password:     state.password.clone(),
+        extracting:     state.extracting,
+        importing:      state.importing,
+        password:       state.password.clone(),
         members,
         sim_error,
-        import_error: state.import_error.clone(),
-        net_error:    state.net_error.clone(),
+        import_error:   state.import_error.clone(),
+        net_error:      state.net_error.clone(),
+        f3z_ready_path: state.f3z_ready_path.clone(),
     }
 }
 

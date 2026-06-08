@@ -21,6 +21,8 @@ pub struct NetSetting {
 #[derive(Serialize, Deserialize)]
 struct ModelManifest {
     files: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    f3z_hash: Option<String>,
 }
 
 fn collect_model_files(base: &Path, dir: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
@@ -44,12 +46,18 @@ fn collect_model_files(base: &Path, dir: &Path, out: &mut Vec<String>) -> std::i
     Ok(())
 }
 
-fn build_model_manifest(folder: &Path) -> ModelManifest {
+fn build_model_manifest(folder: &Path, models_root: &Path, model_hash: &str) -> ModelManifest {
     let mut files = Vec::new();
-
     let _ = collect_model_files(folder, folder, &mut files);
 
-    ModelManifest { files }
+    let f3z_hash = if !model_hash.is_empty() {
+        let f3z_path = models_root.join(format!("{}.f3z", model_hash));
+        if f3z_path.exists() { Some(model_hash.to_string()) } else { None }
+    } else {
+        None
+    };
+
+    ModelManifest { files, f3z_hash }
 }
 
 fn is_safe_relative_path(path: &str) -> bool {
@@ -262,6 +270,7 @@ impl NetThread {
         {
             let net = net.clone();
             let serve_folder = serve_folder.clone();
+            let model_hash = model_hash.clone();
             rt.spawn(async move {
                 loop {
                     let Some(conn) = net.accept_file_conn().await else {
@@ -271,8 +280,9 @@ impl NetThread {
                     let folder = serve_folder.read().expect("serve_folder poisoned").clone();
                     match folder {
                         Some(f) => {
+                            let hash = model_hash.clone();
                             tokio::spawn(async move {
-                                if let Err(e) = serve_file(conn, &f).await {
+                                if let Err(e) = serve_file(conn, &f, hash).await {
                                     eprintln!("[net] serve_file 오류: {e}");
                                 }
                             });
@@ -336,7 +346,11 @@ impl NetThread {
             })
     }
 
-    pub fn import_remote_model(&self, name: &str, import_root: PathBuf) -> anyhow::Result<PathBuf> {
+    pub fn import_remote_model(
+        &self,
+        name: &str,
+        import_root: PathBuf,
+    ) -> anyhow::Result<(PathBuf, Option<(NodeAddr, String)>)> {
         let peer = self.net
             .find_sim_server_by_name(name)
             .ok_or_else(|| anyhow!("그룹원이 존재하지 않거나 시뮬레이션이 실행 중이지 않습니다."))?;
@@ -350,7 +364,7 @@ impl NetThread {
         self.async_rt.block_on(async move {
 
             let manifest_bytes = match net
-                .request_file(peer.addr.clone(), "/__cadverse_manifest.json")
+                .request_file(peer.addr.clone(), "/__cadverse_manifest.json", 64 * 1024 * 1024)
                 .await
             {
                 Ok(bytes) => bytes,
@@ -374,13 +388,13 @@ impl NetThread {
             fs::create_dir_all(&tmp_dir)
                 .with_context(|| format!("임시 폴더 생성 실패: {}", tmp_dir.display()))?;
 
-            for rel in manifest.files {
-                if !is_safe_relative_path(&rel) { continue; }
+            for rel in &manifest.files {
+                if !is_safe_relative_path(rel) { continue; }
 
                 let request_path = format!("/{}", rel);
 
                 let data = net
-                    .request_file(peer.addr.clone(), &request_path)
+                    .request_file(peer.addr.clone(), &request_path, 64 * 1024 * 1024)
                     .await
                     .with_context(|| format!("대상의 시뮬레이션이 종료된 상태입니다: {rel}"))?;
 
@@ -388,7 +402,7 @@ impl NetThread {
                     anyhow::bail!("대상의 시뮬레이션이 종료된 상태입니다 또는 파일 데이터가 비어 있습니다: {rel}");
                 }
 
-                let out_path = tmp_dir.join(&rel);
+                let out_path = tmp_dir.join(rel);
 
                 if let Some(parent) = out_path.parent() {
                     fs::create_dir_all(parent)
@@ -413,12 +427,51 @@ impl NetThread {
                     )
                 })?;
 
-            Ok::<PathBuf, anyhow::Error>(target_dir)
+            // f3z: manifest에 hash가 있고 로컬에 없으면 background download 정보 반환
+            let f3z_info = match manifest.f3z_hash {
+                Some(ref hash) if !hash.is_empty() => {
+                    let f3z_path = import_root.join(format!("{}.f3z", hash));
+                    if f3z_path.exists() {
+                        eprintln!("[import] f3z 이미 존재: {}", f3z_path.display());
+                        None
+                    } else {
+                        Some((peer.addr.clone(), hash.clone()))
+                    }
+                }
+                _ => None,
+            };
+
+            Ok::<(PathBuf, Option<(NodeAddr, String)>), anyhow::Error>((target_dir, f3z_info))
         })
+    }
+
+    pub fn download_f3z_background(
+        &self,
+        addr: NodeAddr,
+        dest: PathBuf,
+        tx: std::sync::mpsc::Sender<String>,
+    ) {
+        let net = self.net.clone();
+        self.async_rt.spawn(async move {
+            eprintln!("[f3z] 다운로드 시작: {}", dest.display());
+            match net.request_file(addr, "/__f3z", 512 * 1024 * 1024).await {
+                Ok(data) if !data.is_empty() => {
+                    match fs::write(&dest, &data) {
+                        Ok(()) => {
+                            eprintln!("[f3z] 저장 완료: {}", dest.display());
+                            let _ = tx.send(dest.to_string_lossy().to_string());
+                        }
+                        Err(e) => eprintln!("[f3z] 저장 실패: {e}"),
+                    }
+                }
+                Ok(_) => eprintln!("[f3z] 빈 응답 (상대방 f3z 없음)"),
+                Err(e) => eprintln!("[f3z] 다운로드 실패: {e}"),
+            }
+        });
     }
 }
 
-async fn serve_file(conn: p2p_core::RawConn, folder: &std::path::Path) -> anyhow::Result<()> {
+async fn serve_file(conn: p2p_core::RawConn, folder: &std::path::Path, model_hash: Arc<RwLock<String>>) -> anyhow::Result<()> {
     let mut recv = conn.accept_uni().await?;
     let path_bytes = recv.read_to_end(1024).await?;
     let path = String::from_utf8(path_bytes)?;
@@ -429,9 +482,23 @@ async fn serve_file(conn: p2p_core::RawConn, folder: &std::path::Path) -> anyhow
         folder.join(path.trim_start_matches('/'))
     };
     let data = if path == "/__cadverse_manifest.json" {
-        let manifest = build_model_manifest(folder);
-        eprintln!("[serve_file] manifest: {} 파일", manifest.files.len());
+        let hash = model_hash.read().expect("model_hash poisoned").clone();
+        let models_root = folder.parent().unwrap_or(folder);
+        let manifest = build_model_manifest(folder, models_root, &hash);
+        eprintln!("[serve_file] manifest: {} 파일, f3z={:?}", manifest.files.len(), manifest.f3z_hash);
         serde_json::to_vec(&manifest).unwrap_or_default()
+    } else if path == "/__f3z" {
+        let hash = model_hash.read().expect("model_hash poisoned").clone();
+        if hash.is_empty() {
+            eprintln!("[serve_file] f3z 요청 왔으나 hash 없음");
+            vec![]
+        } else {
+            let models_root = folder.parent().unwrap_or(folder);
+            let f3z_path = models_root.join(format!("{}.f3z", hash));
+            let d = std::fs::read(&f3z_path).unwrap_or_default();
+            eprintln!("[serve_file] f3z 응답: {} ({} bytes)", f3z_path.display(), d.len());
+            d
+        }
     } else {
         let d = std::fs::read(&file_path).unwrap_or_default();
         eprintln!("[serve_file] 응답: {} ({} bytes)", file_path.display(), d.len());

@@ -41,6 +41,8 @@ pub struct StatusMsg {
     pub import_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub net_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub f3z_ready_path: Option<String>,
 }
 
 pub fn start(

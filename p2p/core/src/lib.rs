@@ -119,13 +119,13 @@ impl P2PNet {
         Ok(Connection(conn))
     }
 
-    pub async fn request_file(&self, addr: NodeAddr, path: &str) -> Result<Vec<u8>> {
+    pub async fn request_file(&self, addr: NodeAddr, path: &str, limit: usize) -> Result<Vec<u8>> {
         let conn = self.node.endpoint.connect(addr, FILE_ALPN).await?;
         let mut send = conn.open_uni().await?;
         send.write_all(path.as_bytes()).await?;
         send.finish()?;
         let mut recv = conn.accept_uni().await?;
-        let data = recv.read_to_end(64 * 1024 * 1024).await?;
+        let data = recv.read_to_end(limit).await?;
         Ok(data)
     }
 

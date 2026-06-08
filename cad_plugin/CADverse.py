@@ -5,18 +5,21 @@ import tkinter as tk
 from . import extract as _extract
 from .server import RustServer
 
-_handlers          = []
-_palette           = None
-_server_proc       = None
-_server             = None
-_server_error      = None
-_send_queue        = []
-_stopping          = False
-_model_dir         = None
-_doc_saved_handler = None
+_handlers              = []
+_palette               = None
+_server_proc           = None
+_server                = None
+_server_error          = None
+_send_queue            = []
+_stopping              = False
+_model_dir             = None
+_doc_saved_handler     = None
+_last_f3z_ready_path   = None  # 중복 import 방지
 
 SERVER_DIED_EVENT  = 'cadverse_server_died'
 PALETTE_SEND_EVENT = 'cadverse_palette_send'
+F3Z_EXPORT_EVENT   = 'cadverse_f3z_export'
+F3Z_IMPORT_EVENT   = 'cadverse_f3z_import'
 PALETTE_ID         = 'cadverse_palette'
 
 def _plugin_dir() -> str:
@@ -105,6 +108,7 @@ class _DocumentSavedHandler(adsk.core.DocumentEventHandler):
                 return
             _extract.run(None, _model_dir)
             _server.reload(_model_dir)
+            _trigger_f3z_export_if_needed(app)
         except Exception as e:
             _plog(f'[DocSaved] extract 실패: {e}')
 
@@ -172,6 +176,7 @@ def _show_qr_window(rows=None, title='CADverse QR', label=''):
 
 
 def _pipe_reader_thread():
+    global _last_f3z_ready_path
     proc = _server_proc
     while proc and proc.poll() is None:
         try:
@@ -185,6 +190,14 @@ def _pipe_reader_thread():
             try:
                 data = json.loads(line)
                 _send_to_palette('status', data)
+                f3z_path = data.get('f3z_ready_path')
+                if f3z_path and f3z_path != _last_f3z_ready_path:
+                    _last_f3z_ready_path = f3z_path
+                    try:
+                        adsk.core.Application.get().fireCustomEvent(F3Z_IMPORT_EVENT, f3z_path)
+                        _plog(f'[f3z] import 이벤트 발화: {f3z_path}')
+                    except Exception:
+                        _plog(f'[f3z] import event 발화 실패:\n{traceback.format_exc()}')
             except json.JSONDecodeError:
                 pass
         except Exception as e:
@@ -313,6 +326,61 @@ def _watch_server():
     except Exception as e:
         _plog(f'[watch_server] fireCustomEvent 실패: {e}')
 
+def _trigger_f3z_export_if_needed(app):
+    import hashlib
+    if not _model_dir:
+        return
+    try:
+        meta_path = os.path.join(_model_dir, 'metadata.json')
+        with open(meta_path, 'rb') as f:
+            meta_hash = hashlib.sha256(f.read()).hexdigest()[:16]
+        models_root = os.path.dirname(_model_dir)
+        f3z_path = os.path.join(models_root, f'{meta_hash}.f3z')
+        if not os.path.exists(f3z_path):
+            app.fireCustomEvent(F3Z_EXPORT_EVENT, f3z_path)
+            _plog(f'[f3z] export 이벤트 발화: {f3z_path}')
+    except Exception:
+        _plog(f'[f3z] export trigger 실패:\n{traceback.format_exc()}')
+
+
+class _F3zExportHandler(adsk.core.CustomEventHandler):
+    def __init__(self):
+        super().__init__()
+
+    def notify(self, args):
+        try:
+            f3z_path = adsk.core.CustomEventArgs.cast(args).additionalInfo
+            app = adsk.core.Application.get()
+            design = app.activeProduct
+            if not isinstance(design, adsk.fusion.Design):
+                _plog('[f3z export] activeProduct가 Design이 아님')
+                return
+            export_mgr = design.exportManager
+            options = export_mgr.createFusionArchiveExportOptions(f3z_path)
+            export_mgr.execute(options)
+            _plog(f'[f3z export] 완료: {f3z_path}')
+        except Exception:
+            _plog(f'[f3z export] 실패:\n{traceback.format_exc()}')
+
+
+class _F3zImportHandler(adsk.core.CustomEventHandler):
+    def __init__(self):
+        super().__init__()
+
+    def notify(self, args):
+        try:
+            f3z_path = adsk.core.CustomEventArgs.cast(args).additionalInfo
+            app = adsk.core.Application.get()
+            import_mgr = app.importManager
+            options = import_mgr.createFusionArchiveImportOptions(f3z_path)
+            doc = app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType, True)
+            design = doc.products.itemByProductType('DesignProductType')
+            import_mgr.importToTarget(options, design.rootComponent)
+            _plog(f'[f3z import] 완료: {f3z_path}')
+        except Exception:
+            _plog(f'[f3z import] 실패:\n{traceback.format_exc()}')
+
+
 def _send_to_palette(action: str, data: dict):
     _plog(f'[py*->js] {action}')
     _send_queue.append((action, data))
@@ -353,6 +421,14 @@ def run(context):
         on_died = _ServerDiedHandler()
         app.registerCustomEvent(SERVER_DIED_EVENT).add(on_died)
         _handlers.append(on_died)
+
+        on_f3z_export = _F3zExportHandler()
+        app.registerCustomEvent(F3Z_EXPORT_EVENT).add(on_f3z_export)
+        _handlers.append(on_f3z_export)
+
+        on_f3z_import = _F3zImportHandler()
+        app.registerCustomEvent(F3Z_IMPORT_EVENT).add(on_f3z_import)
+        _handlers.append(on_f3z_import)
 
         global _doc_saved_handler
         on_doc_saved = _DocumentSavedHandler()
@@ -455,6 +531,10 @@ def stop(context):
         try: app.unregisterCustomEvent(PALETTE_SEND_EVENT)
         except Exception: pass
         try: app.unregisterCustomEvent(SERVER_DIED_EVENT)
+        except Exception: pass
+        try: app.unregisterCustomEvent(F3Z_EXPORT_EVENT)
+        except Exception: pass
+        try: app.unregisterCustomEvent(F3Z_IMPORT_EVENT)
         except Exception: pass
         _handlers.clear()
 
