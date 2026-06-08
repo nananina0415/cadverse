@@ -524,6 +524,10 @@ impl SimLoop {
 
                     sim_io_buf.clear_and_init(init);
                     sim_running.store(true, Ordering::Relaxed);
+                    // cold-start 경로(stop→start)에서도 클라가 모델 교체를 알 수 있도록
+                    // Reload 이벤트를 한 번 publish. running 중 교체 분기와 같은 효과.
+                    *sim_io_buf.simout_w.input_buffer() = SimFrame::Reload;
+                    sim_io_buf.simout_w.publish();
                     eprintln!("[sim_loop] 루프 시작");
 
                     // RUNNING
