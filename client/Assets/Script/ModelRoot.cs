@@ -20,6 +20,7 @@ namespace Cadverse
     public sealed class ModelRoot : IDisposable
     {
         public string AddrId   { get; }
+        public string Hash     { get; }   // metadata.json SHA256 앞 16자. state frame과 비교해 변경 감지.
         public int    MeshCount { get; }
 
         readonly GameObject              _root;
@@ -28,10 +29,11 @@ namespace Cadverse
         ARAnchor      _anchor;
         TrackingState _lastTrackingState = TrackingState.None;
 
-        internal ModelRoot(string addrId, GameObject root, Texture2D markerTexture,
+        internal ModelRoot(string addrId, string hash, GameObject root, Texture2D markerTexture,
                            Dictionary<string, int> partIndex, int meshCount)
         {
             AddrId         = addrId;
+            Hash           = hash;
             _root          = root;
             _markerTexture = markerTexture;
             _partIndex     = partIndex;

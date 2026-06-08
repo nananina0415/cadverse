@@ -151,9 +151,12 @@ namespace Cadverse
 
         async Task ReloadSceneAsync(Addr addr)
         {
+            Debug.Log($"[AppManager] ReloadSceneAsync 진입 addr={addr.Id.Substring(0, 8)}");
             // ReloadFrame 수신 시 같은 addr의 모델/세션을 새로 만든다.
-            // 기존 세션이 있으면 일단 drop (model + server + recv 모두 정리) → 새로 LoadAsync.
+            // 원래 active였으면 새 세션도 active로 유지, cold였으면 cold 유지 (사용자가 그 QR을
+            // 다시 비추면 SessionSet hit으로 그때 active 전환).
             var existing = FindSession(addr.Id);
+            bool wasActive = existing != null && existing == _active;
             if (existing != null) DropSession(existing);
 
             SceneSession next;
@@ -174,8 +177,15 @@ namespace Cadverse
             }
 
             AddSession(next);
-            SetActive(next);
-            ShowToast($"모델 교체 완료, {next.Model.MeshCount}개 메시");
+            if (wasActive)
+            {
+                SetActive(next);
+                ShowToast($"모델 교체 완료, {next.Model.MeshCount}개 메시");
+            }
+            else
+            {
+                next.IsActive = false;   // cold 유지
+            }
         }
 
         // ── SessionSet (LRU N=MAX_SESSIONS) ────────────────────────────

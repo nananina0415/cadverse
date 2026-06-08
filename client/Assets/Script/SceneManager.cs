@@ -46,11 +46,13 @@ namespace Cadverse
                 return existing;   // 이미 등록됨 — 그대로 재사용
 
             var net = AppManager.Net;
-            byte[] Fetch(string path)
-                => cache != null ? cache.GetOrFetch(addr, path) : net.RequestHttp(addr.RawJson, path);
 
-            // (1) QR 마커 텍스처 생성 + 라이브러리에 등록
-            byte[] qrData = await RequestWithTimeout(() => Fetch("/local_sim_qr.txt"));
+            // metadata.json은 hash를 알기 전까진 캐싱 불가 — server에서 매번 받는다.
+            // QR/메시는 hash가 결정된 후 hash 키로 캐싱.
+            byte[] FetchByPath(string path) => net.RequestHttp(addr.RawJson, path);
+
+            // (1) QR 마커 텍스처 생성 + 라이브러리에 등록 (작은 파일이라 캐싱 X)
+            byte[] qrData = await RequestWithTimeout(() => FetchByPath("/local_sim_qr.txt"));
             var texture = BuildQrTexture(Encoding.UTF8.GetString(qrData));
 
             var jobState = _lib.ScheduleAddImageWithValidationJob(texture, addr.Id, MARKER_PHYSICAL_SIZE_M);
@@ -63,8 +65,14 @@ namespace Cadverse
             }
 
             // (2) metadata + 메시 다운로드 → root GameObject 구성
-            byte[] metaData = await RequestWithTimeout(() => Fetch("/metadata.json"));
+            byte[] metaData = await RequestWithTimeout(() => FetchByPath("/metadata.json"));
             var transforms = ParseBodies(Encoding.UTF8.GetString(metaData));
+
+            // metadata.json 전체 SHA256 앞 16자 — 이 모델의 식별자 + 메시 캐시 키
+            string modelHash = ComputeHash16(metaData);
+
+            byte[] FetchMesh(string path)
+                => cache != null ? cache.GetOrFetch(modelHash, addr, path) : FetchByPath(path);
 
             var root = new GameObject($"_root_{addr.Id}");
             root.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
@@ -85,7 +93,7 @@ namespace Cadverse
                 string name  = kvp.Key;
                 float[] pose = kvp.Value;
 
-                byte[] objData = await RequestWithTimeout(() => Fetch($"/meshes/{name}.obj"));
+                byte[] objData = await RequestWithTimeout(() => FetchMesh($"/meshes/{name}.obj"));
                 var mesh = ObjParser.Parse(objData);
 
                 // 파트별 구분색 — golden ratio로 hue 분포(인접 idx도 충분히 다름),
@@ -108,7 +116,7 @@ namespace Cadverse
                 partIndex[name] = simIdx++;
             }
 
-            var model = new ModelRoot(addr.Id, root, texture, partIndex, transforms.Count);
+            var model = new ModelRoot(addr.Id, modelHash, root, texture, partIndex, transforms.Count);
             _models[addr.Id] = model;
             return model;
         }
@@ -146,6 +154,15 @@ namespace Cadverse
             const float VAL    = 0.85f;
             float h = (idx * GOLDEN + 0.13f) % 1f;   // +0.13: 첫 색이 단조로운 빨강에서 시작하지 않도록 살짝 시프트
             return Color.HSVToRGB(h, SAT, VAL);
+        }
+
+        static string ComputeHash16(byte[] bytes)
+        {
+            using var sha = System.Security.Cryptography.SHA256.Create();
+            var h = sha.ComputeHash(bytes);
+            var sb = new System.Text.StringBuilder(16);
+            for (int i = 0; i < 8; i++) sb.Append(h[i].ToString("x2"));
+            return sb.ToString();
         }
 
         static async Task<byte[]> RequestWithTimeout(Func<byte[]> fn, int timeoutMs = 10_000)

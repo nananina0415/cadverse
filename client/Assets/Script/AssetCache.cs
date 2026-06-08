@@ -43,11 +43,11 @@ namespace Cadverse
             catch (System.Exception e) { Debug.LogWarning($"[AssetCache] cleanup 실패: {e.Message}"); }
         }
 
-        // 메모리 → 디스크 → 네트워크 순서로 try. 어떤 단계에서든 받으면 위쪽 layer로 prom.
-        // 블로킹 — Task.Run 안에서 호출할 것.
-        public byte[] GetOrFetch(Addr addr, string path)
+        // 캐시 키는 (modelHash, path). 같은 모델이면 어느 server에서 받든 캐시 공유.
+        // 메모리 → 디스크 → 네트워크 순서로 try. 블로킹 — Task.Run 안에서 호출할 것.
+        public byte[] GetOrFetch(string modelHash, Addr addr, string path)
         {
-            string id = addr.Id;
+            string id = string.IsNullOrEmpty(modelHash) ? addr.Id : modelHash;
             lock (_lock)
             {
                 if (_mem.TryGetValue(id, out var byPath) && byPath.TryGetValue(path, out var bytes))

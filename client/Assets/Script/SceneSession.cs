@@ -38,6 +38,13 @@ namespace Cadverse
         readonly Action<StateFrame>          _onStateExtra;
         Task _recvTask;
         bool _disposed;
+        int  _reloadTriggered;   // 0/1 (Interlocked)
+
+        void TriggerReloadOnce()
+        {
+            if (System.Threading.Interlocked.CompareExchange(ref _reloadTriggered, 1, 0) != 0) return;
+            _mainQueue.Enqueue(() => { _ = _onReload?.Invoke(Addr); });
+        }
 
         SceneSession(Addr addr, ConcurrentQueue<Action> mainQueue,
                      Func<Addr, Task> onReload, Action<StateFrame> onStateExtra)
@@ -84,14 +91,23 @@ namespace Cadverse
                 }
                 catch { break; }
 
-                if (!_isActive) continue;   // cold: drain only
-
                 if (f is ReloadFrame)
                 {
-                    _mainQueue.Enqueue(() => { _ = _onReload?.Invoke(Addr); });
+                    // 보조 경로 — hash 기반 detect로도 충분하지만 호환용으로 유지.
+                    TriggerReloadOnce();
                 }
                 else if (f is StateFrame state)
                 {
+                    // hash mismatch → 이 세션은 더 이상 유효 X. 한 번만 trigger하고 receiver는 곧 dispose됨.
+                    if (!string.IsNullOrEmpty(state.MetadataHash)
+                        && !string.IsNullOrEmpty(Model?.Hash)
+                        && state.MetadataHash != Model.Hash)
+                    {
+                        TriggerReloadOnce();
+                        continue;
+                    }
+
+                    if (!_isActive) continue;   // 정상 state는 active만 처리
                     var model = Model;
                     var extra = _onStateExtra;
                     _mainQueue.Enqueue(() =>

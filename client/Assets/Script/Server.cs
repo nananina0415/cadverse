@@ -13,6 +13,7 @@ namespace Cadverse
     public class StateFrame : Frame
     {
         public double      Timestamp;
+        public string      MetadataHash;   // 현재 sim 모델의 metadata.json SHA256 앞 16자
         public SimObject[] Objects;
 
         // py_sim 확장 출력 — SimFrame() 호출만으로도 채워지는 핵심 항목
@@ -238,6 +239,7 @@ namespace Cadverse
 
             return new StateFrame {
                 Timestamp     = raw.timestamp,
+                MetadataHash  = raw.metadataHash ?? "",
                 Objects       = objs,
                 EventFeedback = evs,
                 Diagnostics   = diags,
@@ -325,6 +327,7 @@ namespace Cadverse
 
             return new StateFrame {
                 Timestamp           = (double)(jo["timestamp"] ?? 0.0),
+                MetadataHash        = (string)jo["metadataHash"] ?? "",
                 Objects             = objs,
                 EventFeedback       = evs,
                 Diagnostics         = diags,
@@ -394,6 +397,7 @@ namespace Cadverse
         [Serializable] class _RawState
         {
             public double timestamp;
+            public string metadataHash;
             public _RawObject[] objects;
             public _RawEventFeedback[] eventFeedback;
             public _RawDiagnostic[] diagnostics;
