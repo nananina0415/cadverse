@@ -1181,6 +1181,23 @@ def _extract_joint_meta(joint, by_occ_name: dict, by_comp_name: dict, used_joint
     # revolute/prismatic은 Fusion에서 추출한 axis를 frame.rot에 반영한다.
     if joint_type in ["revolute", "prismatic"]:
         axis = _joint_axis_world(joint, joint_type, warnings)
+
+        body1 = _body_name_for_occ(joint.occurrenceOne, by_occ_name, by_comp_name)
+        body2 = _body_name_for_occ(joint.occurrenceTwo, by_occ_name, by_comp_name)
+
+        p1 = body_pose_by_name.get(body1, {}).get("pos", None)
+        p2 = body_pose_by_name.get(body2, {}).get("pos", None)
+
+        if p1 is not None and p2 is not None:
+            dir_vec = vec_normalize([
+                p2[0] - p1[0],
+                p2[1] - p1[1],
+                p2[2] - p1[2],
+            ])
+
+            if vec_dot(axis, dir_vec) < 0:
+                axis = [-axis[0], -axis[1], -axis[2]]
+
         frame_rot = quat_from_two_vectors([0.0, 0.0, 1.0], axis)
     else:
         axis = [0.0, 0.0, 1.0]
