@@ -2606,7 +2606,7 @@ class _ARInteractionController:
                     if abs(signed_turn) > float(self.ROT_HOLD_START_DEADZONE):
                         # 체감 방향이 반대면 여기 한 줄만 뒤집으면 된다.
                         # 기본은 수학적 right-hand rule 기준.
-                        sign = 1.0 if signed_turn >= 0.0 else -1.0
+                        sign = -1.0 if signed_turn >= 0.0 else 1.0
 
                         candidate_w = sign * float(self.ROT_HOLD_CMD_SPEED)
                         current_w = float(self.ctx.rotate_hold_w_cmd)
