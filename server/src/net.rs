@@ -1,7 +1,7 @@
 use std::{
     fs,
     path::{Component, Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
 };
 
 use anyhow::{anyhow, Context};
@@ -87,6 +87,11 @@ pub struct NetThread {
     net: Arc<p2p_core::P2PNet>,
     my_peer_type: Arc<Mutex<PeerType>>,
     ar_clients: Arc<Mutex<Vec<p2p_core::Connection>>>,
+    // 매 file conn마다 serve_file에 넘길 폴더. notice_sim_online이 갱신.
+    // accept-loop은 NetThread::new에서 단 한 번만 spawn해 이 RwLock을 매 conn마다 read.
+    // (기존 구현은 notice_sim_online마다 새 accept-loop을 spawn해 이전 loop이 살아남고
+    //  서로 다른 folder로 서버 응답이 race하는 버그가 있었음.)
+    serve_folder: Arc<RwLock<Option<PathBuf>>>,
 }
 
 impl Drop for NetThread {
@@ -234,7 +239,36 @@ impl NetThread {
             crate::save_local_sim_qr_txt(&my_info.addr);
         }
 
-        Ok(NetThread { async_rt: rt, net, my_peer_type, ar_clients })
+        // file conn accept-loop을 단 한 번만 spawn. 매 conn마다 serve_folder를 read해
+        // 최신 폴더로 serve_file을 호출 → notice_sim_online 중복 호출에도 loop이 누적되지 않는다.
+        let serve_folder: Arc<RwLock<Option<PathBuf>>> = Arc::new(RwLock::new(None));
+        {
+            let net = net.clone();
+            let serve_folder = serve_folder.clone();
+            rt.spawn(async move {
+                loop {
+                    let Some(conn) = net.accept_file_conn().await else {
+                        eprintln!("[net] accept_file_conn 종료");
+                        break;
+                    };
+                    let folder = serve_folder.read().expect("serve_folder poisoned").clone();
+                    match folder {
+                        Some(f) => {
+                            tokio::spawn(async move {
+                                if let Err(e) = serve_file(conn, &f).await {
+                                    eprintln!("[net] serve_file 오류: {e}");
+                                }
+                            });
+                        }
+                        None => {
+                            eprintln!("[net] file conn 도착했으나 serve_folder 미설정 → 무시");
+                        }
+                    }
+                }
+            });
+        }
+
+        Ok(NetThread { async_rt: rt, net, my_peer_type, ar_clients, serve_folder })
     }
 
     pub fn peer_list(&self) -> Vec<PeerInfo> {
@@ -249,22 +283,8 @@ impl NetThread {
     }
 
     pub fn notice_sim_online(&self, folder: std::path::PathBuf) -> anyhow::Result<()> {
-        let net = self.net.clone();
-
-        self.async_rt.spawn(async move {
-            loop {
-                let Some(conn) = net.accept_file_conn().await else {
-                    eprintln!("[net] accept_file_conn 종료");
-                    break;
-                };
-                let folder = folder.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = serve_file(conn, &folder).await {
-                        eprintln!("[net] serve_file 오류: {e}");
-                    }
-                });
-            }
-        });
+        // accept-loop은 new()에서 단 한 번 spawn됨. 여기서는 서비스할 폴더만 갱신.
+        *self.serve_folder.write().expect("serve_folder poisoned") = Some(folder);
 
         self.async_rt.block_on(self.net.notice_sim_online())?;
         crate::save_local_sim_qr_txt(&self.net.my_addr());
@@ -274,6 +294,7 @@ impl NetThread {
     }
 
     pub fn notice_sim_offline(&self) -> anyhow::Result<()> {
+        *self.serve_folder.write().expect("serve_folder poisoned") = None;
         self.async_rt.block_on(self.net.notice_sim_offline())?;
         let mut t = self.my_peer_type.lock().expect("my_peer_type mutex poisoned");
         *t = PeerType::MidServer;
