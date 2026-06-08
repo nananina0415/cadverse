@@ -6,6 +6,19 @@ mod pipe;
 
 use std::sync::{Arc, Mutex, mpsc, atomic::Ordering};
 use std::time::Duration;
+use sha2::{Sha256, Digest};
+
+/// 모델 폴더의 metadata.json SHA256(앞 16자 hex). 파일 못 읽으면 빈 문자열.
+fn compute_model_hash(model_path: &std::path::Path) -> String {
+    let p = model_path.join("metadata.json");
+    match std::fs::read(&p) {
+        Ok(bytes) => {
+            let h = Sha256::digest(&bytes);
+            format!("{:x}", h)[..16].to_string()
+        }
+        Err(_) => String::new(),
+    }
+}
 
 use net::{NetSetting, NetThread};
 use utils::TripleBuffer;
@@ -166,6 +179,7 @@ fn main() {
                         Ok(()) => {
                             eprintln!("[resume] 시뮬 시작 완료");
                             if let Some(net) = state.net.as_ref() {
+                                net.set_model_hash(compute_model_hash(path));
                                 let _ = net.notice_sim_online(path.to_path_buf());
                             }
                         }
@@ -245,6 +259,7 @@ fn main() {
                                 Ok(()) => {
                                     eprintln!("[import] 시뮬 교체 완료");
                                     if let Some(net) = state.net.as_ref() {
+                                        net.set_model_hash(compute_model_hash(&path));
                                         let _ = net.notice_sim_online(path.clone());
                                     }
                                 }

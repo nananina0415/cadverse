@@ -88,10 +88,10 @@ pub struct NetThread {
     my_peer_type: Arc<Mutex<PeerType>>,
     ar_clients: Arc<Mutex<Vec<p2p_core::Connection>>>,
     // 매 file conn마다 serve_file에 넘길 폴더. notice_sim_online이 갱신.
-    // accept-loop은 NetThread::new에서 단 한 번만 spawn해 이 RwLock을 매 conn마다 read.
-    // (기존 구현은 notice_sim_online마다 새 accept-loop을 spawn해 이전 loop이 살아남고
-    //  서로 다른 folder로 서버 응답이 race하는 버그가 있었음.)
     serve_folder: Arc<RwLock<Option<PathBuf>>>,
+    // 현재 sim의 metadata.json SHA256(앞 16자). broadcast가 매 State frame에 함께 송신해
+    // 클라가 model 변경을 자체 detect할 수 있게 한다.
+    model_hash: Arc<RwLock<String>>,
 }
 
 impl Drop for NetThread {
@@ -190,15 +190,30 @@ impl NetThread {
         }
 
         // SimFrame 버퍼 읽기 → 모든 AR 클라이언트로 브로드캐스트
+        let model_hash: Arc<RwLock<String>> = Arc::new(RwLock::new(String::new()));
         {
             let ar_clients = ar_clients.clone();
+            let model_hash = model_hash.clone();
             rt.spawn(async move {
                 let mut reload_sent = false;
                 loop {
                     let data = match simout_r.read() {
                         SimFrame::State(out) => {
                             reload_sent = false;
-                            match serde_json::to_vec(out) {
+                            // SimOut을 Value로 변환 후 metadataHash 필드 추가 (클라가 model 식별/캐시 키로 사용)
+                            let mut v = match serde_json::to_value(out) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    eprintln!("[broadcast] 직렬화 실패: {e}");
+                                    tokio::time::sleep(std::time::Duration::from_millis(16)).await;
+                                    continue;
+                                }
+                            };
+                            if let Some(obj) = v.as_object_mut() {
+                                let h = model_hash.read().expect("model_hash poisoned").clone();
+                                obj.insert("metadataHash".to_string(), serde_json::Value::String(h));
+                            }
+                            match serde_json::to_vec(&v) {
                                 Ok(d) => d,
                                 Err(e) => {
                                     eprintln!("[broadcast] 직렬화 실패: {e}");
@@ -270,7 +285,12 @@ impl NetThread {
             });
         }
 
-        Ok(NetThread { async_rt: rt, net, my_peer_type, ar_clients, serve_folder })
+        Ok(NetThread { async_rt: rt, net, my_peer_type, ar_clients, serve_folder, model_hash })
+    }
+
+    /// 현재 sim의 metadata.json 해시(16자 hex)를 갱신. broadcast가 다음 state frame부터 이 hash를 함께 송신.
+    pub fn set_model_hash(&self, hash: String) {
+        *self.model_hash.write().expect("model_hash poisoned") = hash;
     }
 
     pub fn peer_list(&self) -> Vec<PeerInfo> {
