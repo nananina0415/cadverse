@@ -7,6 +7,7 @@ import os
 import re
 import json
 import math
+import hashlib
 
 
 # ---------------------------------------------------------------------
@@ -419,10 +420,19 @@ def run(context, save_folder):
                 "obj_bake": bake_debug,
             })
 
+            # bake 후 OBJ 파일 hash 계산 — 클라가 모델 식별/캐시 키로 사용
+            mesh_hash = ""
+            try:
+                with open(mesh_abs_path, "rb") as _hf:
+                    mesh_hash = hashlib.sha256(_hf.read()).hexdigest()[:16]
+            except Exception:
+                pass
+
             mesh_data[body_name] = {
                 "body_name": body_name,
                 "mesh_file": mesh_rel_path,
                 "mesh_abs_path": mesh_abs_path,
+                "mesh_hash": mesh_hash,
                 "transform": transform_array,
                 "unit_scale": FUSION_CM_TO_M,
                 "occurrence_name": occ_name,

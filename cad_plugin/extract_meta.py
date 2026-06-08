@@ -524,6 +524,7 @@ def _build_body_from_mesh_entry(body_name: str, entry: dict, has_joints: bool, w
             "visual": {
                 "kind": "mesh",
                 "file": entry.get("mesh_file", f"meshes/{body_name}.obj"),
+                "hash": entry.get("mesh_hash", ""),
                 "scale": [1.0, 1.0, 1.0],
                 "offset": {
                     "pos": [0.0, 0.0, 0.0],
