@@ -528,6 +528,7 @@ impl SimLoop {
                     // Reload 이벤트를 한 번 publish. running 중 교체 분기와 같은 효과.
                     *sim_io_buf.simout_w.input_buffer() = SimFrame::Reload;
                     sim_io_buf.simout_w.publish();
+                    eprintln!("[sim_loop] Reload publish");
                     eprintln!("[sim_loop] 루프 시작");
 
                     // RUNNING

@@ -213,6 +213,8 @@ impl NetThread {
                                 continue;
                             }
                             reload_sent = true;
+                            let n = ar_clients.lock().expect("ar_clients mutex poisoned").len();
+                            eprintln!("[broadcast] Reload → {n}개 클라");
                             br#"{"type":"reload"}"#.to_vec()
                         }
                     };
