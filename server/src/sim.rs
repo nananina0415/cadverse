@@ -529,6 +529,10 @@ impl SimLoop {
                     *sim_io_buf.simout_w.input_buffer() = SimFrame::Reload;
                     sim_io_buf.simout_w.publish();
                     eprintln!("[sim_loop] Reload publish");
+                    // simout은 triple buffer(latest-only). 첫 step의 State publish가 너무 빨리
+                    // 일어나면 broadcast 루프(16ms 폴링)가 Reload를 못 잡고 덮어쓰여 손실됨.
+                    // 50ms 대기로 broadcast가 최소 한 번은 Reload를 read할 시간을 보장.
+                    std::thread::sleep(std::time::Duration::from_millis(50));
                     eprintln!("[sim_loop] 루프 시작");
 
                     // RUNNING
