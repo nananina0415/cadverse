@@ -335,7 +335,7 @@ def _trigger_f3z_export_if_needed(app, force=False):
         with open(meta_path, 'rb') as f:
             meta_hash = hashlib.sha256(f.read()).hexdigest()[:16]
         models_root = os.path.dirname(_model_dir)
-        f3z_path = os.path.join(models_root, f'{meta_hash}.f3z')
+        f3z_path = os.path.join(models_root, f'{meta_hash}.f3d')
         if force or not os.path.exists(f3z_path):
             app.fireCustomEvent(F3Z_EXPORT_EVENT, f3z_path)
             _plog(f'[f3z] export 이벤트 발화 (force={force}): {f3z_path}')
@@ -350,14 +350,22 @@ class _F3zExportHandler(adsk.core.CustomEventHandler):
     def notify(self, args):
         try:
             f3z_path = adsk.core.CustomEventArgs.cast(args).additionalInfo
+            _plog(f'[f3z export] 시작: {f3z_path}')
             app = adsk.core.Application.get()
-            design = app.activeProduct
-            if not isinstance(design, adsk.fusion.Design):
+            product = app.activeProduct
+            if not product or product.objectType != adsk.fusion.Design.classType():
                 _plog('[f3z export] activeProduct가 Design이 아님')
                 return
+            design = adsk.fusion.Design.cast(product)
+            if not design:
+                _plog('[f3z export] Design cast 실패')
+                return
+            os.makedirs(os.path.dirname(f3z_path), exist_ok=True)
             export_mgr = design.exportManager
             options = export_mgr.createFusionArchiveExportOptions(f3z_path)
-            export_mgr.execute(options)
+            if not export_mgr.execute(options):
+                _plog('[f3z export] execute 반환 False')
+                return
             _plog(f'[f3z export] 완료: {f3z_path}')
         except Exception:
             _plog(f'[f3z export] 실패:\n{traceback.format_exc()}')
@@ -370,11 +378,15 @@ class _F3zImportHandler(adsk.core.CustomEventHandler):
     def notify(self, args):
         try:
             f3z_path = adsk.core.CustomEventArgs.cast(args).additionalInfo
+            _plog(f'[f3z import] 시작: {f3z_path}')
             app = adsk.core.Application.get()
             import_mgr = app.importManager
             options = import_mgr.createFusionArchiveImportOptions(f3z_path)
             doc = app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType, True)
-            design = doc.products.itemByProductType('DesignProductType')
+            design = adsk.fusion.Design.cast(doc.products.itemByProductType('DesignProductType'))
+            if not design:
+                _plog('[f3z import] Design cast 실패')
+                return
             import_mgr.importToTarget(options, design.rootComponent)
             _plog(f'[f3z import] 완료: {f3z_path}')
         except Exception:

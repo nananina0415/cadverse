@@ -51,7 +51,7 @@ fn build_model_manifest(folder: &Path, models_root: &Path, model_hash: &str) -> 
     let _ = collect_model_files(folder, folder, &mut files);
 
     let f3z_hash = if !model_hash.is_empty() {
-        let f3z_path = models_root.join(format!("{}.f3z", model_hash));
+        let f3z_path = models_root.join(format!("{}.f3d", model_hash));
         if f3z_path.exists() { Some(model_hash.to_string()) } else { None }
     } else {
         None
@@ -430,7 +430,7 @@ impl NetThread {
             // f3z: manifest에 hash가 있고 로컬에 없으면 background download 정보 반환
             let f3z_info = match manifest.f3z_hash {
                 Some(ref hash) if !hash.is_empty() => {
-                    let f3z_path = import_root.join(format!("{}.f3z", hash));
+                    let f3z_path = import_root.join(format!("{}.f3d", hash));
                     if f3z_path.exists() {
                         eprintln!("[import] f3z 이미 존재: {}", f3z_path.display());
                         None
@@ -494,7 +494,7 @@ async fn serve_file(conn: p2p_core::RawConn, folder: &std::path::Path, model_has
             vec![]
         } else {
             let models_root = folder.parent().unwrap_or(folder);
-            let f3z_path = models_root.join(format!("{}.f3z", hash));
+            let f3z_path = models_root.join(format!("{}.f3d", hash));
             let d = std::fs::read(&f3z_path).unwrap_or_default();
             eprintln!("[serve_file] f3z 응답: {} ({} bytes)", f3z_path.display(), d.len());
             d

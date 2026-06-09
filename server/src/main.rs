@@ -286,7 +286,7 @@ fn main() {
                         // f3z 백그라운드 다운로드 시작
                         if let Some((addr, hash)) = f3z_info {
                             let f3z_path = std::path::PathBuf::from(&import_root)
-                                .join(format!("{}.f3z", hash));
+                                .join(format!("{}.f3d", hash));
                             let (tx, rx) = mpsc::channel();
                             state.f3z_done_rx = Some(rx);
                             if let Some(net) = state.net.as_ref() {
