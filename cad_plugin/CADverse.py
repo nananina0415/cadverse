@@ -108,7 +108,7 @@ class _DocumentSavedHandler(adsk.core.DocumentEventHandler):
                 return
             _extract.run(None, _model_dir)
             _server.reload(_model_dir)
-            _trigger_f3z_export_if_needed(app)
+            _trigger_f3z_export_if_needed(app, force=True)
         except Exception as e:
             _plog(f'[DocSaved] extract 실패: {e}')
 
@@ -326,7 +326,7 @@ def _watch_server():
     except Exception as e:
         _plog(f'[watch_server] fireCustomEvent 실패: {e}')
 
-def _trigger_f3z_export_if_needed(app):
+def _trigger_f3z_export_if_needed(app, force=False):
     import hashlib
     if not _model_dir:
         return
@@ -336,9 +336,9 @@ def _trigger_f3z_export_if_needed(app):
             meta_hash = hashlib.sha256(f.read()).hexdigest()[:16]
         models_root = os.path.dirname(_model_dir)
         f3z_path = os.path.join(models_root, f'{meta_hash}.f3z')
-        if not os.path.exists(f3z_path):
+        if force or not os.path.exists(f3z_path):
             app.fireCustomEvent(F3Z_EXPORT_EVENT, f3z_path)
-            _plog(f'[f3z] export 이벤트 발화: {f3z_path}')
+            _plog(f'[f3z] export 이벤트 발화 (force={force}): {f3z_path}')
     except Exception:
         _plog(f'[f3z] export trigger 실패:\n{traceback.format_exc()}')
 
@@ -602,11 +602,13 @@ class _HTMLEventHandler(adsk.core.HTMLEventHandler):
             elif action == 'resume':
                 if _model_dir:
                     try:
-                        product = adsk.core.Application.get().activeProduct
+                        app = adsk.core.Application.get()
+                        product = app.activeProduct
                         if product and product.objectType == adsk.fusion.Design.classType():
                             _plog('[resume] extract 시작')
                             _extract.run(None, _model_dir)
                             _plog('[resume] extract 완료')
+                            _trigger_f3z_export_if_needed(app)
                         else:
                             _plog(f'[resume] design 없음 또는 타입 불일치: {product}')
                     except Exception as e:
